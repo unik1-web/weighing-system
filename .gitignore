@@ -21,3 +21,7 @@ dist-ssr
 *.sln
 *.sw?
 .env
+.vite/
+.DS_Store
+.env.local
+.env.*.local
