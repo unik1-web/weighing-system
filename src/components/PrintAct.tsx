@@ -157,9 +157,9 @@ export function printTicket(ticket: WeighingTicket, orgName: string) {
 <meta charset="UTF-8">
 <title>Акт взвешивания № ${ticket.ticket_number}</title>
 <style>
-  @page { size: A4 landscape; margin: 10mm; }
-  body { margin: 0; background: #fff; width: 297mm; height: 210mm; }
-  #print-act { width: 100%; max-width: 280mm; margin: 0 auto; box-sizing: border-box; }
+  @page { size: A4 portrait; margin: 10mm; }
+  body { margin: 0; background: #fff; width: 210mm; min-height: 297mm; }
+  #print-act { width: 100%; max-width: 190mm; margin: 0 auto; box-sizing: border-box; }
   @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
 </style>
 </head>
@@ -181,14 +181,14 @@ function buildActHtml(t: WeighingTicket, orgName: string): string {
   const totalVat = computeVat2(t.total_amount, t.vat_rate || 0);
 
   return `
-<div id="print-act" style="font-family:Times New Roman,serif;font-size:12px;padding:5mm 6mm;box-sizing:border-box;color:#000;max-width:280mm;min-width:240mm;">
+<div id="print-act" style="font-family:Times New Roman,serif;font-size:12px;padding:5mm 6mm;box-sizing:border-box;color:#000;max-width:190mm;min-width:180mm;">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;border-bottom:1px solid #000;padding-bottom:6px">
     <div style="font-size:14px;font-weight:bold">${orgName || 'ООО Организация'}</div>
     <div style="font-size:14px;font-weight:bold;text-align:center">Акт взвешивания № ${t.ticket_number ?? '—'}</div>
     <div style="width:60px"></div>
   </div>
   <div style="display:flex;gap:0;margin-top:6px;flex-wrap:wrap">
-    <div style="flex:1 1 32%;min-width:220px;padding-right:10px;border-right:1px solid #555">
+    <div style="flex:1 1 100%;min-width:0;padding-right:0;border-right:none;border-bottom:1px solid #555;padding-bottom:6px;margin-bottom:6px">
       <table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>
         <tr><td style="padding-bottom:3px;padding-right:6px;white-space:nowrap;color:#444">Номер ТС:</td><td style="font-weight:bold">${t.vehicle_number}</td></tr>
         <tr><td style="padding-bottom:3px;padding-right:6px;white-space:nowrap;color:#444">Марка ТС:</td><td style="font-weight:bold">${t.vehicle_brand || '—'}</td></tr>
@@ -196,14 +196,14 @@ function buildActHtml(t: WeighingTicket, orgName: string): string {
         <tr><td style="padding-bottom:3px;padding-right:6px;white-space:nowrap;color:#444">Водитель:</td><td style="font-weight:bold">${t.driver_name}</td></tr>
       </tbody></table>
     </div>
-    <div style="flex:1 1 28%;min-width:180px;padding:0 10px;border-right:1px solid #555">
+    <div style="flex:1 1 100%;min-width:0;padding:0 0 6px 0;border-right:none;border-bottom:1px solid #555;margin-bottom:6px">
       <table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>
         <tr><td style="padding-bottom:3px;padding-right:8px;white-space:nowrap">Брутто, т</td><td style="font-weight:bold;text-align:right;padding-right:12px">${fmtTons(t.gross_weight)}</td><td style="color:#555;font-size:11px">${t.gross_datetime ? fmt(t.gross_datetime) : fmt(t.created_at)}</td></tr>
         <tr><td style="padding-bottom:3px;padding-right:8px;white-space:nowrap">Тара, т</td><td style="font-weight:bold;text-align:right;padding-right:12px">${fmtTons(t.tare_weight)}</td><td style="color:#555;font-size:11px">${t.tare_datetime ? fmt(t.tare_datetime) : '——'}</td></tr>
         <tr><td style="padding-right:8px;white-space:nowrap;font-weight:bold">Нетто, т</td><td style="font-weight:bold;font-size:15px;text-align:right;padding-right:12px;border-top:1px solid #000">${fmtTons(t.net_weight)}</td><td></td></tr>
       </tbody></table>
     </div>
-    <div style="flex:1 1 30%;padding-left:12px">
+    <div style="flex:1 1 100%;padding-left:0">
       <table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>
         <tr><td style="padding-bottom:3px;padding-right:4px;white-space:nowrap;color:#444">Цена мусора, руб:</td><td style="text-align:right">${(t.price || 0).toLocaleString('ru-RU',{minimumFractionDigits:2})}</td></tr>
         <tr><td style="padding-bottom:3px;padding-right:4px;color:#444">(в т.ч. НДС:</td><td style="text-align:right">${vatAmount.toLocaleString('ru-RU',{minimumFractionDigits:2})}</td></tr>
@@ -212,8 +212,8 @@ function buildActHtml(t: WeighingTicket, orgName: string): string {
       </tbody></table>
     </div>
   </div>
-  <div style="display:flex;gap:0;margin-top:8px;border-top:1px solid #555;padding-top:6px">
-    <div style="flex:1 1 60%;padding-right:12px;border-right:1px solid #555">
+  <div style="display:flex;gap:0;margin-top:8px;border-top:1px solid #555;padding-top:6px;flex-wrap:wrap">
+    <div style="flex:1 1 100%;padding-right:0;border-right:none;border-bottom:1px solid #555;padding-bottom:6px;margin-bottom:6px">
       <table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>
         <tr><td style="padding-bottom:3px;padding-right:6px;white-space:nowrap;color:#444">Отправитель:</td><td style="font-weight:bold">${t.shipper_name}</td></tr>
         <tr><td style="padding-bottom:3px;padding-right:6px;white-space:nowrap;color:#444">Получатель:</td><td style="font-weight:bold">${t.receiver_name}</td></tr>
@@ -221,18 +221,18 @@ function buildActHtml(t: WeighingTicket, orgName: string): string {
         <tr><td style="padding-right:6px;white-space:nowrap;color:#444">Вид груза:</td><td style="font-weight:bold">${t.cargo_name}</td></tr>
       </tbody></table>
     </div>
-    <div style="flex:1 1 40%;padding-left:12px;display:flex;align-items:flex-end">
+    <div style="flex:1 1 100%;padding-left:0;display:flex;align-items:flex-end">
     </div>
   </div>
-  <div style="margin-top:18px;border-top:1px solid #000;padding-top:10px;display:flex;align-items:flex-end;gap:8px">
-    <div style="flex:1;text-align:center">
+  <div style="margin-top:18px;border-top:1px solid #000;padding-top:10px;display:flex;align-items:flex-end;gap:8px;flex-wrap:wrap">
+    <div style="flex:1 1 45%;text-align:center">
       <div style="border-bottom:1px solid #000;margin-bottom:3px;min-height:18px">/${t.operator_name}/</div>
       <div style="font-size:11px;color:#555">Весовщик Ф.И.О.</div>
     </div>
-    <div style="flex:2;text-align:center">
+    <div style="flex:1 1 45%;text-align:center">
       Водитель: <span style="display:inline-block;border-bottom:1px solid #000;min-width:120px;margin:0 8px">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span> /${t.driver_name}/
     </div>
-    <div style="flex:0 0 auto;text-align:right;font-size:11px;color:#555">
+    <div style="flex:0 0 100%;text-align:right;font-size:11px;color:#555">
       <div>${new Date(t.created_at).toLocaleString('ru-RU')}</div>
     </div>
   </div>
