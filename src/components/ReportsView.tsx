@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase, type WeighingTicket } from '@/lib/supabase';
+import { type WeighingTicket } from '@/lib/supabase';
+import { TicketStorage } from '@/lib/storage';
 import { BarChart3, Download, Filter, Calendar, RefreshCw } from 'lucide-react';
 
 type GroupBy = 'shipper_name' | 'carrier_name' | 'cargo_name' | 'operator_name' | 'receiver_name' | 'vehicle_number';
@@ -40,17 +41,15 @@ export function ReportsView() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const { data, error } = await supabase
-      .from('weighing_tickets')
-      .select('*')
-      .gte('created_at', `${dateFrom}T00:00:00`)
-      .lte('created_at', `${dateTo}T23:59:59`)
-      .eq('status', 'completed')
-      .order('created_at', { ascending: false });
-    if (error) {
-      setError(error.message);
-    } else {
-      setTickets((data ?? []) as WeighingTicket[]);
+    try {
+      const allTickets = TicketStorage.getAll();
+      const filtered = allTickets.filter(t => {
+        const created = new Date(t.created_at).toISOString().slice(0, 10);
+        return t.status === 'completed' && created >= dateFrom && created <= dateTo;
+      });
+      setTickets(filtered);
+    } catch (err: any) {
+      setError(err.message);
     }
     setLoading(false);
   }, [dateFrom, dateTo]);

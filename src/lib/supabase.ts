@@ -1,9 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Local storage implementation (Supabase removed)
+// All data is stored locally in browser localStorage
 
 export type WeightSource = 'manual' | 'instrument';
 export type TicketStatus = 'open' | 'completed';
@@ -109,4 +105,38 @@ export const DICTIONARY_LABELS: Record<DictionaryTable, string> = {
   shippers: 'Грузоотправители',
   receivers: 'Грузополучатели',
   carriers: 'Грузоперевозчики',
+};
+
+// Mock supabase client for compatibility
+export const supabase = {
+  from: (table: DictionaryTable | 'weighing_tickets' | 'settings' | 'profiles' | 'users') => ({
+    select: (columns?: string) => ({
+      eq: (field: string, value: any) => ({
+        maybeSingle: () => Promise.resolve({ data: null, error: null }),
+      }),
+      order: (field: string, opts?: any) => ({
+        limit: (n: number) => Promise.resolve({ data: [], error: null }),
+      }),
+    }),
+    insert: (data: any) => ({
+      select: (columns?: string) => ({
+        single: () => Promise.resolve({ data: null, error: null }),
+      }),
+    }),
+    update: (data: any) => ({
+      eq: (field: string, value: any) => Promise.resolve({ error: null }),
+    }),
+    delete: () => ({
+      eq: (field: string, value: any) => Promise.resolve({ error: null }),
+    }),
+  }),
+  auth: {
+    signInWithPassword: () => Promise.resolve({ error: null }),
+    signUp: () => Promise.resolve({ error: null }),
+    signOut: () => Promise.resolve(),
+    getSession: () => Promise.resolve({ data: { session: null } }),
+    onAuthStateChange: (callback: Function) => ({
+      subscription: { unsubscribe: () => {} },
+    }),
+  },
 };

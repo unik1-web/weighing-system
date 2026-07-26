@@ -44,8 +44,19 @@ export function DictionaryManager({ table }: Props) {
   const handleAdd = async () => {
     if (!newName.trim()) return;
     setFormError(null);
+    
+    // Проверка ИНН если поле показывается
+    if (showInn) {
+      const innError = validateInn(newInn);
+      if (innError) {
+        setFormError(innError);
+        return;
+      }
+    }
+    
     try {
       await add(newName, {
+        ...(isVehicleTable ? { vehicle_number: newName.trim() } : {}),
         default_price: showPrice ? (newPrice ? parseFloat(newPrice) : null) : undefined,
         default_tare_weight: showTare ? (newTare ? parseFloat(newTare) : null) : undefined,
         vehicle_brand: showBrand ? newBrand.trim() : undefined,
@@ -68,6 +79,18 @@ export function DictionaryManager({ table }: Props) {
     return String(err);
   };
 
+  const validateInn = (inn: string): string | null => {
+    if (!inn.trim()) return null; // ИНН не обязателен
+    const cleanInn = inn.trim();
+    if (!/^\d+$/.test(cleanInn)) {
+      return 'ИНН должен содержать только цифры';
+    }
+    if (cleanInn.length !== 10 && cleanInn.length !== 12) {
+      return 'ИНН должен быть 10 или 12 цифр';
+    }
+    return null;
+  };
+
   const startEdit = (e: DictionaryEntry) => {
     setEditingId(e.id);
     setEditName(isVehicleTable ? e.vehicle_number ?? '' : e.name);
@@ -81,6 +104,16 @@ export function DictionaryManager({ table }: Props) {
   const saveEdit = async () => {
     if (!editingId || !editName.trim()) return;
     setFormError(null);
+    
+    // Проверка ИНН если поле показывается
+    if (showInn) {
+      const innError = validateInn(editInn);
+      if (innError) {
+        setFormError(innError);
+        return;
+      }
+    }
+    
     try {
       await update(editingId, {
         ...(isVehicleTable ? { vehicle_number: editName.trim() } : { name: editName.trim() }),

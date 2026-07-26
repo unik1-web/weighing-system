@@ -1,7 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { supabase } from '@/lib/supabase';
-import type { Session, User } from '@supabase/supabase-js';
+import { UserStorage, SessionStorage, ProfileStorage, initializeStorage, type Session as LocalSession } from '@/lib/storage';
 
 export type UserRole = 'user' | 'admin';
 
@@ -12,8 +11,8 @@ interface Profile {
 }
 
 interface AuthContextValue {
-  user: User | null;
-  session: Session | null;
+  user: { id: string; email: string } | null;
+  session: LocalSession | null;
   loading: boolean;
   signIn: (username: string, password: string) => Promise<{ error: string | null }>;
   signUp: (username: string, password: string, displayName: string) => Promise<{ error: string | null }>;
@@ -26,77 +25,89 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const EMAIL_DOMAIN = import.meta.env.VITE_EMAIL_DOMAIN ?? 'example.com';
-
-function usernameToEmail(username: string): string {
-  const normalized = username.trim().toLowerCase();
-  return normalized.includes('@') ? normalized : `${normalized}@${EMAIL_DOMAIN}`;
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<LocalSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<Profile | null>(null);
 
-  const loadProfile = useCallback(async (userId: string) => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('username, display_name, role')
-      .eq('user_id', userId)
-      .maybeSingle();
-    if (data) {
-      setProfile(data as Profile);
+  useEffect(() => {
+    // Initialize storage on mount
+    console.log('[AuthProvider] Initializing');
+    initializeStorage();
+
+    // Load session from storage
+    const storedSession = SessionStorage.getSession();
+    console.log('[AuthProvider] Stored session:', storedSession);
+    if (storedSession) {
+      setSession(storedSession);
+      setProfile({
+        username: storedSession.profile.username,
+        display_name: storedSession.profile.display_name,
+        role: storedSession.profile.role,
+      });
+      console.log('[AuthProvider] Session restored for user:', storedSession.user.username);
     } else {
-      setProfile({ username: '', display_name: '', role: 'user' });
+      console.log('[AuthProvider] No stored session found');
+    }
+    setLoading(false);
+  }, []);
+
+  const signIn = useCallback(async (username: string, password: string) => {
+    try {
+      const user = UserStorage.validatePassword(username, password);
+      if (!user) {
+        console.log('[Auth] Invalid credentials for:', username);
+        return { error: 'Invalid username or password' };
+      }
+
+      const profile = ProfileStorage.getProfile(user.id);
+      if (!profile) {
+        console.log('[Auth] Profile not found for user:', user.id);
+        return { error: 'User profile not found' };
+      }
+
+      const session: LocalSession = { user, profile };
+      SessionStorage.setSession(session);
+      setSession(session);
+      setProfile(profile);
+
+      console.log('[Auth] Successfully signed in as:', username, 'Session:', session);
+      return { error: null };
+    } catch (err: any) {
+      console.error('[Auth] Sign in error:', err);
+      return { error: err.message };
     }
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      setSession(data.session);
-      if (data.session?.user) {
-        await loadProfile(data.session.user.id);
-      }
-      setLoading(false);
-    })();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
-      (async () => {
-        setSession(newSession);
-        if (event === 'SIGNED_OUT' || !newSession) {
-          setProfile(null);
-          setLoading(false);
-        }
-        if (newSession?.user) {
-          await loadProfile(newSession.user.id);
-          setLoading(false);
-        }
-      })();
-    });
-
-    return () => sub.subscription.unsubscribe();
-  }, [loadProfile]);
-
-  const signIn = useCallback(async (username: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email: usernameToEmail(username),
-      password,
-    });
-    return { error: error?.message ?? null };
-  }, []);
-
   const signUp = useCallback(async (username: string, password: string, name: string) => {
-    const { error } = await supabase.auth.signUp({
-      email: usernameToEmail(username),
-      password,
-      options: { data: { username: username.trim().toLowerCase(), display_name: name } },
-    });
-    return { error: error?.message ?? null };
+    try {
+      console.log('[Auth] Creating user:', username);
+      const user = UserStorage.createUser(username, password, name);
+      console.log('[Auth] User created:', user.id);
+      
+      const profile = ProfileStorage.getProfile(user.id);
+      console.log('[Auth] Profile retrieved:', profile);
+
+      if (!profile) {
+        console.error('[Auth] Profile not found after creation');
+        return { error: 'Failed to create profile' };
+      }
+
+      const session: LocalSession = { user, profile };
+      SessionStorage.setSession(session);
+      setSession(session);
+      setProfile(profile);
+
+      console.log('[Auth] Successfully signed up as:', username);
+      return { error: null };
+    } catch (err: any) {
+      console.error('[Auth] Sign up error:', err);
+      return { error: err.message };
+    }
   }, []);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    SessionStorage.clearSession();
     setSession(null);
     setProfile(null);
   }, []);
@@ -108,7 +119,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user: session?.user ?? null, session, loading, signIn, signUp, signOut, displayName, username, role, isAdmin }}
+      value={{
+        user: session?.user ?? null,
+        session,
+        loading,
+        signIn,
+        signUp,
+        signOut,
+        displayName,
+        username,
+        role,
+        isAdmin,
+      }}
     >
       {children}
     </AuthContext.Provider>

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase, type WeighingTicket } from '@/lib/supabase';
+import { type WeighingTicket } from '@/lib/supabase';
+import { TicketStorage } from '@/lib/storage';
 import { printTicket } from './PrintAct';
 import { Search, Calendar, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer } from 'lucide-react';
 
@@ -17,10 +18,15 @@ export function WeighingJournal({ refreshKey }: Props) {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    let query = supabase.from('weighing_tickets').select('*').order('created_at', { ascending: false }).limit(200);
-    if (statusFilter !== 'all') query = query.eq('status', statusFilter);
-    const { data, error } = await query;
-    if (error) { setError(error.message); } else { setTickets((data ?? []) as WeighingTicket[]); }
+    try {
+      let allTickets = TicketStorage.getAll();
+      if (statusFilter !== 'all') {
+        allTickets = allTickets.filter(t => t.status === statusFilter);
+      }
+      setTickets(allTickets);
+    } catch (err: any) {
+      setError(err.message);
+    }
     setLoading(false);
   }, [statusFilter]);
 
@@ -34,8 +40,12 @@ export function WeighingJournal({ refreshKey }: Props) {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Удалить запись о взвешивании?')) return;
-    const { error } = await supabase.from('weighing_tickets').delete().eq('id', id);
-    if (error) { setError(error.message); } else { await load(); }
+    try {
+      TicketStorage.delete(id);
+      await load();
+    } catch (err: any) {
+      setError(err.message);
+    }
   };
 
   const exportCSV = () => {

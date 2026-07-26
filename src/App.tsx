@@ -7,6 +7,7 @@ import { DictionariesView } from '@/components/DictionariesView';
 import { ReportsView } from '@/components/ReportsView';
 import { UserManagement } from '@/components/UserManagement';
 import { printTicket } from '@/components/PrintAct';
+import { SettingsStorage } from '@/lib/storage';
 import { supabase, type WeighingTicket } from '@/lib/supabase';
 import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, Users, ShieldCheck } from 'lucide-react';
 
@@ -19,9 +20,8 @@ function MainApp() {
   const [orgName, setOrgName] = useState('');
 
   useEffect(() => {
-    supabase.from('settings').select('value').eq('key', 'org_name').maybeSingle().then(({ data }) => {
-      setOrgName(data?.value ?? '');
-    });
+    const orgNameValue = SettingsStorage.get('org_name');
+    setOrgName(orgNameValue || '');
   }, []);
 
   const handleSaved = useCallback((ticket: WeighingTicket) => {
@@ -112,6 +112,8 @@ function MainApp() {
 function AuthGate() {
   const { session, loading } = useAuth();
 
+  console.log('[AuthGate] Current state - loading:', loading, 'has session:', !!session);
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-900">
@@ -120,7 +122,12 @@ function AuthGate() {
     );
   }
 
-  if (!session) return <LoginPage />;
+  if (!session) {
+    console.log('[AuthGate] Showing login page');
+    return <LoginPage />;
+  }
+  
+  console.log('[AuthGate] Showing main app');
   return <MainApp />;
 }
 

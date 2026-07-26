@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '@/lib/supabase';
+import { ProfileStorage } from '@/lib/storage';
 import { useAuth } from '@/hooks/useAuth';
 import { Users, Shield, User as UserIcon, Trash2, Pencil, Check, X, ShieldCheck } from 'lucide-react';
 
@@ -23,14 +23,11 @@ export function UserManagement() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .order('created_at', { ascending: true });
-    if (error) {
-      setError(error.message);
-    } else {
-      setProfiles((data ?? []) as ProfileRow[]);
+    try {
+      const allProfiles = ProfileStorage.getAllProfiles();
+      setProfiles(allProfiles as ProfileRow[]);
+    } catch (err: any) {
+      setError(err.message);
     }
     setLoading(false);
   }, []);
@@ -40,26 +37,30 @@ export function UserManagement() {
   const saveEdit = async () => {
     if (!editingId) return;
     setError(null);
-    const { error } = await supabase
-      .from('profiles')
-      .update({ display_name: editName.trim(), role: editRole })
-      .eq('user_id', editingId);
-    if (error) {
-      setError(error.message);
-    } else {
-      setEditingId(null);
-      await load();
+    try {
+      const profile = ProfileStorage.getProfile(editingId);
+      if (profile) {
+        ProfileStorage.setProfile(editingId, { 
+          ...profile,
+          display_name: editName.trim(),
+          role: editRole 
+        });
+        setEditingId(null);
+        await load();
+      }
+    } catch (err: any) {
+      setError(err.message);
     }
   };
 
   const handleDelete = async (userId: string) => {
     if (!confirm('Удалить пользователя? Это действие необратимо.')) return;
     setError(null);
-    const { error } = await supabase.from('profiles').delete().eq('user_id', userId);
-    if (error) {
-      setError(error.message);
-    } else {
+    try {
+      ProfileStorage.deleteProfile(userId);
       await load();
+    } catch (err: any) {
+      setError(err.message);
     }
   };
 

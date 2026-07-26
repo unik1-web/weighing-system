@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase, type WeighingTicket, type WeightSource, type TicketStatus } from '@/lib/supabase';
+import { type WeighingTicket, type WeightSource, type TicketStatus } from '@/lib/supabase';
+import { TicketStorage } from '@/lib/storage';
 import { useDictionary } from '@/hooks/useDictionary';
 import { useAuth } from '@/hooks/useAuth';
 import { ScalePanel } from './ScalePanel';
@@ -135,7 +136,7 @@ export function WeighingForm({ onSaved }: Props) {
 
     setSaving(true);
     const now = new Date().toISOString();
-    const payload: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at' | 'completed_at'> = {
+    const payload: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at'> = {
       vehicle_number: vehicleNumber,
       vehicle_brand: vehicleBrand,
       trailer_number: trailerNumber,
@@ -160,25 +161,21 @@ export function WeighingForm({ onSaved }: Props) {
       operator_id: null,
       operator_name: displayName,
       status,
+      completed_at: status === 'completed' ? now : null,
       notes,
     };
 
-    const { data, error: insertError } = await supabase
-      .from('weighing_tickets')
-      .insert(payload)
-      .select('*')
-      .single();
-    setSaving(false);
-
-    if (insertError) {
-      setError(insertError.message);
-      return;
+    try {
+      const ticket = TicketStorage.create(payload);
+      setSaving(false);
+      setLastTicket(ticket);
+      setSuccess(status === 'completed' ? 'Взвешивание завершено и сохранено.' : 'Запись сохранена как незавершённая.');
+      onSaved(ticket);
+      reset();
+    } catch (err: any) {
+      setSaving(false);
+      setError(err.message);
     }
-
-    const ticket = data as WeighingTicket;
-    setLastTicket(ticket);
-    setSuccess(status === 'completed' ? 'Взвешивание завершено и сохранено.' : 'Запись сохранена как незавершённая.');
-    onSaved(ticket);
   };
 
   const handlePrint = () => {
