@@ -72,7 +72,7 @@ export const UserStorage = {
     const normalizedUsername = username.trim().toLowerCase();
     
     if (users.some(u => u.username === normalizedUsername)) {
-      throw new Error('User already exists');
+      throw new Error('Пользователь уже существует');
     }
 
     const user: User = {
@@ -337,27 +337,22 @@ function getAllSettings(): Record<string, string> {
 
 // Initialize default data
 export const initializeStorage = () => {
-  // Create demo data if storage is empty
   if (!localStorage.getItem(STORAGE_KEYS.USERS)) {
-    console.log('[Storage] Initializing default data');
-    // Create demo admin user
     try {
-      const user = UserStorage.createUser('admin', 'admin123', 'Администратор');
-      console.log('[Storage] Created default admin user:', user.id);
-    } catch (e) {
-      console.log('[Storage] Default admin user already exists or error:', e);
+      UserStorage.createUser('admin', 'admin123', 'Администратор');
+    } catch {
+      // Default admin user already exists
     }
 
     // Create demo vehicles
     DictionaryStorage.add('vehicles', {
       name: 'А001АА',
+      vehicle_number: 'А001АА',
       notes: 'Тестовый грузовик',
       default_tare_weight: 2500,
     });
 
     // Set org name
     SettingsStorage.set('org_name', 'Полигон отходов');
-  } else {
-    console.log('[Storage] Storage already initialized');
   }
 };

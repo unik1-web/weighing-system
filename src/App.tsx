@@ -14,7 +14,7 @@ import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, Users, Shield
 type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'users';
 
 function MainApp() {
-  const { displayName, signOut, isAdmin, role } = useAuth();
+  const { displayName, signOut, isAdmin } = useAuth();
   const [tab, setTab] = useState<Tab>('weighing');
   const [journalKey, setJournalKey] = useState(0);
   const [orgName, setOrgName] = useState('');
@@ -112,8 +112,6 @@ function MainApp() {
 function AuthGate() {
   const { session, loading } = useAuth();
 
-  console.log('[AuthGate] Current state - loading:', loading, 'has session:', !!session);
-
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-900">
@@ -123,11 +121,9 @@ function AuthGate() {
   }
 
   if (!session) {
-    console.log('[AuthGate] Showing login page');
     return <LoginPage />;
   }
-  
-  console.log('[AuthGate] Showing main app');
+
   return <MainApp />;
 }
 

@@ -23,6 +23,7 @@ function computeVat(amount: number | null, vatRate: number): number {
 export function PrintAct({ ticket, orgName }: Props) {
   return (
     <div
+      dangerouslySetInnerHTML={{ __html: renderAct(ticket, orgName) }}
       style={{
         fontFamily: 'Times New Roman, serif',
         fontSize: '11px',
@@ -32,9 +33,7 @@ export function PrintAct({ ticket, orgName }: Props) {
         backgroundColor: '#fff',
         color: '#000',
       }}
-    >
-      {renderAct(ticket, orgName)}
-    </div>
+    />
   );
 }
 

@@ -55,7 +55,7 @@ export function WeighingForm({ onSaved }: Props) {
     ? (netWeight / 1000) * parseFloat(price)
     : null;
 
-  const reset = useCallback(() => {
+  const resetFormFields = useCallback(() => {
     setPhase('gross');
     setVehicleNumber('');
     setVehicleBrand('');
@@ -77,9 +77,13 @@ export function WeighingForm({ onSaved }: Props) {
     setTareDatetime(null);
     setNotes('');
     setError(null);
+  }, []);
+
+  const reset = useCallback(() => {
+    resetFormFields();
     setSuccess(null);
     setLastTicket(null);
-  }, []);
+  }, [resetFormFields]);
 
   useEffect(() => {
     if (cargoName) {
@@ -171,7 +175,7 @@ export function WeighingForm({ onSaved }: Props) {
       setLastTicket(ticket);
       setSuccess(status === 'completed' ? 'Взвешивание завершено и сохранено.' : 'Запись сохранена как незавершённая.');
       onSaved(ticket);
-      reset();
+      resetFormFields();
     } catch (err: any) {
       setSaving(false);
       setError(err.message);

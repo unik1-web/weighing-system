@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { ProfileStorage } from '@/lib/storage';
+import { ProfileStorage, UserStorage } from '@/lib/storage';
 import { useAuth } from '@/hooks/useAuth';
 import { Users, Shield, User as UserIcon, Trash2, Pencil, Check, X, ShieldCheck } from 'lucide-react';
 
@@ -57,7 +57,7 @@ export function UserManagement() {
     if (!confirm('Удалить пользователя? Это действие необратимо.')) return;
     setError(null);
     try {
-      ProfileStorage.deleteProfile(userId);
+      UserStorage.deleteUser(userId);
       await load();
     } catch (err: any) {
       setError(err.message);
@@ -181,7 +181,7 @@ export function UserManagement() {
 
       <div className="rounded-2xl border border-slate-200 bg-blue-50/50 p-4 text-sm text-slate-600">
         <p className="font-medium text-slate-700 mb-1">Подсказка</p>
-        <p>Новые пользователи регистрируются самостоятельно через экран входа. Здесь администратор может изменить ФИО, назначить роль или удалить пользователя. Первый зарегистрированный пользователь должен быть назначен администратором вручную через базу данных.</p>
+        <p>Новые пользователи регистрируются самостоятельно через экран входа. Здесь администратор может изменить ФИО, назначить роль или удалить пользователя. Первый зарегистрированный пользователь автоматически получает роль администратора.</p>
       </div>
     </div>
   );

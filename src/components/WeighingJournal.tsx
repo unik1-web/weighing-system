@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { type WeighingTicket } from '@/lib/storage';
-import { TicketStorage } from '@/lib/storage';
+import { type WeighingTicket, TicketStorage, SettingsStorage } from '@/lib/storage';
 import { printTicket } from './PrintAct';
 import { Search, Calendar, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer } from 'lucide-react';
 
@@ -14,6 +13,11 @@ export function WeighingJournal({ refreshKey }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'completed'>('all');
+  const [orgName, setOrgName] = useState('');
+
+  useEffect(() => {
+    setOrgName(SettingsStorage.get('org_name') || '');
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -123,7 +127,7 @@ export function WeighingJournal({ refreshKey }: Props) {
                     <td className="px-4 py-2.5 text-slate-600">{t.operator_name || '—'}</td>
                     <td className="px-4 py-2.5 text-center">{t.status === 'completed' ? <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"><CheckCircle2 size={12} /> Завершён</span> : <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700"><Clock size={12} /> Открыт</span>}</td>
                     <td className="px-4 py-2.5 text-center whitespace-nowrap">
-                      <button onClick={() => printTicket(t, '')} disabled={t.status !== 'completed'} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition disabled:opacity-30 disabled:cursor-not-allowed" title="Печать акта"><Printer size={15} /></button>
+                      <button onClick={() => printTicket(t, orgName)} disabled={t.status !== 'completed'} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition disabled:opacity-30 disabled:cursor-not-allowed" title="Печать акта"><Printer size={15} /></button>
                       <button onClick={() => handleDelete(t.id)} className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition ml-1"><Trash2 size={15} /></button>
                     </td>
                   </tr>

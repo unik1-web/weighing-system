@@ -31,13 +31,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
 
   useEffect(() => {
-    // Initialize storage on mount
-    console.log('[AuthProvider] Initializing');
     initializeStorage();
 
-    // Load session from storage
     const storedSession = SessionStorage.getSession();
-    console.log('[AuthProvider] Stored session:', storedSession);
     if (storedSession) {
       setSession(storedSession);
       setProfile({
@@ -45,9 +41,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         display_name: storedSession.profile.display_name,
         role: storedSession.profile.role,
       });
-      console.log('[AuthProvider] Session restored for user:', storedSession.user.username);
-    } else {
-      console.log('[AuthProvider] No stored session found');
     }
     setLoading(false);
   }, []);
@@ -56,14 +49,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const user = UserStorage.validatePassword(username, password);
       if (!user) {
-        console.log('[Auth] Invalid credentials for:', username);
-        return { error: 'Invalid username or password' };
+        return { error: 'Неверный логин или пароль' };
       }
 
       const profile = ProfileStorage.getProfile(user.id);
       if (!profile) {
-        console.log('[Auth] Profile not found for user:', user.id);
-        return { error: 'User profile not found' };
+        return { error: 'Профиль пользователя не найден' };
       }
 
       const session: LocalSession = { user, profile };
@@ -71,26 +62,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(session);
       setProfile(profile);
 
-      console.log('[Auth] Successfully signed in as:', username, 'Session:', session);
       return { error: null };
-    } catch (err: any) {
-      console.error('[Auth] Sign in error:', err);
-      return { error: err.message };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err.message : 'Ошибка входа' };
     }
   }, []);
 
   const signUp = useCallback(async (username: string, password: string, name: string) => {
     try {
-      console.log('[Auth] Creating user:', username);
       const user = UserStorage.createUser(username, password, name);
-      console.log('[Auth] User created:', user.id);
-      
       const profile = ProfileStorage.getProfile(user.id);
-      console.log('[Auth] Profile retrieved:', profile);
 
       if (!profile) {
-        console.error('[Auth] Profile not found after creation');
-        return { error: 'Failed to create profile' };
+        return { error: 'Не удалось создать профиль' };
       }
 
       const session: LocalSession = { user, profile };
@@ -98,11 +82,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(session);
       setProfile(profile);
 
-      console.log('[Auth] Successfully signed up as:', username);
       return { error: null };
-    } catch (err: any) {
-      console.error('[Auth] Sign up error:', err);
-      return { error: err.message };
+    } catch (err: unknown) {
+      return { error: err instanceof Error ? err.message : 'Ошибка регистрации' };
     }
   }, []);
 

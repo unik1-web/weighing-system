@@ -18,26 +18,18 @@ export function LoginPage() {
     
     try {
       if (mode === 'login') {
-        console.log('[LoginPage] Attempting login for:', username);
         const { error } = await signIn(username, password);
         if (error) {
-          console.log('[LoginPage] Login failed:', error);
           setError(error);
         } else {
-          console.log('[LoginPage] Login successful');
-          // Clear form - will navigate via AuthGate automatically
           setUsername('');
           setPassword('');
         }
       } else {
-        console.log('[LoginPage] Attempting signup for:', username);
         const { error } = await signUp(username, password, name);
         if (error) {
-          console.log('[LoginPage] Signup failed:', error);
           setError(error);
         } else {
-          console.log('[LoginPage] Signup successful');
-          // Clear form
           setUsername('');
           setPassword('');
           setName('');
