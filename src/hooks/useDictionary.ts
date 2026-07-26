@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
 import { DictionaryStorage, type DictionaryTable, type DictionaryEntry } from '@/lib/storage';
-import type { DictionaryTable as DictionaryTableType, DictionaryEntry as DictionaryEntryType } from '@/lib/supabase';
 
 export function useDictionary<T extends DictionaryTable>(table: T) {
   const [entries, setEntries] = useState<DictionaryEntry[]>([]);

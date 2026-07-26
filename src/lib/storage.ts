@@ -1,5 +1,38 @@
 // Local storage abstraction for weighing system
-import type { WeighingTicket, WeightSource, TicketStatus } from './supabase';
+export type WeightSource = 'manual' | 'instrument';
+export type TicketStatus = 'open' | 'completed';
+
+export interface WeighingTicket {
+  id: string;
+  ticket_number: number | null;
+  vehicle_number: string;
+  vehicle_brand: string;
+  trailer_number: string;
+  driver_name: string;
+  cargo_name: string;
+  shipper_name: string;
+  receiver_name: string;
+  carrier_name: string;
+  price: number;
+  vat_rate: number;
+  gross_weight: number | null;
+  tare_weight: number | null;
+  net_weight: number | null;
+  total_amount: number | null;
+  gross_source: WeightSource;
+  tare_source: WeightSource;
+  gross_raw: string | null;
+  tare_raw: string | null;
+  gross_datetime: string | null;
+  tare_datetime: string | null;
+  scale_device: string;
+  operator_id: string | null;
+  operator_name: string;
+  status: TicketStatus;
+  notes: string;
+  created_at: string;
+  completed_at: string | null;
+}
 
 export interface User {
   id: string;
@@ -232,6 +265,15 @@ export interface DictionaryEntry {
   vehicle_number?: string;
   inn?: string;
 }
+
+export const DICTIONARY_LABELS: Record<DictionaryTable, string> = {
+  vehicles: 'Автомобили',
+  drivers: 'Водители',
+  cargos: 'Грузы',
+  shippers: 'Грузоотправители',
+  receivers: 'Грузополучатели',
+  carriers: 'Грузоперевозчики',
+};
 
 export const DictionaryStorage = {
   getTable: (table: DictionaryTable): DictionaryEntry[] => {

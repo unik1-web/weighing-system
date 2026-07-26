@@ -1,4 +1,4 @@
-import type { WeighingTicket } from '@/lib/supabase';
+import type { WeighingTicket } from '@/lib/storage';
 
 interface Props {
   ticket: WeighingTicket;
@@ -158,7 +158,8 @@ export function printTicket(ticket: WeighingTicket, orgName: string) {
 <title>Акт взвешивания № ${ticket.ticket_number}</title>
 <style>
   @page { size: A4 landscape; margin: 10mm; }
-  body { margin: 0; background: #fff; }
+  body { margin: 0; background: #fff; width: 297mm; height: 210mm; }
+  #print-act { width: 100%; max-width: 280mm; margin: 0 auto; box-sizing: border-box; }
   @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
 </style>
 </head>
@@ -180,14 +181,14 @@ function buildActHtml(t: WeighingTicket, orgName: string): string {
   const totalVat = computeVat2(t.total_amount, t.vat_rate || 0);
 
   return `
-<div style="font-family:Times New Roman,serif;font-size:13px;padding:6mm 8mm;box-sizing:border-box;color:#000;max-width:260mm">
+<div id="print-act" style="font-family:Times New Roman,serif;font-size:12px;padding:5mm 6mm;box-sizing:border-box;color:#000;max-width:280mm;min-width:240mm;">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;border-bottom:1px solid #000;padding-bottom:6px">
     <div style="font-size:14px;font-weight:bold">${orgName || 'ООО Организация'}</div>
     <div style="font-size:14px;font-weight:bold;text-align:center">Акт взвешивания № ${t.ticket_number ?? '—'}</div>
     <div style="width:60px"></div>
   </div>
-  <div style="display:flex;gap:0;margin-top:6px">
-    <div style="flex:1 1 40%;padding-right:12px;border-right:1px solid #555">
+  <div style="display:flex;gap:0;margin-top:6px;flex-wrap:wrap">
+    <div style="flex:1 1 32%;min-width:220px;padding-right:10px;border-right:1px solid #555">
       <table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>
         <tr><td style="padding-bottom:3px;padding-right:6px;white-space:nowrap;color:#444">Номер ТС:</td><td style="font-weight:bold">${t.vehicle_number}</td></tr>
         <tr><td style="padding-bottom:3px;padding-right:6px;white-space:nowrap;color:#444">Марка ТС:</td><td style="font-weight:bold">${t.vehicle_brand || '—'}</td></tr>

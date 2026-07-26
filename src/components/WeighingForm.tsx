@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { type WeighingTicket, type WeightSource, type TicketStatus } from '@/lib/supabase';
+import { type WeighingTicket, type WeightSource, type TicketStatus } from '@/lib/storage';
 import { TicketStorage } from '@/lib/storage';
 import { useDictionary } from '@/hooks/useDictionary';
 import { useAuth } from '@/hooks/useAuth';

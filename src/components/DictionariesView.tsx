@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { DictionaryManager } from './DictionaryManager';
-import { DICTIONARY_LABELS, type DictionaryTable } from '@/lib/supabase';
+import { DICTIONARY_LABELS, type DictionaryTable } from '@/lib/storage';
 import { Truck, User, Package, Building2, Users, ChevronRight } from 'lucide-react';
 
 const TABLES: DictionaryTable[] = ['vehicles', 'drivers', 'cargos', 'shippers', 'receivers', 'carriers'];

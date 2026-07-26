@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useDictionary } from '@/hooks/useDictionary';
-import { DICTIONARY_LABELS, type DictionaryTable, type DictionaryEntry } from '@/lib/supabase';
+import { DICTIONARY_LABELS, type DictionaryTable, type DictionaryEntry } from '@/lib/storage';
 import { Plus, Trash2, Pencil, Check, X, Package, Truck, User, Building2, Users } from 'lucide-react';
 
 

@@ -8,7 +8,7 @@ import { ReportsView } from '@/components/ReportsView';
 import { UserManagement } from '@/components/UserManagement';
 import { printTicket } from '@/components/PrintAct';
 import { SettingsStorage } from '@/lib/storage';
-import { supabase, type WeighingTicket } from '@/lib/supabase';
+import type { WeighingTicket } from '@/lib/storage';
 import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, Users, ShieldCheck } from 'lucide-react';
 
 type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'users';

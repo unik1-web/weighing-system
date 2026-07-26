@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { type WeighingTicket } from '@/lib/supabase';
+import { type WeighingTicket } from '@/lib/storage';
 import { TicketStorage } from '@/lib/storage';
 import { BarChart3, Download, Filter, Calendar, RefreshCw } from 'lucide-react';
 
