@@ -1,5 +1,5 @@
 import type { WeighingTicket } from '@/lib/storage';
-import { SettingsStorage, type AppSettings, type PrintLayout } from '@/lib/storage';
+import { SettingsStorage, type AppSettings } from '@/lib/storage';
 
 interface Props {
   ticket: WeighingTicket;
@@ -15,14 +15,14 @@ function fmt(ts: string | null) {
   return new Date(ts).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function fmtDate(ts: string | null) {
+function fmtDateFull(ts: string | null) {
   if (!ts) return '—';
-  return new Date(ts).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  return new Date(ts).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-function fmtTime(ts: string | null) {
+function fmtTimeFull(ts: string | null) {
   if (!ts) return '—';
-  return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 function fmtTons(kg: number | null) {
@@ -126,102 +126,111 @@ function renderActClassic(t: WeighingTicket, settings: AppSettings): string {
 </div>`;
 }
 
-function renderActReceipt(t: WeighingTicket, settings: AppSettings): string {
+const RECEIPT_COPY_NUMBERS = [3, 1, 2] as const;
+
+function buildOrgHeaderLine(settings: AppSettings): string {
+  const parts: string[] = [];
+  if (settings.org_address) parts.push(esc(settings.org_address));
+  if (settings.org_phone) parts.push(esc(settings.org_phone));
+  if (settings.org_inn) parts.push(`ИНН${esc(settings.org_inn)}`);
+  if (settings.org_kpp) parts.push(`КПП${esc(settings.org_kpp)}`);
+  if (settings.org_ogrn) parts.push(`ОГРН${esc(settings.org_ogrn)}`);
+  if (settings.org_bik) parts.push(`БИК${esc(settings.org_bik)}`);
+  return parts.join(', ');
+}
+
+function receiptHalfCell(label: string, value: string, withRightBorder: boolean): string {
+  const border = withRightBorder ? 'border-right:1px solid #000;' : '';
+  return `
+    <td style="width:50%;${border}border-bottom:1px solid #000;padding:1.8mm 3mm;vertical-align:middle;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:3mm;">
+        <span style="white-space:nowrap;">${label}</span>
+        <span style="font-weight:bold;text-align:right;">${value}</span>
+      </div>
+    </td>`;
+}
+
+function receiptPairRow(
+  leftLabel: string,
+  leftValue: string,
+  rightLabel: string,
+  rightValue: string,
+): string {
+  return `<tr>
+    ${receiptHalfCell(leftLabel, leftValue, true)}
+    ${receiptHalfCell(rightLabel, rightValue, false)}
+  </tr>`;
+}
+
+function receiptBottomBlock(
+  grossTs: string | null,
+  tareTs: string | null,
+  grossWeight: number | null,
+  tareWeight: number | null,
+  netWeight: number | null,
+  sumLabel: string,
+): string {
+  const gridCols = '28% 30% 22% 1fr';
+
+  const row = (date: string, time: string, weight: string, tag: string, bold = false) => `
+    <div style="display:grid;grid-template-columns:${gridCols};align-items:baseline;font-size:9.5px;padding:0.6mm 2mm;">
+      <span>${date}</span>
+      <span>${time}</span>
+      <span style="text-align:left;${bold ? 'font-weight:bold;font-size:11px;' : ''}">${weight}</span>
+      <span>${tag}</span>
+    </div>`;
+
+  return `
+    <td colspan="2" style="padding:0;vertical-align:top;">
+      <div style="display:flex;font-weight:bold;font-size:9.5px;border-bottom:1px solid #000;">
+        <div style="width:50%;display:grid;grid-template-columns:${gridCols};padding:1.2mm 2mm;border-right:1px solid #000;">
+          <span>Дата</span><span>Время</span><span>Вес т</span><span></span>
+        </div>
+        <div style="width:50%;padding:1.2mm 3mm;">Сумма</div>
+      </div>
+      <div style="display:flex;">
+        <div style="width:50%;border-right:1px solid #000;padding:0.8mm 0 2mm;">
+          ${row(fmtDateFull(grossTs), fmtTimeFull(grossTs), fmtTonsShort(grossWeight), 'Брутто')}
+          ${row(fmtDateFull(tareTs), fmtTimeFull(tareTs), fmtTonsShort(tareWeight), 'Тара')}
+          ${row('', '', fmtTonsShort(netWeight), 'Нетто', true)}
+        </div>
+        <div style="width:50%;padding:1.8mm 3mm;vertical-align:top;">${sumLabel}</div>
+      </div>
+    </td>`;
+}
+
+function renderActReceipt(t: WeighingTicket, settings: AppSettings, copyNumber: number): string {
   const grossTs = t.gross_datetime ?? t.created_at;
   const tareTs = t.tare_datetime ?? (t.tare_weight != null ? t.completed_at : null);
   const client = t.shipper_name || t.receiver_name || '—';
   const priceLabel = `${(t.price || 0).toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} руб/т.`;
   const sumLabel = `${(t.total_amount ?? 0).toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} руб.`;
-
-  const orgDetails: string[] = [];
-  if (settings.org_address) orgDetails.push(esc(settings.org_address));
-  if (settings.org_phone) orgDetails.push(`тел: ${esc(settings.org_phone)}`);
-  const requisites: string[] = [];
-  if (settings.org_inn) requisites.push(`ИНН ${esc(settings.org_inn)}`);
-  if (settings.org_kpp) requisites.push(`КПП ${esc(settings.org_kpp)}`);
-  if (settings.org_ogrn) requisites.push(`ОГРН ${esc(settings.org_ogrn)}`);
-  if (settings.org_bik) requisites.push(`БИК ${esc(settings.org_bik)}`);
+  const orgLine = buildOrgHeaderLine(settings);
 
   return `
 <div style="font-family:Arial,sans-serif;font-size:10px;box-sizing:border-box;color:#000;width:100%;">
-  <div style="position:relative;margin-bottom:2mm;padding-bottom:1mm;border-bottom:1px solid #000;">
-    <div style="text-align:center;">
+  <div style="position:relative;margin-bottom:1.5mm;padding-bottom:1mm;">
+    <div style="text-align:center;padding-right:16mm;">
       <div style="font-size:13px;font-weight:bold;">${esc(settings.org_name || '—')}</div>
-      ${orgDetails.length ? `<div style="font-size:9px;margin-top:0.5mm;">${orgDetails.join(', ')}</div>` : ''}
-      ${requisites.length ? `<div style="font-size:8.5px;margin-top:0.5mm;color:#333;">${requisites.join(' · ')}</div>` : ''}
+      ${orgLine ? `<div style="font-size:8.5px;margin-top:0.8mm;line-height:1.3;">${orgLine}</div>` : ''}
     </div>
-    <div style="position:absolute;top:0;right:0;border:1px solid #000;padding:1mm 2mm;font-size:10px;font-weight:bold;white-space:nowrap;">
-      № п/п ${t.ticket_number ?? '—'}
+    <div style="position:absolute;top:0;right:0;border:1px solid #000;padding:1mm 2.5mm;font-size:10px;font-weight:bold;white-space:nowrap;">
+      № п/п ${copyNumber}
     </div>
   </div>
 
-  <table style="width:100%;border-collapse:collapse;font-size:10px;margin-bottom:1.5mm;">
+  <table style="width:100%;border-collapse:collapse;font-size:10px;border:1px solid #000;margin-bottom:1.5mm;table-layout:fixed;">
     <tbody>
+      ${receiptPairRow('Номер автомобиля', esc(t.vehicle_number || '—'), 'Марка автомобиля', esc(t.vehicle_brand || '—'))}
+      ${receiptPairRow('ФИО Водителя', esc(t.driver_name || '—'), 'Клиент', esc(client))}
+      ${receiptPairRow('Тип груза', esc(t.cargo_name || '—'), 'Цена', priceLabel)}
       <tr>
-        <td style="padding:0.5mm 2mm 0.5mm 0;white-space:nowrap;color:#444;width:28%;">Номер автомобиля</td>
-        <td style="padding:0.5mm 2mm;font-weight:bold;width:22%;">${esc(t.vehicle_number || '—')}</td>
-        <td style="padding:0.5mm 2mm 0.5mm 0;white-space:nowrap;color:#444;width:22%;">Марка автомобиля</td>
-        <td style="padding:0.5mm 0;">${esc(t.vehicle_brand || '—')}</td>
-      </tr>
-      <tr>
-        <td style="padding:0.5mm 2mm 0.5mm 0;white-space:nowrap;color:#444;">ФИО Водителя</td>
-        <td style="padding:0.5mm 2mm;font-weight:bold;">${esc(t.driver_name || '—')}</td>
-        <td style="padding:0.5mm 2mm 0.5mm 0;white-space:nowrap;color:#444;">Клиент</td>
-        <td style="padding:0.5mm 0;">${esc(client)}</td>
-      </tr>
-      <tr>
-        <td style="padding:0.5mm 2mm 0.5mm 0;white-space:nowrap;color:#444;">Тип груза</td>
-        <td style="padding:0.5mm 2mm;">${esc(t.cargo_name || '—')}</td>
-        <td style="padding:0.5mm 2mm 0.5mm 0;white-space:nowrap;color:#444;">Цена</td>
-        <td style="padding:0.5mm 0;">${priceLabel}</td>
-      </tr>
-      <tr>
-        <td colspan="2"></td>
-        <td style="padding:0.5mm 2mm 0.5mm 0;white-space:nowrap;color:#444;">Сумма</td>
-        <td style="padding:0.5mm 0;">${sumLabel}</td>
+        ${receiptBottomBlock(grossTs, tareTs, t.gross_weight, t.tare_weight, t.net_weight, sumLabel)}
       </tr>
     </tbody>
   </table>
 
-  <div style="display:flex;gap:3mm;align-items:flex-start;margin-bottom:1.5mm;">
-    <table style="border-collapse:collapse;font-size:9.5px;flex:1;">
-      <thead>
-        <tr>
-          <th style="border:1px solid #000;padding:1mm 2mm;font-weight:bold;">Дата</th>
-          <th style="border:1px solid #000;padding:1mm 2mm;font-weight:bold;">Время</th>
-          <th style="border:1px solid #000;padding:1mm 2mm;font-weight:bold;">Вес, т</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td style="border:1px solid #000;padding:1mm 2mm;text-align:center;">${fmtDate(grossTs)}</td>
-          <td style="border:1px solid #000;padding:1mm 2mm;text-align:center;">${fmtTime(grossTs)}</td>
-          <td style="border:1px solid #000;padding:1mm 2mm;text-align:center;font-weight:bold;">${fmtTonsShort(t.gross_weight)}</td>
-        </tr>
-        <tr>
-          <td style="border:1px solid #000;padding:1mm 2mm;text-align:center;">${fmtDate(tareTs)}</td>
-          <td style="border:1px solid #000;padding:1mm 2mm;text-align:center;">${fmtTime(tareTs)}</td>
-          <td style="border:1px solid #000;padding:1mm 2mm;text-align:center;font-weight:bold;">${fmtTonsShort(t.tare_weight)}</td>
-        </tr>
-      </tbody>
-    </table>
-    <div style="min-width:22mm;font-size:10px;padding-top:6mm;">
-      <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1px solid #ccc;">
-        <span>Брутто</span>
-        <span style="font-weight:bold;">${fmtTonsShort(t.gross_weight)}</span>
-      </div>
-      <div style="display:flex;justify-content:space-between;padding:1mm 0;border-bottom:1px solid #ccc;">
-        <span>Тара</span>
-        <span style="font-weight:bold;">${fmtTonsShort(t.tare_weight)}</span>
-      </div>
-      <div style="display:flex;justify-content:space-between;padding:1.5mm 0;margin-top:1mm;">
-        <span style="font-weight:bold;">Нетто</span>
-        <span style="font-weight:bold;font-size:14px;">${fmtTonsShort(t.net_weight)}</span>
-      </div>
-    </div>
-  </div>
-
-  <div style="display:flex;gap:6mm;margin-top:2mm;padding-top:1mm;border-top:1px solid #000;">
+  <div style="display:flex;gap:6mm;margin-top:1.5mm;padding-top:1mm;border-top:1px solid #000;">
     <div style="flex:1;text-align:center;">
       <div style="font-size:9px;margin-bottom:1mm;">Весовщик</div>
       <div style="border-bottom:1px solid #000;min-height:6mm;margin-bottom:0.5mm;"></div>
@@ -238,10 +247,11 @@ function renderActReceipt(t: WeighingTicket, settings: AppSettings): string {
 </div>`;
 }
 
-function renderAct(t: WeighingTicket, settings: AppSettings): string {
-  return settings.print_layout === 'receipt'
-    ? renderActReceipt(t, settings)
-    : renderActClassic(t, settings);
+function renderAct(t: WeighingTicket, settings: AppSettings, copyNumber?: number): string {
+  if (settings.print_layout === 'receipt') {
+    return renderActReceipt(t, settings, copyNumber ?? RECEIPT_COPY_NUMBERS[0]);
+  }
+  return renderActClassic(t, settings);
 }
 
 export function PrintAct({ ticket, settings }: Props) {
@@ -262,13 +272,15 @@ export function PrintAct({ ticket, settings }: Props) {
   );
 }
 
-function copiesForLayout(layout: PrintLayout): number {
-  return layout === 'receipt' ? 3 : 2;
-}
-
 function buildSheetHtml(t: WeighingTicket, settings: AppSettings): string {
-  const count = copiesForLayout(settings.print_layout);
-  const acts = Array.from({ length: count }, () => `<div class="act">${renderAct(t, settings)}</div>`).join('');
+  if (settings.print_layout === 'receipt') {
+    const acts = RECEIPT_COPY_NUMBERS.map(
+      (copyNumber) => `<div class="act">${renderActReceipt(t, settings, copyNumber)}</div>`
+    ).join('');
+    return `<div style="display:flex;flex-direction:column;gap:0;">${acts}</div>`;
+  }
+
+  const acts = Array.from({ length: 2 }, () => `<div class="act">${renderActClassic(t, settings)}</div>`).join('');
   return `<div style="display:flex;flex-direction:column;gap:0;">${acts}</div>`;
 }
 
