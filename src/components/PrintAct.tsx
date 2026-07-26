@@ -170,33 +170,53 @@ function receiptBottomBlock(
   netWeight: number | null,
   sumLabel: string,
 ): string {
-  const gridCols = '28% 30% 22% 1fr';
+  const leftGridCols = '28% 30% 22% 1fr';
+  const weightStyle = (bold = false) =>
+    `text-align:left;${bold ? 'font-weight:bold;font-size:11px;' : ''}`;
 
-  const row = (date: string, time: string, weight: string, tag: string, bold = false) => `
-    <div style="display:grid;grid-template-columns:${gridCols};align-items:baseline;font-size:9.5px;padding:0.6mm 2mm;">
+  const weightRow = (date: string, time: string, weight: string, tag: string, bold = false) => `
+    <div style="display:grid;grid-template-columns:${leftGridCols};align-items:baseline;font-size:9.5px;padding:0.6mm 2mm;">
       <span>${date}</span>
       <span>${time}</span>
-      <span style="text-align:left;${bold ? 'font-weight:bold;font-size:11px;' : ''}">${weight}</span>
+      <span style="${weightStyle(bold)}">${weight}</span>
       <span>${tag}</span>
     </div>`;
 
   return `
-    <td colspan="2" style="padding:0;vertical-align:top;">
-      <div style="display:flex;font-weight:bold;font-size:9.5px;border-bottom:1px solid #000;">
-        <div style="width:50%;display:grid;grid-template-columns:${gridCols};padding:1.2mm 2mm;border-right:1px solid #000;">
+    <tr>
+      <td style="width:50%;border-right:1px solid #000;border-bottom:1px solid #000;padding:1.2mm 2mm;vertical-align:bottom;">
+        <div style="display:grid;grid-template-columns:${leftGridCols};font-weight:bold;font-size:9.5px;">
           <span>Дата</span><span>Время</span><span>Вес т</span><span></span>
         </div>
-        <div style="width:50%;padding:1.2mm 3mm;">Сумма</div>
-      </div>
-      <div style="display:flex;">
-        <div style="width:50%;border-right:1px solid #000;padding:0.8mm 0 2mm;">
-          ${row(fmtDateFull(grossTs), fmtTimeFull(grossTs), fmtTonsShort(grossWeight), 'Брутто')}
-          ${row(fmtDateFull(tareTs), fmtTimeFull(tareTs), fmtTonsShort(tareWeight), 'Тара')}
-          ${row('', '', fmtTonsShort(netWeight), 'Нетто', true)}
+      </td>
+      <td style="width:50%;border-bottom:1px solid #000;padding:1.2mm 3mm;vertical-align:bottom;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:3mm;font-size:9.5px;">
+          <span style="font-weight:bold;">Сумма</span>
+          <span style="font-weight:bold;">${sumLabel}</span>
         </div>
-        <div style="width:50%;padding:1.8mm 3mm;vertical-align:top;">${sumLabel}</div>
+      </td>
+    </tr>
+    <tr>
+      <td colspan="2" style="padding:0.8mm 0 2mm;vertical-align:top;">
+        <div style="width:50%;">
+          ${weightRow(fmtDateFull(grossTs), fmtTimeFull(grossTs), fmtTonsShort(grossWeight), 'Брутто')}
+          ${weightRow(fmtDateFull(tareTs), fmtTimeFull(tareTs), fmtTonsShort(tareWeight), 'Тара')}
+          ${weightRow('', '', fmtTonsShort(netWeight), 'Нетто', true)}
+        </div>
+      </td>
+    </tr>`;
+}
+
+function receiptSignatureBlock(label: string, name: string, caption: string): string {
+  return `
+    <div style="flex:1;">
+      <div style="display:flex;align-items:baseline;gap:2mm;">
+        <span style="white-space:nowrap;font-size:9px;">${label}</span>
+        <span style="flex:1;border-bottom:1px solid #000;min-height:4mm;"></span>
+        <span style="white-space:nowrap;font-size:10px;font-weight:bold;">${name}</span>
       </div>
-    </td>`;
+      <div style="text-align:center;font-size:8px;color:#555;margin-top:0.6mm;">${caption}</div>
+    </div>`;
 }
 
 function renderActReceipt(t: WeighingTicket, settings: AppSettings, copyNumber: number): string {
@@ -224,25 +244,13 @@ function renderActReceipt(t: WeighingTicket, settings: AppSettings, copyNumber: 
       ${receiptPairRow('Номер автомобиля', esc(t.vehicle_number || '—'), 'Марка автомобиля', esc(t.vehicle_brand || '—'))}
       ${receiptPairRow('ФИО Водителя', esc(t.driver_name || '—'), 'Клиент', esc(client))}
       ${receiptPairRow('Тип груза', esc(t.cargo_name || '—'), 'Цена', priceLabel)}
-      <tr>
-        ${receiptBottomBlock(grossTs, tareTs, t.gross_weight, t.tare_weight, t.net_weight, sumLabel)}
-      </tr>
+      ${receiptBottomBlock(grossTs, tareTs, t.gross_weight, t.tare_weight, t.net_weight, sumLabel)}
     </tbody>
   </table>
 
-  <div style="display:flex;gap:6mm;margin-top:1.5mm;padding-top:1mm;border-top:1px solid #000;">
-    <div style="flex:1;text-align:center;">
-      <div style="font-size:9px;margin-bottom:1mm;">Весовщик</div>
-      <div style="border-bottom:1px solid #000;min-height:6mm;margin-bottom:0.5mm;"></div>
-      <div style="font-size:8px;color:#555;">Подпись Весовщика</div>
-      <div style="font-size:10px;font-weight:bold;margin-top:1mm;">${esc(t.operator_name || '—')}</div>
-    </div>
-    <div style="flex:1;text-align:center;">
-      <div style="font-size:9px;margin-bottom:1mm;">Водитель</div>
-      <div style="border-bottom:1px solid #000;min-height:6mm;margin-bottom:0.5mm;"></div>
-      <div style="font-size:8px;color:#555;">Подпись Водителя</div>
-      <div style="font-size:10px;font-weight:bold;margin-top:1mm;">${esc(t.driver_name || '—')}</div>
-    </div>
+  <div style="display:flex;gap:8mm;margin-top:2mm;">
+    ${receiptSignatureBlock('Весовщик', esc(t.operator_name || '—'), 'Подпись Весовщика')}
+    ${receiptSignatureBlock('Водитель', esc(t.driver_name || '—'), 'Подпись Водителя')}
   </div>
 </div>`;
 }
