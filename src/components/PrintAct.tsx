@@ -196,8 +196,8 @@ function buildActHtml(t: WeighingTicket, orgName: string): string {
         <tr><td style="padding-bottom:3px;padding-right:6px;white-space:nowrap;color:#444">Водитель:</td><td style="font-weight:bold">${t.driver_name}</td></tr>
       </tbody></table>
     </div>
-    <div style="flex:1 1 30%;padding:0 12px;border-right:1px solid #555">
-      <table style="width:100%;border-collapse:collapse;font-size:13px"><tbody>
+    <div style="flex:1 1 28%;min-width:180px;padding:0 10px;border-right:1px solid #555">
+      <table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>
         <tr><td style="padding-bottom:3px;padding-right:8px;white-space:nowrap">Брутто, т</td><td style="font-weight:bold;text-align:right;padding-right:12px">${fmtTons(t.gross_weight)}</td><td style="color:#555;font-size:11px">${t.gross_datetime ? fmt(t.gross_datetime) : fmt(t.created_at)}</td></tr>
         <tr><td style="padding-bottom:3px;padding-right:8px;white-space:nowrap">Тара, т</td><td style="font-weight:bold;text-align:right;padding-right:12px">${fmtTons(t.tare_weight)}</td><td style="color:#555;font-size:11px">${t.tare_datetime ? fmt(t.tare_datetime) : '——'}</td></tr>
         <tr><td style="padding-right:8px;white-space:nowrap;font-weight:bold">Нетто, т</td><td style="font-weight:bold;font-size:15px;text-align:right;padding-right:12px;border-top:1px solid #000">${fmtTons(t.net_weight)}</td><td></td></tr>
