@@ -317,6 +317,35 @@ export const DictionaryStorage = {
 };
 
 // Settings storage
+export type PrintLayout = 'act' | 'receipt';
+
+export interface AppSettings {
+  org_name: string;
+  org_address: string;
+  org_phone: string;
+  org_inn: string;
+  org_kpp: string;
+  org_ogrn: string;
+  org_bik: string;
+  print_layout: PrintLayout;
+}
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  org_name: 'Полигон отходов',
+  org_address: '',
+  org_phone: '',
+  org_inn: '',
+  org_kpp: '',
+  org_ogrn: '',
+  org_bik: '',
+  print_layout: 'act',
+};
+
+export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
+  act: 'Акт взвешивания',
+  receipt: 'Талон (квитанция)',
+};
+
 export const SettingsStorage = {
   get: (key: string): string | null => {
     const settings = getAllSettings();
@@ -327,6 +356,37 @@ export const SettingsStorage = {
     const settings = getAllSettings();
     settings[key] = value;
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+  },
+
+  getAppSettings: (): AppSettings => {
+    const stored = getAllSettings();
+    return {
+      org_name: stored.org_name ?? DEFAULT_APP_SETTINGS.org_name,
+      org_address: stored.org_address ?? DEFAULT_APP_SETTINGS.org_address,
+      org_phone: stored.org_phone ?? DEFAULT_APP_SETTINGS.org_phone,
+      org_inn: stored.org_inn ?? DEFAULT_APP_SETTINGS.org_inn,
+      org_kpp: stored.org_kpp ?? DEFAULT_APP_SETTINGS.org_kpp,
+      org_ogrn: stored.org_ogrn ?? DEFAULT_APP_SETTINGS.org_ogrn,
+      org_bik: stored.org_bik ?? DEFAULT_APP_SETTINGS.org_bik,
+      print_layout: (stored.print_layout as PrintLayout) ?? DEFAULT_APP_SETTINGS.print_layout,
+    };
+  },
+
+  updateAppSettings: (updates: Partial<AppSettings>): AppSettings => {
+    const current = SettingsStorage.getAppSettings();
+    const next = { ...current, ...updates };
+    const flat: Record<string, string> = {
+      org_name: next.org_name,
+      org_address: next.org_address,
+      org_phone: next.org_phone,
+      org_inn: next.org_inn,
+      org_kpp: next.org_kpp,
+      org_ogrn: next.org_ogrn,
+      org_bik: next.org_bik,
+      print_layout: next.print_layout,
+    };
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
+    return next;
   },
 };
 

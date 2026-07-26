@@ -6,23 +6,17 @@ import { WeighingJournal } from '@/components/WeighingJournal';
 import { DictionariesView } from '@/components/DictionariesView';
 import { ReportsView } from '@/components/ReportsView';
 import { UserManagement } from '@/components/UserManagement';
+import { SettingsView } from '@/components/SettingsView';
 import { printTicket } from '@/components/PrintAct';
-import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
-import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, Users, ShieldCheck } from 'lucide-react';
+import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, Users, ShieldCheck, Settings } from 'lucide-react';
 
-type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'users';
+type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'users' | 'settings';
 
 function MainApp() {
   const { displayName, signOut, isAdmin } = useAuth();
   const [tab, setTab] = useState<Tab>('weighing');
   const [journalKey, setJournalKey] = useState(0);
-  const [orgName, setOrgName] = useState('');
-
-  useEffect(() => {
-    const orgNameValue = SettingsStorage.get('org_name');
-    setOrgName(orgNameValue || '');
-  }, []);
 
   const handleSaved = useCallback((ticket: WeighingTicket) => {
     setJournalKey((k) => k + 1);
@@ -31,17 +25,18 @@ function MainApp() {
   useEffect(() => {
     const handler = (e: Event) => {
       const ticket = (e as CustomEvent<WeighingTicket>).detail;
-      printTicket(ticket, orgName);
+      printTicket(ticket);
     };
     window.addEventListener('print-ticket', handler);
     return () => window.removeEventListener('print-ticket', handler);
-  }, [orgName]);
+  }, []);
 
   const tabs: { id: Tab; label: string; icon: typeof Scale; adminOnly?: boolean }[] = [
     { id: 'weighing', label: 'Взвешивание', icon: Scale },
     { id: 'journal', label: 'Журнал', icon: BookOpen },
     { id: 'reports', label: 'Отчёты', icon: BarChart3 },
     { id: 'dictionaries', label: 'Справочники', icon: Library },
+    { id: 'settings', label: 'Настройки', icon: Settings },
     { id: 'users', label: 'Пользователи', icon: Users, adminOnly: true },
   ];
 
@@ -97,6 +92,7 @@ function MainApp() {
         {tab === 'journal' && <WeighingJournal refreshKey={journalKey} />}
         {tab === 'reports' && <ReportsView />}
         {tab === 'dictionaries' && <DictionariesView />}
+        {tab === 'settings' && <SettingsView />}
         {tab === 'users' && isAdmin && <UserManagement />}
       </main>
 
