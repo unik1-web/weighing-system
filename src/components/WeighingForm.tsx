@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { type WeighingTicket, type WeightSource, type TicketStatus } from '@/lib/storage';
 import { TicketStorage } from '@/lib/storage';
+import { logger } from '@/lib/logger';
 import { useDictionary } from '@/hooks/useDictionary';
 import { useAuth } from '@/hooks/useAuth';
 import { ScalePanel } from './ScalePanel';
@@ -171,6 +172,11 @@ export function WeighingForm({ onSaved }: Props) {
 
     try {
       const ticket = TicketStorage.create(payload);
+      logger.info('weighing', `Сохранена запись №${ticket.ticket_number}`, {
+        status,
+        vehicle_number: ticket.vehicle_number,
+        cargo_name: ticket.cargo_name,
+      });
       setSaving(false);
       setLastTicket(ticket);
       setSuccess(status === 'completed' ? 'Взвешивание завершено и сохранено.' : 'Запись сохранена как незавершённая.');

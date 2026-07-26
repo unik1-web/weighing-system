@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS } from '@/lib/storage';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible } from '@/lib/reo';
+import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
 import { Search, Calendar, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2 } from 'lucide-react';
 
@@ -71,6 +72,7 @@ export function WeighingJournal({ refreshKey }: Props) {
     try {
       await sendTicketsToReo(eligibleTickets);
       eligibleTickets.forEach((ticket) => TicketStorage.markReoSent(ticket.id));
+      logger.info('reo', `Отправлено в РЭО записей: ${eligibleTickets.length}`);
       await load();
     } catch (err: any) {
       setError(err.message ?? 'Не удалось отправить данные в РЭО');

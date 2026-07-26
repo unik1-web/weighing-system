@@ -1,5 +1,6 @@
 import { SettingsStorage, type WeighingTicket } from './storage';
 import { apiPost } from './api';
+import { logger } from './logger';
 
 interface ReoWeightControl {
   id: string;
@@ -189,5 +190,6 @@ export async function sendTicketsToReo(tickets: WeighingTicket[]): Promise<numbe
     payload,
   });
 
+  logger.info('reo', `Успешная отправка в РЭО: ${tickets.length} записей`);
   return tickets.length;
 }

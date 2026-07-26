@@ -9,6 +9,7 @@ import {
 } from '@/lib/storage';
 import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database } from 'lucide-react';
 import { apiPost } from '@/lib/api';
+import { logger } from '@/lib/logger';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 
@@ -53,6 +54,7 @@ export function SettingsView({ onSaved }: Props) {
 
   const handleSave = () => {
     SettingsStorage.updateAppSettings(settings);
+    logger.info('settings', 'Настройки сохранены');
     setSaved(true);
     onSaved?.();
     setTimeout(() => setSaved(false), 2500);

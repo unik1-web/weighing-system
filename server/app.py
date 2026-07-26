@@ -1,8 +1,11 @@
 import logging
+import os
+import time
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 from flask_cors import CORS
 
 try:
@@ -10,17 +13,49 @@ try:
 except ImportError:  # pragma: no cover - optional until Vescom is used
     fdb = None
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOG_FORMAT = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+logger = logging.getLogger('weighing-system-api')
+logger.setLevel(logging.INFO)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+
+file_handler = RotatingFileHandler(
+    os.path.join(LOG_DIR, 'app.log'),
+    maxBytes=2_000_000,
+    backupCount=5,
+    encoding='utf-8',
 )
-logger = logging.getLogger(__name__)
+file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+
+if not logger.handlers:
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
 
 app = Flask(__name__)
 CORS(app)
 
 
+@app.before_request
+def log_request_start():
+    g.request_started_at = time.time()
+    logger.info('HTTP %s %s', request.method, request.path)
+
+
+@app.after_request
+def log_request_end(response):
+    started_at = getattr(g, 'request_started_at', None)
+    duration_ms = round((time.time() - started_at) * 1000, 1) if started_at else '-'
+    logger.info('HTTP %s %s -> %s (%s ms)', request.method, request.path, response.status_code, duration_ms)
+    return response
+
+
 def error_response(message: str, status: int = 400):
+    logger.warning('API error (%s): %s', status, message)
     return jsonify({'success': False, 'message': message}), status
 
 
@@ -34,6 +69,7 @@ def fetch_vescom_rows(db_path: str, date_str: str, user: str, password: str):
             'Модуль fdb не установлен. Используйте Python 3.11/3.12: pip install -r server/requirements.txt'
         )
 
+    logger.info('Vescom query for date=%s db=%s', date_str, db_path)
     conn = fdb.connect(dsn=normalize_firebird_dsn(db_path), user=user, password=password)
     cursor = conn.cursor()
 
@@ -57,6 +93,7 @@ def fetch_vescom_rows(db_path: str, date_str: str, user: str, password: str):
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
+    logger.info('Vescom query completed: %s rows', len(rows))
     return rows
 
 
@@ -76,6 +113,7 @@ def reo_test():
         return error_response('Не указаны URL сервиса или ключ доступа')
 
     try:
+        logger.info('REO test request to %s', object_url)
         response = requests.post(
             object_url,
             json={
@@ -86,6 +124,7 @@ def reo_test():
             timeout=30,
         )
         response.raise_for_status()
+        logger.info('REO test successful')
         return jsonify({'success': True, 'message': 'Подключение к РЭО успешно'})
     except Exception as exc:
         logger.exception('REO test failed')
@@ -103,10 +142,13 @@ def reo_send():
     if not isinstance(payload, dict):
         return error_response('Некорректный формат данных для отправки')
 
+    count = len(payload.get('WeightControls', []))
     try:
+        logger.info('REO send request to %s (%s records)', object_url, count)
         response = requests.post(object_url, json=payload, timeout=60)
         response.raise_for_status()
-        return jsonify({'success': True, 'sent': len(payload.get('WeightControls', []))})
+        logger.info('REO send successful (%s records)', count)
+        return jsonify({'success': True, 'sent': count})
     except Exception as exc:
         logger.exception('REO send failed')
         return error_response(f'Ошибка отправки в РЭО: {exc}')
@@ -128,8 +170,10 @@ def vescom_test():
         return error_response('Не указан путь к базе данных Vescom')
 
     try:
+        logger.info('Vescom test connection to %s', db_path)
         conn = fdb.connect(dsn=db_path, user=user, password=password)
         conn.close()
+        logger.info('Vescom test successful')
         return jsonify({'success': True, 'message': 'Подключение к базе Vescom успешно'})
     except Exception as exc:
         logger.exception('Vescom test failed')
@@ -173,4 +217,5 @@ def vescom_weighing_data():
 
 
 if __name__ == '__main__':
+    logger.info('Starting weighing-system API on http://127.0.0.1:5001')
     app.run(host='127.0.0.1', port=5001, debug=True)

@@ -1,3 +1,5 @@
+import { logger } from './logger';
+
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
 interface ApiErrorBody {
@@ -30,17 +32,33 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
 export async function apiGet<T>(path: string, params?: Record<string, string>): Promise<T> {
   const query = params ? `?${new URLSearchParams(params).toString()}` : '';
-  const response = await fetch(`${API_BASE}${path}${query}`);
-  return parseResponse<T>(response);
+  logger.debug('api', `GET ${path}`, params);
+  try {
+    const response = await fetch(`${API_BASE}${path}${query}`);
+    const data = await parseResponse<T>(response);
+    logger.info('api', `GET ${path} OK`);
+    return data;
+  } catch (error) {
+    logger.error('api', `GET ${path} failed`, error);
+    throw error;
+  }
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return parseResponse<T>(response);
+  logger.debug('api', `POST ${path}`, body);
+  try {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await parseResponse<T>(response);
+    logger.info('api', `POST ${path} OK`);
+    return data;
+  } catch (error) {
+    logger.error('api', `POST ${path} failed`, error);
+    throw error;
+  }
 }
 
 export interface VescomWeighingItem {

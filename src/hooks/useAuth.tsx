@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { UserStorage, SessionStorage, ProfileStorage, initializeStorage, type Session as LocalSession } from '@/lib/storage';
+import { logger } from '@/lib/logger';
 
 export type UserRole = 'user' | 'admin';
 
@@ -61,9 +62,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       SessionStorage.setSession(session);
       setSession(session);
       setProfile(profile);
+      logger.info('auth', `Вход пользователя: ${profile.username}`);
 
       return { error: null };
     } catch (err: unknown) {
+      logger.error('auth', 'Ошибка входа', err);
       return { error: err instanceof Error ? err.message : 'Ошибка входа' };
     }
   }, []);
@@ -81,18 +84,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       SessionStorage.setSession(session);
       setSession(session);
       setProfile(profile);
+      logger.info('auth', `Регистрация пользователя: ${profile.username}`);
 
       return { error: null };
     } catch (err: unknown) {
+      logger.error('auth', 'Ошибка регистрации', err);
       return { error: err instanceof Error ? err.message : 'Ошибка регистрации' };
     }
   }, []);
 
   const signOut = useCallback(async () => {
+    if (profile?.username) {
+      logger.info('auth', `Выход пользователя: ${profile.username}`);
+    }
     SessionStorage.clearSession();
     setSession(null);
     setProfile(null);
-  }, []);
+  }, [profile?.username]);
 
   const displayName = profile?.display_name || '';
   const username = profile?.username || '';

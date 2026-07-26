@@ -10,6 +10,7 @@ import {
   vescomImportKey,
   type VescomWeighingItem,
 } from '@/lib/api';
+import { logger } from '@/lib/logger';
 import {
   AlertCircle,
   Calendar,
@@ -117,6 +118,7 @@ export function VescomImportView({ onImported }: Props) {
       );
       setItems(response.items);
       setSelectedKeys(new Set(response.items.map(vescomImportKey)));
+      logger.info('vescom', `Загружено записей: ${response.items.length}`, { date });
     } catch (err: any) {
       setItems([]);
       setSelectedKeys(new Set());
@@ -162,6 +164,7 @@ export function VescomImportView({ onImported }: Props) {
         TicketStorage.create(buildTicketFromVescom(item));
       });
       setSuccess(`Импортировано записей: ${selectedItems.length}`);
+      logger.info('vescom', `Импортировано записей: ${selectedItems.length}`, { date });
       onImported();
       await loadData();
     } catch (err: any) {
