@@ -1,6 +1,12 @@
 // Local storage abstraction for weighing system
 export type WeightSource = 'manual' | 'instrument';
 export type TicketStatus = 'open' | 'completed';
+export type ReoStatus = 'pending' | 'sent';
+
+export const REO_STATUS_LABELS: Record<ReoStatus, string> = {
+  pending: 'Не отправлено',
+  sent: 'Отправлено в РЭО',
+};
 
 export interface WeighingTicket {
   id: string;
@@ -29,6 +35,8 @@ export interface WeighingTicket {
   operator_id: string | null;
   operator_name: string;
   status: TicketStatus;
+  reo_status: ReoStatus;
+  reo_sent_at: string | null;
   notes: string;
   created_at: string;
   completed_at: string | null;
@@ -202,18 +210,31 @@ export const SessionStorage = {
   },
 };
 
+function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
+  return {
+    ...ticket,
+    reo_status: ticket.reo_status ?? 'pending',
+    reo_sent_at: ticket.reo_sent_at ?? null,
+  };
+}
+
 // Weighing tickets storage
 export const TicketStorage = {
-  create: (ticket: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at'>): WeighingTicket => {
+  create: (
+    ticket: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at' | 'reo_status' | 'reo_sent_at'> &
+      Partial<Pick<WeighingTicket, 'reo_status' | 'reo_sent_at'>>,
+  ): WeighingTicket => {
     const tickets = getAllTickets();
     const maxNumber = Math.max(0, ...tickets.map(t => t.ticket_number || 0));
 
-    const newTicket: WeighingTicket = {
+    const newTicket: WeighingTicket = normalizeTicket({
       id: crypto.randomUUID(),
       ticket_number: maxNumber + 1,
       created_at: new Date().toISOString(),
+      reo_status: ticket.reo_status ?? 'pending',
+      reo_sent_at: ticket.reo_sent_at ?? null,
       ...ticket,
-    };
+    });
 
     tickets.push(newTicket);
     localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
@@ -221,13 +242,14 @@ export const TicketStorage = {
   },
 
   getAll: (): WeighingTicket[] => {
-    return getAllTickets().sort((a, b) => 
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
+    return getAllTickets()
+      .map(normalizeTicket)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
 
   getById: (id: string): WeighingTicket | null => {
-    return getAllTickets().find(t => t.id === id) || null;
+    const ticket = getAllTickets().find(t => t.id === id);
+    return ticket ? normalizeTicket(ticket) : null;
   },
 
   delete: (id: string): void => {
@@ -240,9 +262,23 @@ export const TicketStorage = {
     const index = tickets.findIndex(t => t.id === id);
     if (index === -1) return null;
 
-    tickets[index] = { ...tickets[index], ...updates };
+    tickets[index] = normalizeTicket({ ...tickets[index], ...updates });
     localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
     return tickets[index];
+  },
+
+  markReoSent: (id: string): WeighingTicket | null => {
+    return TicketStorage.update(id, {
+      reo_status: 'sent',
+      reo_sent_at: new Date().toISOString(),
+    });
+  },
+
+  markReoPending: (id: string): WeighingTicket | null => {
+    return TicketStorage.update(id, {
+      reo_status: 'pending',
+      reo_sent_at: null,
+    });
   },
 };
 
@@ -328,6 +364,15 @@ export interface AppSettings {
   org_ogrn: string;
   org_bik: string;
   print_layout: PrintLayout;
+  reo_enabled: boolean;
+  reo_access_key: string;
+  reo_object_id: string;
+  reo_object_url: string;
+  reo_cargo_names: string[];
+  vescom_enabled: boolean;
+  vescom_db_path: string;
+  vescom_db_user: string;
+  vescom_db_password: string;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -339,6 +384,15 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   org_ogrn: '',
   org_bik: '',
   print_layout: 'act',
+  reo_enabled: false,
+  reo_access_key: '',
+  reo_object_id: '',
+  reo_object_url: '',
+  reo_cargo_names: [],
+  vescom_enabled: false,
+  vescom_db_path: '',
+  vescom_db_user: 'SYSDBA',
+  vescom_db_password: 'masterkey',
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -369,6 +423,15 @@ export const SettingsStorage = {
       org_ogrn: stored.org_ogrn ?? DEFAULT_APP_SETTINGS.org_ogrn,
       org_bik: stored.org_bik ?? DEFAULT_APP_SETTINGS.org_bik,
       print_layout: (stored.print_layout as PrintLayout) ?? DEFAULT_APP_SETTINGS.print_layout,
+      reo_enabled: stored.reo_enabled === 'true',
+      reo_access_key: stored.reo_access_key ?? DEFAULT_APP_SETTINGS.reo_access_key,
+      reo_object_id: stored.reo_object_id ?? DEFAULT_APP_SETTINGS.reo_object_id,
+      reo_object_url: stored.reo_object_url ?? DEFAULT_APP_SETTINGS.reo_object_url,
+      reo_cargo_names: parseReoCargoNames(stored.reo_cargo_names),
+      vescom_enabled: stored.vescom_enabled === 'true',
+      vescom_db_path: stored.vescom_db_path ?? DEFAULT_APP_SETTINGS.vescom_db_path,
+      vescom_db_user: stored.vescom_db_user ?? DEFAULT_APP_SETTINGS.vescom_db_user,
+      vescom_db_password: stored.vescom_db_password ?? DEFAULT_APP_SETTINGS.vescom_db_password,
     };
   },
 
@@ -384,6 +447,15 @@ export const SettingsStorage = {
       org_ogrn: next.org_ogrn,
       org_bik: next.org_bik,
       print_layout: next.print_layout,
+      reo_enabled: String(next.reo_enabled),
+      reo_access_key: next.reo_access_key,
+      reo_object_id: next.reo_object_id,
+      reo_object_url: next.reo_object_url,
+      reo_cargo_names: JSON.stringify(next.reo_cargo_names),
+      vescom_enabled: String(next.vescom_enabled),
+      vescom_db_path: next.vescom_db_path,
+      vescom_db_user: next.vescom_db_user,
+      vescom_db_password: next.vescom_db_password,
     };
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
@@ -393,6 +465,16 @@ export const SettingsStorage = {
 function getAllSettings(): Record<string, string> {
   const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
   return stored ? JSON.parse(stored) : {};
+}
+
+function parseReoCargoNames(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 // Initialize default data

@@ -1,22 +1,26 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { AuthProvider, useAuth } from '@/hooks/useAuth';
 import { LoginPage } from '@/components/LoginPage';
 import { WeighingForm } from '@/components/WeighingForm';
 import { WeighingJournal } from '@/components/WeighingJournal';
 import { DictionariesView } from '@/components/DictionariesView';
 import { ReportsView } from '@/components/ReportsView';
-import { UserManagement } from '@/components/UserManagement';
 import { SettingsView } from '@/components/SettingsView';
+import { VescomImportView } from '@/components/VescomImportView';
 import { printTicket } from '@/components/PrintAct';
+import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
-import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, Users, ShieldCheck, Settings } from 'lucide-react';
+import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, ShieldCheck, Settings, Database } from 'lucide-react';
 
-type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'users' | 'settings';
+type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'settings';
 
 function MainApp() {
   const { displayName, signOut, isAdmin } = useAuth();
   const [tab, setTab] = useState<Tab>('weighing');
   const [journalKey, setJournalKey] = useState(0);
+  const [settingsKey, setSettingsKey] = useState(0);
+
+  const appSettings = useMemo(() => SettingsStorage.getAppSettings(), [settingsKey]);
 
   const handleSaved = useCallback((ticket: WeighingTicket) => {
     setJournalKey((k) => k + 1);
@@ -31,16 +35,22 @@ function MainApp() {
     return () => window.removeEventListener('print-ticket', handler);
   }, []);
 
-  const tabs: { id: Tab; label: string; icon: typeof Scale; adminOnly?: boolean }[] = [
+  useEffect(() => {
+    if (tab === 'vescom' && !appSettings.vescom_enabled) {
+      setTab('weighing');
+    }
+  }, [tab, appSettings.vescom_enabled]);
+
+  const tabs: { id: Tab; label: string; icon: typeof Scale }[] = [
     { id: 'weighing', label: 'Взвешивание', icon: Scale },
     { id: 'journal', label: 'Журнал', icon: BookOpen },
     { id: 'reports', label: 'Отчёты', icon: BarChart3 },
     { id: 'dictionaries', label: 'Справочники', icon: Library },
+    ...(appSettings.vescom_enabled
+      ? [{ id: 'vescom' as const, label: 'Импорт Vescom', icon: Database }]
+      : []),
     { id: 'settings', label: 'Настройки', icon: Settings },
-    { id: 'users', label: 'Пользователи', icon: Users, adminOnly: true },
   ];
-
-  const visibleTabs = tabs.filter((t) => !t.adminOnly || isAdmin);
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -58,7 +68,7 @@ function MainApp() {
             </div>
 
             <nav className="flex gap-1 rounded-xl bg-slate-100 p-1 overflow-x-auto">
-              {visibleTabs.map((t) => {
+              {tabs.map((t) => {
                 const Icon = t.icon;
                 return (
                   <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-2 rounded-lg px-3 sm:px-4 py-2 text-sm font-semibold transition whitespace-nowrap ${tab === t.id ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}>
@@ -92,8 +102,10 @@ function MainApp() {
         {tab === 'journal' && <WeighingJournal refreshKey={journalKey} />}
         {tab === 'reports' && <ReportsView />}
         {tab === 'dictionaries' && <DictionariesView />}
-        {tab === 'settings' && <SettingsView />}
-        {tab === 'users' && isAdmin && <UserManagement />}
+        {tab === 'vescom' && appSettings.vescom_enabled && (
+          <VescomImportView onImported={() => setJournalKey((k) => k + 1)} />
+        )}
+        {tab === 'settings' && <SettingsView onSaved={() => setSettingsKey((k) => k + 1)} />}
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-4">
