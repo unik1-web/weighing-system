@@ -190,8 +190,8 @@ export function WeighingForm({ onSaved }: Props) {
   const labelClass = 'block text-xs font-medium text-slate-600 mb-1';
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
-      <div className="space-y-5">
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] min-w-0">
+      <div className="space-y-5 min-w-0">
         {/* Ticket info */}
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
@@ -268,7 +268,7 @@ export function WeighingForm({ onSaved }: Props) {
             </div>
             <div className="sm:col-span-2">
               <label className={labelClass}>Примечание</label>
-              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Дополнительная информация" className={inputClass} />
+              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Дополнительная информация" className={`${inputClass} resize-none`} />
             </div>
           </div>
         </div>
@@ -347,7 +347,7 @@ export function WeighingForm({ onSaved }: Props) {
         </div>
       </div>
 
-      <div className="space-y-4">
+      <div className="space-y-4 min-w-0">
         <ScalePanel onCapture={phase === 'gross' ? captureGross : captureTare} label={phase === 'gross' ? 'Зафиксировать брутто' : 'Зафиксировать тару'} capturedWeight={phase === 'gross' ? grossWeight : tareWeight} deviceId={deviceId} onDeviceChange={setDeviceId} />
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="text-sm font-semibold text-slate-800 mb-3">Порядок работы</h3>

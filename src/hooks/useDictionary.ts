@@ -10,14 +10,26 @@ export function useDictionary<T extends DictionaryTable>(table: T) {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const orderColumn = table === 'vehicles' ? 'vehicle_number' : 'name';
     const { data, error } = await supabase
       .from(table)
       .select('*')
-      .order('name', { ascending: true });
+      .order(orderColumn, { ascending: true });
     if (error) {
       setError(error.message);
     } else {
-      setEntries((data ?? []) as DictionaryEntry[]);
+      const normalized = (data ?? []).map((row: unknown) => {
+        const item = row as unknown as DictionaryEntry;
+        if (table === 'vehicles') {
+          return {
+            ...item,
+            vehicle_number: item.vehicle_number,
+            name: item.vehicle_number ?? '',
+          } as DictionaryEntry;
+        }
+        return item;
+      });
+      setEntries(normalized);
     }
     setLoading(false);
   }, [table]);
@@ -28,7 +40,10 @@ export function useDictionary<T extends DictionaryTable>(table: T) {
 
   const add = useCallback(async (name: string, extra?: Partial<DictionaryEntry>) => {
     const ex = extra ?? {};
-    const payload: Record<string, unknown> = { name: name.trim(), notes: ex.notes ?? '' };
+    const payload: Record<string, unknown> = {
+      notes: ex.notes ?? '',
+      ...(table === 'vehicles' ? { vehicle_number: name.trim() } : { name: name.trim() }),
+    };
     if ('default_price' in ex || table === 'cargos') {
       payload.default_price = ex.default_price ?? null;
     }

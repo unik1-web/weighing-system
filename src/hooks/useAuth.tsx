@@ -26,10 +26,11 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-const EMAIL_DOMAIN = 'weights.local';
+const EMAIL_DOMAIN = import.meta.env.VITE_EMAIL_DOMAIN ?? 'example.com';
 
 function usernameToEmail(username: string): string {
-  return `${username.trim().toLowerCase()}@${EMAIL_DOMAIN}`;
+  const normalized = username.trim().toLowerCase();
+  return normalized.includes('@') ? normalized : `${normalized}@${EMAIL_DOMAIN}`;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -51,14 +52,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    (async () => {
+      const { data } = await supabase.auth.getSession();
       setSession(data.session);
       if (data.session?.user) {
-        loadProfile(data.session.user.id);
-      } else {
-        setLoading(false);
+        await loadProfile(data.session.user.id);
       }
-    });
+      setLoading(false);
+    })();
 
     const { data: sub } = supabase.auth.onAuthStateChange((event, newSession) => {
       (async () => {

@@ -74,14 +74,14 @@ export function LoginPage() {
               </div>
             )}
             <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Имя пользователя (логин)</label>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Email или логин</label>
               <div className="relative">
                 <Hash size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="ivanov"
+                  placeholder="ivanov или ivanov@example.com"
                   required
                   autoCapitalize="none"
                   autoCorrect="off"

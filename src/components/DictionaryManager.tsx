@@ -37,6 +37,9 @@ export function DictionaryManager({ table }: Props) {
   const showTare = table === 'vehicles';
   const showBrand = table === 'vehicles';
   const showInn = table === 'shippers' || table === 'receivers' || table === 'carriers';
+  const isVehicleTable = table === 'vehicles';
+  const inputLabel = isVehicleTable ? 'Номер ТС' : 'Наименование';
+  const placeholderLabel = isVehicleTable ? 'Номер ТС...' : 'Новое значение...';
 
   const handleAdd = async () => {
     if (!newName.trim()) return;
@@ -54,13 +57,20 @@ export function DictionaryManager({ table }: Props) {
       setNewBrand('');
       setNewInn('');
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : String(err));
+      setFormError(formatError(err));
     }
+  };
+
+  const formatError = (err: unknown) => {
+    if (err instanceof Error) return err.message;
+    if (typeof err === 'string') return err;
+    if (err && typeof err === 'object') return JSON.stringify(err, Object.getOwnPropertyNames(err), 2);
+    return String(err);
   };
 
   const startEdit = (e: DictionaryEntry) => {
     setEditingId(e.id);
-    setEditName(e.name);
+    setEditName(isVehicleTable ? e.vehicle_number ?? '' : e.name);
     setEditPrice(e.default_price?.toString() ?? '');
     setEditTare(e.default_tare_weight?.toString() ?? '');
     setEditBrand(e.vehicle_brand ?? '');
@@ -73,7 +83,7 @@ export function DictionaryManager({ table }: Props) {
     setFormError(null);
     try {
       await update(editingId, {
-        name: editName.trim(),
+        ...(isVehicleTable ? { vehicle_number: editName.trim() } : { name: editName.trim() }),
         default_price: showPrice ? (editPrice ? parseFloat(editPrice) : null) : undefined,
         default_tare_weight: showTare ? (editTare ? parseFloat(editTare) : null) : undefined,
         vehicle_brand: showBrand ? editBrand.trim() : undefined,
@@ -81,7 +91,7 @@ export function DictionaryManager({ table }: Props) {
       } as Partial<DictionaryEntry>);
       setEditingId(null);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : String(err));
+      setFormError(formatError(err));
     }
   };
 
@@ -105,7 +115,7 @@ export function DictionaryManager({ table }: Props) {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-            placeholder="Новое значение..."
+            placeholder={placeholderLabel}
             className="flex-1 min-w-[180px] rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none"
           />
           {showPrice && (
@@ -239,7 +249,7 @@ export function DictionaryManager({ table }: Props) {
                     </>
                   ) : (
                     <>
-                      <td className="px-5 py-2.5 font-medium text-slate-700">{e.name}</td>
+                      <td className="px-5 py-2.5 font-medium text-slate-700">{isVehicleTable ? e.vehicle_number : e.name}</td>
                       {showPrice && <td className="px-3 py-2.5 text-right tabular-nums text-slate-600">{e.default_price != null ? `${e.default_price.toLocaleString('ru-RU')} ₽` : '—'}</td>}
                       {showTare && <td className="px-3 py-2.5 text-right tabular-nums text-slate-600">{e.default_tare_weight != null ? `${e.default_tare_weight.toLocaleString('ru-RU')} кг` : '—'}</td>}
                       {showBrand && <td className="px-3 py-2.5 text-slate-600">{e.vehicle_brand || '—'}</td>}
