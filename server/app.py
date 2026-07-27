@@ -17,11 +17,14 @@ except ImportError:  # pragma: no cover - optional until Vescom is used
     fdb = None
 
 from browse import browse_path
-from metra import fetch_metra_items, resolve_metra_db_path, test_metra_connection
+from dictionary_import import format_import_message, merge_dictionaries
+from metra import fetch_metra_dictionary_names, fetch_metra_items, resolve_metra_db_path, test_metra_connection
 from persistence import (
+    backup_to_ini,
     build_backup,
     get_storage_paths,
     import_backup,
+    import_backup_file,
     read_combined_storage,
     read_config,
     read_database,
@@ -29,6 +32,7 @@ from persistence import (
     write_config,
     write_database,
 )
+from vescom import connect_vescom, fetch_vescom_dictionaries
 from reo_client import (
     build_reo_test_payload,
     format_reo_error,
@@ -101,7 +105,7 @@ def fetch_vescom_rows(db_path: str, date_str: str, user: str, password: str):
         )
 
     logger.info('Vescom query for date=%s db=%s', date_str, db_path)
-    conn = fdb.connect(dsn=normalize_firebird_dsn(db_path), user=user, password=password)
+    conn = connect_vescom(db_path, user, password)
     cursor = conn.cursor()
 
     query = """
@@ -144,7 +148,7 @@ def get_config():
         return jsonify({'success': True, 'config': read_config()})
     except Exception as exc:
         logger.exception('Config read failed')
-        return error_response(f'Ошибка чтения config.json: {exc}')
+        return error_response(f'Ошибка чтения config.ini: {exc}')
 
 
 @app.post('/api/config')
@@ -152,7 +156,7 @@ def save_config():
     body = request.get_json(silent=True) or {}
     config = body.get('config')
     if not isinstance(config, dict):
-        return error_response('Некорректный формат config.json')
+        return error_response('Некорректный формат config.ini')
 
     try:
         write_config(config)
@@ -160,7 +164,7 @@ def save_config():
         return jsonify({'success': True})
     except Exception as exc:
         logger.exception('Config write failed')
-        return error_response(f'Ошибка сохранения config.json: {exc}')
+        return error_response(f'Ошибка сохранения config.ini: {exc}')
 
 
 @app.get('/api/database')
@@ -224,7 +228,8 @@ def export_storage():
     try:
         backup = build_backup()
         backup['exported_at'] = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
-        return jsonify({'success': True, 'backup': backup})
+        content = backup_to_ini(backup)
+        return jsonify({'success': True, 'format': 'ini', 'content': content, 'backup': backup})
     except Exception as exc:
         logger.exception('Storage export failed')
         return error_response(f'Ошибка экспорта: {exc}')
@@ -234,11 +239,16 @@ def export_storage():
 def import_storage():
     body = request.get_json(silent=True) or {}
     backup = body.get('backup')
-    if not isinstance(backup, dict):
-        return error_response('Некорректный формат резервной копии')
+    content = body.get('content')
 
     try:
-        combined = import_backup(backup)
+        if isinstance(content, str) and content.strip():
+            combined = import_backup_file(content, filename=str(body.get('filename') or ''))
+        elif isinstance(backup, dict):
+            combined = import_backup(backup)
+        else:
+            return error_response('Некорректный формат резервной копии')
+
         logger.info('Storage imported (%s keys)', len(combined))
         return jsonify({'success': True, 'data': combined})
     except ValueError as exc:
@@ -342,7 +352,7 @@ def vescom_test():
 
     try:
         logger.info('Vescom test connection to %s', db_path)
-        conn = fdb.connect(dsn=db_path, user=user, password=password)
+        conn = connect_vescom(db_path, user, password)
         conn.close()
         logger.info('Vescom test successful')
         return jsonify({'success': True, 'message': 'Подключение к базе Vescom успешно'})
@@ -385,6 +395,39 @@ def vescom_weighing_data():
     except Exception as exc:
         logger.exception('Vescom fetch failed')
         return error_response(f'Ошибка чтения Vescom: {exc}')
+
+
+@app.post('/api/vescom/import_dictionaries')
+def vescom_import_dictionaries():
+    if fdb is None:
+        return error_response(
+            'Модуль fdb не установлен. Используйте Python 3.11/3.12: pip install -r server/requirements.txt'
+        )
+
+    data = request.get_json(silent=True) or {}
+    db_path = normalize_firebird_dsn(data.get('db_path') or '')
+    user = (data.get('user') or 'SYSDBA').strip()
+    password = data.get('password') or 'masterkey'
+
+    if not db_path:
+        return error_response('Не указан путь к базе данных Vescom')
+
+    try:
+        dictionaries = fetch_vescom_dictionaries(db_path, user, password)
+        added = merge_dictionaries(dictionaries)
+        fetched_total = sum(len(values) for values in dictionaries.values())
+        logger.info('Vescom dictionaries imported: fetched=%s added=%s', fetched_total, sum(added.values()))
+        message = format_import_message('Vescom', dictionaries, added)
+        return jsonify({
+            'success': True,
+            'message': message,
+            'fetched': {key: len(values) for key, values in dictionaries.items()},
+            'added': added,
+            'data': read_database(),
+        })
+    except Exception as exc:
+        logger.exception('Vescom dictionary import failed')
+        return error_response(f'Ошибка импорта справочников Vescom: {exc}')
 
 
 @app.post('/api/metra/test')
@@ -430,6 +473,30 @@ def metra_weighing_data():
     except Exception as exc:
         logger.exception('Metra fetch failed')
         return error_response(f'Ошибка чтения Metra: {exc}')
+
+
+@app.post('/api/metra/import_dictionaries')
+def metra_import_dictionaries():
+    data = request.get_json(silent=True) or {}
+    db_path = (data.get('db_path') or '').strip()
+
+    if not db_path:
+        return error_response('Не указан путь к базе Metra')
+
+    try:
+        dictionaries = fetch_metra_dictionary_names(db_path)
+        added = merge_dictionaries(dictionaries)
+        logger.info('Metra dictionaries imported: %s new entries', sum(added.values()))
+        return jsonify({
+            'success': True,
+            'message': format_import_message('Metra', dictionaries, added),
+            'fetched': {key: len(values) for key, values in dictionaries.items()},
+            'added': added,
+            'data': read_database(),
+        })
+    except Exception as exc:
+        logger.exception('Metra dictionary import failed')
+        return error_response(f'Ошибка импорта справочников Metra: {exc}')
 
 
 @app.route('/', defaults={'path': ''})

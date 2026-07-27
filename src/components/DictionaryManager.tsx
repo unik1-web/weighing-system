@@ -208,7 +208,11 @@ export function DictionaryManager({ table }: Props) {
         ) : entries.length === 0 ? (
           <div className="px-5 py-8 text-center text-sm text-slate-400">Список пуст. Добавьте первое значение.</div>
         ) : (
-          <table className="w-full text-sm">
+          <>
+            <p className="px-5 py-2 text-xs text-slate-500 border-b border-slate-100">
+              Всего записей: {entries.length}
+            </p>
+            <table className="w-full text-sm">
             <thead className="sticky top-0 bg-white border-b border-slate-100 text-xs text-slate-500 uppercase">
               <tr>
                 <th className="px-5 py-2.5 text-left font-medium">Наименование</th>
@@ -297,6 +301,7 @@ export function DictionaryManager({ table }: Props) {
               ))}
             </tbody>
           </table>
+          </>
         )}
       </div>
     </div>

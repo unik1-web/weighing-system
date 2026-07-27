@@ -4,19 +4,22 @@ import {
   DictionaryStorage,
   TicketStorage,
   PRINT_LAYOUT_LABELS,
+  clearAllDictionaries,
   type AppSettings,
   type PrintLayout,
 } from '@/lib/storage';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale, Download, Upload, FolderOpen } from 'lucide-react';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale, Download, Upload, FolderOpen, Trash2 } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
 import {
   exportStorageBackup,
   fetchStoragePaths,
+  importExternalDictionaries,
   importStorageBackup,
   type StoragePaths,
 } from '@/lib/storage-sync';
 import { PathBrowserModal } from '@/components/PathBrowserModal';
+import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 
@@ -32,11 +35,15 @@ export function SettingsView({ onSaved }: Props) {
   const [reoTesting, setReoTesting] = useState(false);
   const [vescomTestMessage, setVescomTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [vescomTesting, setVescomTesting] = useState(false);
+  const [vescomImportingDict, setVescomImportingDict] = useState(false);
   const [metraTestMessage, setMetraTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [metraTesting, setMetraTesting] = useState(false);
+  const [metraImportingDict, setMetraImportingDict] = useState(false);
   const [storagePaths, setStoragePaths] = useState<StoragePaths | null>(null);
   const [backupMessage, setBackupMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [dictClearMessage, setDictClearMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [dictClearBusy, setDictClearBusy] = useState(false);
   const [pathPicker, setPathPicker] = useState<'vescom' | 'metra' | null>(null);
 
   useEffect(() => {
@@ -51,13 +58,18 @@ export function SettingsView({ onSaved }: Props) {
     void fetchStoragePaths().then(setStoragePaths);
   }, []);
 
-  const toggleReoCargo = (cargoName: string) => {
-    setSettings((prev) => {
-      const selected = prev.reo_cargo_names.includes(cargoName)
-        ? prev.reo_cargo_names.filter((name) => name !== cargoName)
-        : [...prev.reo_cargo_names, cargoName];
-      return { ...prev, reo_cargo_names: selected };
-    });
+  const reloadCargoOptions = () => {
+    const cargosFromDictionary = DictionaryStorage.getTable('cargos').map((item) => item.name);
+    const cargosFromTickets = TicketStorage.getAll().map((ticket) => ticket.cargo_name);
+    setCargoOptions(
+      Array.from(new Set([...cargosFromDictionary, ...cargosFromTickets].filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b, 'ru'),
+      ),
+    );
+  };
+
+  const handleReoCargoChange = (selected: string[]) => {
+    setSettings((prev) => ({ ...prev, reo_cargo_names: selected }));
     setSaved(false);
   };
 
@@ -111,6 +123,38 @@ export function SettingsView({ onSaved }: Props) {
         text: err instanceof Error ? err.message : 'Ошибка импорта',
       });
       setBackupBusy(false);
+    }
+  };
+
+  const handleClearDictionaries = async () => {
+    if (
+      !confirm(
+        'Удалить все записи из справочников?\n\n' +
+          'Будут очищены: автомобили, водители, грузы, грузоотправители, грузополучатели, перевозчики.\n\n' +
+          'Журнал взвешиваний, пользователи и настройки не изменятся.',
+      )
+    ) {
+      return;
+    }
+
+    setDictClearMessage(null);
+    setDictClearBusy(true);
+    try {
+      await clearAllDictionaries();
+      const nextSettings = { ...settings, reo_cargo_names: [] };
+      setSettings(nextSettings);
+      SettingsStorage.updateAppSettings(nextSettings);
+      reloadCargoOptions();
+      setDictClearMessage({ type: 'success', text: 'Справочники очищены' });
+      logger.info('settings', 'Справочники очищены');
+      onSaved?.();
+    } catch (err: unknown) {
+      setDictClearMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Ошибка очистки справочников',
+      });
+    } finally {
+      setDictClearBusy(false);
     }
   };
 
@@ -175,6 +219,56 @@ export function SettingsView({ onSaved }: Props) {
       setMetraTestMessage({ type: 'error', text: err.message ?? 'Ошибка подключения к Metra' });
     } finally {
       setMetraTesting(false);
+    }
+  };
+
+  const handleImportVescomDictionaries = async () => {
+    setVescomTestMessage(null);
+    if (!settings.vescom_db_path.trim()) {
+      setVescomTestMessage({ type: 'error', text: 'Укажите путь к базе Vescom' });
+      return;
+    }
+
+    setVescomImportingDict(true);
+    try {
+      const result = await importExternalDictionaries('vescom', {
+        db_path: settings.vescom_db_path.trim(),
+        user: settings.vescom_db_user.trim() || 'SYSDBA',
+        password: settings.vescom_db_password || 'masterkey',
+      });
+      reloadCargoOptions();
+      setVescomTestMessage({ type: 'success', text: result.message });
+    } catch (err: unknown) {
+      setVescomTestMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Ошибка импорта справочников Vescom',
+      });
+    } finally {
+      setVescomImportingDict(false);
+    }
+  };
+
+  const handleImportMetraDictionaries = async () => {
+    setMetraTestMessage(null);
+    if (!settings.metra_db_path.trim()) {
+      setMetraTestMessage({ type: 'error', text: 'Укажите путь к базе Metra' });
+      return;
+    }
+
+    setMetraImportingDict(true);
+    try {
+      const result = await importExternalDictionaries('metra', {
+        db_path: settings.metra_db_path.trim(),
+      });
+      reloadCargoOptions();
+      setMetraTestMessage({ type: 'success', text: result.message });
+    } catch (err: unknown) {
+      setMetraTestMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Ошибка импорта справочников Metra',
+      });
+    } finally {
+      setMetraImportingDict(false);
     }
   };
 
@@ -362,32 +456,13 @@ export function SettingsView({ onSaved }: Props) {
           <p className="text-xs text-slate-500 mb-2">
             В журнале отправляются только завершённые записи с выбранным видом груза.
           </p>
-          {cargoOptions.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-slate-200 px-3 py-2 text-sm text-slate-500">
-              Справочник грузов пуст. Добавьте грузы в разделе «Справочники».
-            </p>
-          ) : (
-            <div className="grid gap-2 sm:grid-cols-2">
-              {cargoOptions.map((cargoName) => (
-                <label
-                  key={cargoName}
-                  className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm transition ${
-                    settings.reo_cargo_names.includes(cargoName)
-                      ? 'border-indigo-300 bg-indigo-50 text-indigo-800'
-                      : 'border-slate-200 hover:border-slate-300'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={settings.reo_cargo_names.includes(cargoName)}
-                    onChange={() => toggleReoCargo(cargoName)}
-                    className="rounded border-slate-300"
-                  />
-                  <span>{cargoName}</span>
-                </label>
-              ))}
-            </div>
-          )}
+          <MultiSelectDropdown
+            options={cargoOptions}
+            selected={settings.reo_cargo_names}
+            onChange={handleReoCargoChange}
+            placeholder="Выберите виды груза"
+            emptyMessage="Справочник грузов пуст. Добавьте грузы в разделе «Справочники»."
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -414,9 +489,6 @@ export function SettingsView({ onSaved }: Props) {
           <Database size={18} className="text-blue-600" />
           <h3 className="text-sm font-semibold text-slate-800">База Vescom (Firebird)</h3>
         </div>
-        <p className="text-xs text-slate-500">
-          Импорт завершённых взвешиваний из Firebird-базы Vescom. Перед проверкой запустите backend: <code>npm run dev:api</code>
-        </p>
 
         <label className="flex items-center gap-2 cursor-pointer">
           <input
@@ -472,10 +544,18 @@ export function SettingsView({ onSaved }: Props) {
           <button
             type="button"
             onClick={handleTestVescom}
-            disabled={vescomTesting}
+            disabled={vescomTesting || vescomImportingDict}
             className="rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-100 disabled:opacity-50"
           >
             {vescomTesting ? 'Проверка...' : 'Проверка Vescom'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleImportVescomDictionaries()}
+            disabled={vescomTesting || vescomImportingDict}
+            className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+          >
+            {vescomImportingDict ? 'Импорт...' : 'Импорт справочников'}
           </button>
           {vescomTestMessage && (
             <span className={`flex items-center gap-1.5 text-sm ${vescomTestMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
@@ -492,9 +572,6 @@ export function SettingsView({ onSaved }: Props) {
           <Scale size={18} className="text-violet-600" />
           <h3 className="text-sm font-semibold text-slate-800">База Metra (TWeights.db)</h3>
         </div>
-        <p className="text-xs text-slate-500">
-          База ScaleData программы НПП «Метра». По умолчанию файл <code>TWeights.db</code> в корне проекта. Перед проверкой запустите backend: <code>npm run dev:api</code>
-        </p>
 
         <label className="flex items-center gap-2 cursor-pointer">
           <input
@@ -531,10 +608,18 @@ export function SettingsView({ onSaved }: Props) {
           <button
             type="button"
             onClick={handleTestMetra}
-            disabled={metraTesting}
+            disabled={metraTesting || metraImportingDict}
             className="rounded-lg border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100 disabled:opacity-50"
           >
             {metraTesting ? 'Проверка...' : 'Проверка Metra'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleImportMetraDictionaries()}
+            disabled={metraTesting || metraImportingDict}
+            className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+          >
+            {metraImportingDict ? 'Импорт...' : 'Импорт справочников'}
           </button>
           {metraTestMessage && (
             <span className={`flex items-center gap-1.5 text-sm ${metraTestMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
@@ -552,7 +637,7 @@ export function SettingsView({ onSaved }: Props) {
           <h3 className="text-sm font-semibold text-slate-800">Данные и резервное копирование</h3>
         </div>
         <p className="text-xs text-slate-500">
-          Настройки сохраняются в <code>config.json</code>, журнал и справочники — в SQLite-базе <code>BD/weighing.db</code> рядом с приложением.
+          Настройки сохраняются в <code>config.ini</code>, журнал и справочники — в SQLite-базе <code>BD/weighing.db</code> рядом с приложением. Резервная копия — файл <code>.ini</code>.
         </p>
         {storagePaths && (
           <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 space-y-1">
@@ -573,17 +658,32 @@ export function SettingsView({ onSaved }: Props) {
             <Upload size={16} /> Импорт
             <input
               type="file"
-              accept="application/json,.json"
+              accept=".ini,text/plain,application/json,.json"
               className="hidden"
               disabled={backupBusy}
               onChange={handleImportBackup}
             />
           </label>
+          <button
+            type="button"
+            onClick={handleClearDictionaries}
+            disabled={backupBusy || dictClearBusy}
+            className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
+          >
+            <Trash2 size={16} /> Очистить справочники
+          </button>
           {backupMessage && (
             <span className={`flex items-center gap-1.5 text-sm ${backupMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
               {backupMessage.type === 'error' && <AlertCircle size={16} />}
               {backupMessage.type === 'success' && <CheckCircle2 size={16} />}
               {backupMessage.text}
+            </span>
+          )}
+          {dictClearMessage && (
+            <span className={`flex items-center gap-1.5 text-sm ${dictClearMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
+              {dictClearMessage.type === 'error' && <AlertCircle size={16} />}
+              {dictClearMessage.type === 'success' && <CheckCircle2 size={16} />}
+              {dictClearMessage.text}
             </span>
           )}
         </div>

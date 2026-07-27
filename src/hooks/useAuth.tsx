@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { UserStorage, SessionStorage, ProfileStorage, initializeStorage, type Session as LocalSession } from '@/lib/storage';
-import { loadStorageFromServer } from '@/lib/storage-sync';
+import { UserStorage, SessionStorage, ProfileStorage, initializeStorage, normalizeVehicleDictionaryPlates, type Session as LocalSession } from '@/lib/storage';
+import { loadStorageFromServer, DICTIONARIES_UPDATED_EVENT } from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 
 export type UserRole = 'user' | 'admin';
@@ -38,6 +38,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void (async () => {
       await loadStorageFromServer();
       if (!active) return;
+
+      if (normalizeVehicleDictionaryPlates()) {
+        window.dispatchEvent(new Event(DICTIONARIES_UPDATED_EVENT));
+      }
 
       initializeStorage();
 

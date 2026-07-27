@@ -3,6 +3,8 @@ import { logger } from './logger';
 const APP_PREFIX = 'app_';
 const SETTINGS_KEY = 'app_settings';
 
+export const DICTIONARIES_UPDATED_EVENT = 'dictionaries-updated';
+
 let configSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let databaseSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let databaseSyncPaused = false;
@@ -70,7 +72,7 @@ export async function loadStorageFromServer(): Promise<boolean> {
     }
 
     if (loaded) {
-      logger.info('storage', 'Загружены config.json и BD/weighing.db');
+      logger.info('storage', 'Загружены config.ini и BD/weighing.db');
     }
     return loaded;
   } catch {
@@ -99,7 +101,7 @@ async function syncConfigToServer(): Promise<void> {
       body: JSON.stringify({ config }),
     });
     if (response.ok) {
-      logger.debug('storage', 'config.json сохранён');
+      logger.debug('storage', 'config.ini сохранён');
     }
   } catch {
     // Backend недоступен
@@ -182,6 +184,14 @@ export function flushStorageSync(): void {
   }
 }
 
+export async function flushDatabaseSync(): Promise<void> {
+  if (databaseSyncTimer) {
+    clearTimeout(databaseSyncTimer);
+    databaseSyncTimer = null;
+  }
+  await syncDatabaseToServer();
+}
+
 export interface StoragePaths {
   app_root: string;
   config_file: string;
@@ -209,43 +219,33 @@ export async function exportStorageBackup(): Promise<void> {
   const response = await fetch('/api/storage/export');
   const body = (await response.json()) as {
     success?: boolean;
-    backup?: Record<string, unknown>;
+    format?: string;
+    content?: string;
     message?: string;
   };
-  if (!response.ok || !body.backup) {
+  if (!response.ok || !body.content) {
     throw new Error(body.message ?? 'Не удалось выполнить экспорт');
   }
 
-  const blob = new Blob([JSON.stringify(body.backup, null, 2)], {
-    type: 'application/json;charset=utf-8',
+  const blob = new Blob([body.content], {
+    type: 'text/plain;charset=utf-8',
   });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `weighing-backup_${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.download = `weighing-backup_${new Date().toISOString().slice(0, 10)}.ini`;
   anchor.click();
   URL.revokeObjectURL(url);
-  logger.info('storage', 'Экспорт резервной копии выполнен');
+  logger.info('storage', 'Экспорт резервной копии INI выполнен');
 }
 
 export async function importStorageBackup(file: File): Promise<void> {
   const text = await file.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error('Файл не является корректным JSON');
-  }
-
-  const payload =
-    parsed && typeof parsed === 'object' && 'backup' in (parsed as object)
-      ? (parsed as { backup: Record<string, unknown> }).backup
-      : (parsed as Record<string, unknown>);
 
   const response = await fetch('/api/storage/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ backup: payload }),
+    body: JSON.stringify({ content: text, filename: file.name }),
   });
 
   const body = (await response.json()) as {
@@ -259,7 +259,47 @@ export async function importStorageBackup(file: File): Promise<void> {
   }
 
   applyStorageData(body.data);
-  logger.info('storage', 'Импорт резервной копии выполнен');
+  logger.info('storage', 'Импорт резервной копии INI выполнен');
+}
+
+export async function importExternalDictionaries(
+  source: 'vescom' | 'metra',
+  payload: Record<string, string>,
+): Promise<{ message: string; added: Record<string, number> }> {
+  const response = await fetch(`/api/${source}/import_dictionaries`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const body = (await response.json()) as {
+    success?: boolean;
+    message?: string;
+    added?: Record<string, number>;
+    data?: Record<string, string>;
+  };
+
+  if (!response.ok || !body.data) {
+    throw new Error(body.message ?? 'Не удалось импортировать справочники');
+  }
+
+  pauseDatabaseSync();
+  try {
+    applyStorageData(body.data);
+  } finally {
+    resumeDatabaseSync();
+  }
+
+  if (typeof window !== 'undefined') {
+    window.setTimeout(() => {
+      window.dispatchEvent(new Event(DICTIONARIES_UPDATED_EVENT));
+    }, 0);
+  }
+  logger.info('storage', `Импорт справочников из ${source} выполнен`);
+  return {
+    message: body.message ?? 'Справочники импортированы',
+    added: body.added ?? {},
+  };
 }
 
 if (typeof window !== 'undefined') {

@@ -4,7 +4,9 @@ import { TicketStorage } from '@/lib/storage';
 import { logger } from '@/lib/logger';
 import { useDictionary } from '@/hooks/useDictionary';
 import { useAuth } from '@/hooks/useAuth';
-import { ScalePanel } from './ScalePanel';
+import { ScalePanel } from '@/components/ScalePanel';
+import { formatVehiclePlate } from '@/lib/vehicle-plate';
+import { formatPersonName, formatVehicleBrand } from '@/lib/text-format';
 import { SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
 
@@ -141,11 +143,12 @@ export function WeighingForm({ onSaved }: Props) {
 
     setSaving(true);
     const now = new Date().toISOString();
+    const normalizedVehicleNumber = formatVehiclePlate(vehicleNumber);
     const payload: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at' | 'reo_status' | 'reo_sent_at'> = {
-      vehicle_number: vehicleNumber,
-      vehicle_brand: vehicleBrand,
+      vehicle_number: normalizedVehicleNumber,
+      vehicle_brand: formatVehicleBrand(vehicleBrand),
       trailer_number: trailerNumber,
-      driver_name: driverName,
+      driver_name: formatPersonName(driverName),
       cargo_name: cargoName,
       shipper_name: shipperName,
       receiver_name: receiverName,

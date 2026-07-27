@@ -1,5 +1,7 @@
 // Local storage abstraction for weighing system
-import { scheduleConfigSync, scheduleDatabaseSync } from './storage-sync';
+import { scheduleConfigSync, scheduleDatabaseSync, flushDatabaseSync, DICTIONARIES_UPDATED_EVENT } from './storage-sync';
+import { formatVehiclePlate } from './vehicle-plate';
+import { formatPersonName, formatVehicleBrand } from './text-format';
 
 export type WeightSource = 'manual' | 'instrument';
 export type TicketStatus = 'open' | 'completed';
@@ -326,6 +328,15 @@ export const DICTIONARY_LABELS: Record<DictionaryTable, string> = {
   carriers: 'Грузоперевозчики',
 };
 
+export const DICTIONARY_TABLES: DictionaryTable[] = [
+  'vehicles',
+  'drivers',
+  'cargos',
+  'shippers',
+  'receivers',
+  'carriers',
+];
+
 export const DictionaryStorage = {
   getTable: (table: DictionaryTable): DictionaryEntry[] => {
     const key = STORAGE_KEYS[table.toUpperCase() as keyof typeof STORAGE_KEYS];
@@ -338,10 +349,22 @@ export const DictionaryStorage = {
     const key = STORAGE_KEYS[table.toUpperCase() as keyof typeof STORAGE_KEYS];
     const items = DictionaryStorage.getTable(table);
 
+    const normalizedEntry = { ...entry };
+    if (table === 'vehicles') {
+      const plate = formatVehiclePlate(entry.vehicle_number ?? entry.name);
+      normalizedEntry.name = plate;
+      normalizedEntry.vehicle_number = plate;
+      if (normalizedEntry.vehicle_brand) {
+        normalizedEntry.vehicle_brand = formatVehicleBrand(normalizedEntry.vehicle_brand);
+      }
+    } else if (table === 'drivers') {
+      normalizedEntry.name = formatPersonName(entry.name);
+    }
+
     const newEntry: DictionaryEntry = {
       id: crypto.randomUUID(),
       created_at: new Date().toISOString(),
-      ...entry,
+      ...normalizedEntry,
     };
 
     items.push(newEntry);
@@ -355,7 +378,25 @@ export const DictionaryStorage = {
     const index = items.findIndex(i => i.id === id);
     if (index === -1) return null;
 
-    items[index] = { ...items[index], ...updates };
+    const normalizedUpdates = { ...updates };
+    if (table === 'vehicles') {
+      const rawNumber = updates.vehicle_number ?? updates.name ?? items[index].vehicle_number ?? items[index].name;
+      if (rawNumber) {
+        const plate = formatVehiclePlate(String(rawNumber));
+        normalizedUpdates.name = plate;
+        normalizedUpdates.vehicle_number = plate;
+      }
+      if (normalizedUpdates.vehicle_brand) {
+        normalizedUpdates.vehicle_brand = formatVehicleBrand(String(normalizedUpdates.vehicle_brand));
+      }
+    } else if (table === 'drivers') {
+      const rawName = updates.name ?? items[index].name;
+      if (rawName) {
+        normalizedUpdates.name = formatPersonName(String(rawName));
+      }
+    }
+
+    items[index] = { ...items[index], ...normalizedUpdates };
     persist(key, JSON.stringify(items));
     return items[index];
   },
@@ -365,7 +406,36 @@ export const DictionaryStorage = {
     const items = DictionaryStorage.getTable(table).filter(i => i.id !== id);
     persist(key, JSON.stringify(items));
   },
+
+  clearAll: (): void => {
+    for (const table of DICTIONARY_TABLES) {
+      const key = STORAGE_KEYS[table.toUpperCase() as keyof typeof STORAGE_KEYS];
+      persist(key, JSON.stringify([]));
+    }
+  },
 };
+
+export function normalizeVehicleDictionaryPlates(): boolean {
+  const items = DictionaryStorage.getTable('vehicles');
+  if (items.length === 0) return false;
+
+  let changed = false;
+  const normalized = items.map((item) => {
+    const raw = item.vehicle_number ?? item.name;
+    const plate = formatVehiclePlate(raw);
+    if (plate !== raw || plate !== item.name || plate !== item.vehicle_number) {
+      changed = true;
+      return { ...item, name: plate, vehicle_number: plate };
+    }
+    return item;
+  });
+
+  if (changed) {
+    persist(STORAGE_KEYS.VEHICLES, JSON.stringify(normalized));
+  }
+
+  return changed;
+}
 
 // Settings storage
 export type PrintLayout = 'act' | 'receipt';
@@ -497,6 +567,14 @@ function parseReoCargoNames(raw: string | undefined): string[] {
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
   } catch {
     return [];
+  }
+}
+
+export async function clearAllDictionaries(): Promise<void> {
+  DictionaryStorage.clearAll();
+  await flushDatabaseSync();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(DICTIONARIES_UPDATED_EVENT));
   }
 }
 

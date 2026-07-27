@@ -1,14 +1,26 @@
 import json
 import os
 import sys
+from datetime import datetime
 from typing import Any
 
+from config_ini import (
+    BACKUP_SECTION,
+    CONFIG_SECTION,
+    DATABASE_SECTION,
+    dump_ini,
+    parse_ini,
+    read_ini_section,
+    write_ini_section,
+)
 from sqlite_store import get_sqlite_path, read_database as read_sqlite_database, write_database as write_sqlite_database
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 SETTINGS_KEY = 'app_settings'
-BACKUP_VERSION = 2
+BACKUP_VERSION = 3
+LEGACY_CONFIG_JSON = 'config.json'
+CONFIG_INI = 'config.ini'
 
 
 def get_app_root() -> str:
@@ -18,7 +30,11 @@ def get_app_root() -> str:
 
 
 def get_config_path() -> str:
-    return os.path.join(get_app_root(), 'config.json')
+    return os.path.join(get_app_root(), CONFIG_INI)
+
+
+def get_legacy_config_json_path() -> str:
+    return os.path.join(get_app_root(), LEGACY_CONFIG_JSON)
 
 
 def get_bd_dir() -> str:
@@ -49,16 +65,6 @@ def _read_json_file(path: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _write_json_file(path: str, data: dict[str, Any]) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    temp_path = path + '.tmp'
-    with open(temp_path, 'w', encoding='utf-8') as handle:
-        json.dump(data, handle, ensure_ascii=False, indent=2)
-    os.replace(temp_path, path)
-
-
 def _split_storage_blob(blob: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
     config: dict[str, str] = {}
     database: dict[str, str] = {}
@@ -79,8 +85,21 @@ def _split_storage_blob(blob: dict[str, Any]) -> tuple[dict[str, str], dict[str,
     return config, database
 
 
+def _migrate_config_json_to_ini() -> None:
+    ini_path = get_config_path()
+    json_path = get_legacy_config_json_path()
+    if os.path.isfile(ini_path) or not os.path.isfile(json_path):
+        return
+
+    raw = _read_json_file(json_path)
+    config = {str(key): str(value) for key, value in raw.items()}
+    if config:
+        write_ini_section(ini_path, CONFIG_SECTION, config)
+
+
 def migrate_legacy_storage() -> None:
     ensure_storage_dirs()
+    _migrate_config_json_to_ini()
 
     config_exists = os.path.isfile(get_config_path())
     sqlite_exists = os.path.isfile(get_sqlite_path())
@@ -110,14 +129,13 @@ def migrate_legacy_storage() -> None:
 
 def read_config() -> dict[str, str]:
     migrate_legacy_storage()
-    raw = _read_json_file(get_config_path())
-    return {str(key): str(value) for key, value in raw.items()}
+    return read_ini_section(get_config_path(), CONFIG_SECTION)
 
 
 def write_config(config: dict[str, Any]) -> None:
     ensure_storage_dirs()
     safe_config = {str(key): str(value) for key, value in config.items()}
-    _write_json_file(get_config_path(), safe_config)
+    write_ini_section(get_config_path(), CONFIG_SECTION, safe_config)
 
 
 def read_database() -> dict[str, str]:
@@ -158,6 +176,23 @@ def build_backup() -> dict[str, Any]:
     }
 
 
+def backup_to_ini(backup: dict[str, Any] | None = None) -> str:
+    payload = backup or build_backup()
+    config = payload.get('config') if isinstance(payload.get('config'), dict) else {}
+    database = payload.get('database') if isinstance(payload.get('database'), dict) else {}
+    exported_at = payload.get('exported_at') or datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+
+    sections: dict[str, dict[str, Any]] = {
+        BACKUP_SECTION: {
+            'version': str(payload.get('version', BACKUP_VERSION)),
+            'exported_at': exported_at,
+        },
+        CONFIG_SECTION: {str(k): str(v) for k, v in config.items()},
+        DATABASE_SECTION: {str(k): str(v) for k, v in database.items()},
+    }
+    return dump_ini(sections)
+
+
 def import_backup(payload: dict[str, Any]) -> dict[str, str]:
     config_raw = payload.get('config')
     database_raw = payload.get('database')
@@ -176,6 +211,47 @@ def import_backup(payload: dict[str, Any]) -> dict[str, str]:
         if str(k).startswith('app_') and isinstance(v, str)
     })
     return read_combined_storage()
+
+
+def import_backup_ini(text: str) -> dict[str, str]:
+    sections = parse_ini(text)
+    backup_meta = sections.get(BACKUP_SECTION, {})
+    config = sections.get(CONFIG_SECTION, {})
+    database = sections.get(DATABASE_SECTION, {})
+
+    if not config and not database:
+        raise ValueError('Файл INI не содержит секций config или database')
+
+    if config:
+        write_config(config)
+    if database:
+        write_database({
+            str(key): value
+            for key, value in database.items()
+            if str(key).startswith('app_')
+        })
+
+    return read_combined_storage()
+
+
+def import_backup_file(text: str, filename: str = '') -> dict[str, str]:
+    lowered = filename.lower()
+    stripped = text.lstrip('\ufeff').strip()
+
+    if lowered.endswith('.ini') or stripped.startswith('['):
+        return import_backup_ini(stripped)
+
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError('Файл не является корректным INI или JSON') from exc
+
+    if isinstance(parsed, dict) and 'backup' in parsed and isinstance(parsed['backup'], dict):
+        parsed = parsed['backup']
+    if not isinstance(parsed, dict):
+        raise ValueError('Некорректный формат резервной копии')
+
+    return import_backup(parsed)
 
 
 def get_storage_paths() -> dict[str, str]:

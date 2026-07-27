@@ -25,6 +25,7 @@ dist-ssr
 .DS_Store
 .env.local
 .env.*.local
+config.ini
 config.json
 BD/
 server/data/
