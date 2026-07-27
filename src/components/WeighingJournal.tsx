@@ -3,7 +3,7 @@ import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS } from '@/lib/sto
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
-import { Search, Calendar, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson } from 'lucide-react';
+import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson } from 'lucide-react';
 
 interface Props {
   refreshKey: number;
@@ -204,62 +204,58 @@ export function WeighingJournal({ refreshKey }: Props) {
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase">
               <tr>
-                <th className="px-4 py-3 text-left font-medium">№</th>
-                <th className="px-4 py-3 text-left font-medium">Дата</th>
-                <th className="px-4 py-3 text-left font-medium">Авто</th>
-                <th className="px-4 py-3 text-left font-medium">Водитель</th>
-                <th className="px-4 py-3 text-left font-medium">Груз</th>
-                <th className="px-4 py-3 text-left font-medium">Отправитель</th>
-                <th className="px-4 py-3 text-left font-medium">Получатель</th>
-                <th className="px-4 py-3 text-left font-medium">Перевозчик</th>
-                <th className="px-3 py-3 text-right font-medium">Брутто</th>
-                <th className="px-3 py-3 text-right font-medium">Тара</th>
-                <th className="px-3 py-3 text-right font-medium">Нетто</th>
-                <th className="px-3 py-3 text-right font-medium">Сумма</th>
-                <th className="px-4 py-3 text-left font-medium">Весовщик</th>
-                <th className="px-4 py-3 text-center font-medium">Статус</th>
-                <th className="px-4 py-3 text-center font-medium">РЭО</th>
-                <th className="px-4 py-3 text-center font-medium"></th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap">№</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap">Дата</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap">Авто</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap">Груз</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap">Отправитель</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap">Получатель</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap">Перевозчик</th>
+                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap">Брутто</th>
+                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap">Тара</th>
+                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap">Нетто</th>
+                <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap">Статус</th>
+                <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap" title="РЭО: + отправлено, − не отправлено">РЭО</th>
+                <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
               {loading ? (
-                <tr><td colSpan={16} className="px-4 py-8 text-center text-slate-400">Загрузка...</td></tr>
+                <tr><td colSpan={13} className="px-4 py-8 text-center text-slate-400">Загрузка...</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={16} className="px-4 py-8 text-center text-slate-400">Записей не найдено</td></tr>
+                <tr><td colSpan={13} className="px-4 py-8 text-center text-slate-400">Записей не найдено</td></tr>
               ) : (
                 filtered.map((t) => (
                   <tr key={t.id} className="hover:bg-slate-50/50 transition">
-                    <td className="px-4 py-2.5 font-semibold text-slate-700 tabular-nums">{t.ticket_number ?? '—'}</td>
-                    <td className="px-4 py-2.5 text-slate-500 whitespace-nowrap"><div className="flex items-center gap-1 text-xs"><Calendar size={12} className="text-slate-400" />{new Date(t.created_at).toLocaleDateString('ru-RU')}<span className="text-slate-400">{new Date(t.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span></div></td>
-                    <td className="px-4 py-2.5 font-medium text-slate-700">{t.vehicle_number}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{t.driver_name}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{t.cargo_name}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{t.shipper_name}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{t.receiver_name}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{t.carrier_name}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-slate-700">{t.gross_weight?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-slate-700">{t.tare_weight?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-slate-800">{t.net_weight?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-blue-700">{t.total_amount != null ? `${t.total_amount.toLocaleString('ru-RU')} ₽` : '—'}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{t.operator_name || '—'}</td>
-                    <td className="px-4 py-2.5 text-center">{t.status === 'completed' ? <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"><CheckCircle2 size={12} /> Завершён</span> : <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700"><Clock size={12} /> Открыт</span>}</td>
-                    <td className="px-4 py-2.5 text-center">
+                    <td className="px-2 py-2.5 font-semibold text-slate-700 tabular-nums whitespace-nowrap">{t.ticket_number ?? '—'}</td>
+                    <td className="px-2 py-2.5 text-slate-500 whitespace-nowrap tabular-nums">{new Date(t.created_at).toLocaleDateString('ru-RU')} {new Date(t.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</td>
+                    <td className="px-2 py-2.5 font-medium text-slate-700 whitespace-nowrap">{t.vehicle_number}</td>
+                    <td className="px-2 py-2.5 text-slate-600 whitespace-nowrap">{t.cargo_name}</td>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.shipper_name}>{t.shipper_name}</td>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.receiver_name}>{t.receiver_name}</td>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.carrier_name}>{t.carrier_name}</td>
+                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">{t.gross_weight?.toLocaleString('ru-RU') ?? '—'}</td>
+                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">{t.tare_weight?.toLocaleString('ru-RU') ?? '—'}</td>
+                    <td className="px-2 py-2.5 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">{t.net_weight?.toLocaleString('ru-RU') ?? '—'}</td>
+                    <td className="px-2 py-2.5 text-center whitespace-nowrap">{t.status === 'completed' ? <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"><CheckCircle2 size={12} /> Завершён</span> : <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700"><Clock size={12} /> Открыт</span>}</td>
+                    <td className="px-2 py-2.5 text-center whitespace-nowrap">
                       {t.reo_status === 'sent' ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700" title={t.reo_sent_at ? new Date(t.reo_sent_at).toLocaleString('ru-RU') : undefined}>
-                          <Send size={12} /> Отправлено
-                        </span>
-                      ) : isReoCargoEligible(t) ? (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">
-                          Не отправлено
+                        <span
+                          className="inline-flex h-6 w-6 items-center justify-center text-lg font-bold leading-none text-emerald-600"
+                          title={t.reo_sent_at ? `Отправлено в РЭО: ${new Date(t.reo_sent_at).toLocaleString('ru-RU')}` : 'Отправлено в РЭО'}
+                        >
+                          +
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-400">
-                          Не подходит
+                        <span
+                          className="inline-flex h-6 w-6 items-center justify-center text-lg font-bold leading-none text-slate-400"
+                          title={isReoCargoEligible(t) ? 'Не отправлено в РЭО' : 'Не подходит для отправки в РЭО'}
+                        >
+                          −
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-2.5 text-center whitespace-nowrap">
+                    <td className="px-2 py-2.5 text-center whitespace-nowrap">
                       {t.reo_status === 'sent' && (
                         <button
                           onClick={() => handleResetReo(t)}

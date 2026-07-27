@@ -70,7 +70,12 @@ function MainApp() {
               </div>
               <div>
                 <h1 className="text-base font-bold text-slate-800 leading-tight">Автомобильные весы</h1>
-                <p className="text-xs text-slate-500">Полигон отходов</p>
+                <p className="text-xs text-slate-500">
+                  Полигон отходов
+                  {appSettings.org_name && appSettings.org_name !== 'Полигон отходов' && (
+                    <> · {appSettings.org_name}</>
+                  )}
+                </p>
               </div>
             </div>
 
