@@ -78,11 +78,19 @@ export interface MetraWeighingItem {
   datetimebrutto: string;
   datetimetara: string;
   vehicle_number: string;
+  vehicle_brand: string;
+  trailer_number: string;
+  driver_name: string;
+  cargo_name: string;
+  shipper_name: string;
+  receiver_name: string;
+  carrier_name: string;
+  price: number;
   gross_weight: number | null;
   tare_weight: number | null;
   net_weight: number | null;
   operator_name: string;
-  cargo_name: string;
+  invoice: string;
 }
 
 export function normalizeImportDateTime(value: string | null | undefined): string {

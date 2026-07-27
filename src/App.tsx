@@ -21,6 +21,10 @@ function MainApp() {
   const [journalKey, setJournalKey] = useState(0);
   const [settingsKey, setSettingsKey] = useState(0);
 
+  const handleImported = useCallback(() => {
+    setJournalKey((k) => k + 1);
+  }, []);
+
   const appSettings = useMemo(() => SettingsStorage.getAppSettings(), [settingsKey]);
 
   const handleSaved = useCallback((ticket: WeighingTicket) => {
@@ -114,11 +118,15 @@ function MainApp() {
         {tab === 'journal' && <WeighingJournal refreshKey={journalKey} />}
         {tab === 'reports' && <ReportsView />}
         {tab === 'dictionaries' && <DictionariesView />}
-        {tab === 'vescom' && appSettings.vescom_enabled && (
-          <VescomImportView onImported={() => setJournalKey((k) => k + 1)} />
+        {appSettings.vescom_enabled && (
+          <div className={tab === 'vescom' ? undefined : 'hidden'}>
+            <VescomImportView onImported={handleImported} />
+          </div>
         )}
-        {tab === 'metra' && appSettings.metra_enabled && (
-          <MetraImportView onImported={() => setJournalKey((k) => k + 1)} />
+        {appSettings.metra_enabled && (
+          <div className={tab === 'metra' ? undefined : 'hidden'}>
+            <MetraImportView onImported={handleImported} />
+          </div>
         )}
         {tab === 'settings' && <SettingsView onSaved={() => setSettingsKey((k) => k + 1)} />}
       </main>

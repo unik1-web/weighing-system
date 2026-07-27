@@ -77,7 +77,7 @@ export function ReportsView() {
   );
 
   const exportCSV = () => {
-    const headers = [GROUP_LABELS[groupBy], 'Провесок', 'Брутто, кг', 'Тара, кг', 'Нетто, кг', 'Нетто, т', 'Сумма, ₽'];
+    const headers = [GROUP_LABELS[groupBy], 'Взвешиваний', 'Брутто, кг', 'Тара, кг', 'Нетто, кг', 'Нетто, т', 'Сумма, ₽'];
     const rows = grouped.map((r) => [r.key, r.count, r.totalGross.toFixed(2), r.totalTare.toFixed(2), r.totalNet.toFixed(2), (r.totalNet / 1000).toFixed(3), r.totalAmount.toFixed(2)]);
     const csv = [headers, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(';')).join('\n');
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
@@ -148,7 +148,7 @@ export function ReportsView() {
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <SummaryCard label="Провесок" value={totals.count.toString()} sub="шт" color="blue" />
+        <SummaryCard label="Взвешиваний" value={totals.count.toString()} sub="шт" color="blue" />
         <SummaryCard label="Нетто (т)" value={(totals.net / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} sub="тонн" color="emerald" />
         <SummaryCard label="Сумма" value={totals.amount.toLocaleString('ru-RU', { maximumFractionDigits: 0 })} sub="₽" color="amber" />
         <SummaryCard label="Позиций" value={grouped.length.toString()} sub={GROUP_LABELS[groupBy].toLowerCase()} color="slate" />
@@ -170,7 +170,7 @@ export function ReportsView() {
             <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase">
               <tr>
                 <th className="px-5 py-3 text-left font-medium">{GROUP_LABELS[groupBy]}</th>
-                <th className="px-3 py-3 text-right font-medium">Провесков</th>
+                <th className="px-3 py-3 text-right font-medium">Взвешиваний</th>
                 <th className="px-3 py-3 text-right font-medium">Брутто, т</th>
                 <th className="px-3 py-3 text-right font-medium">Тара, т</th>
                 <th className="px-3 py-3 text-right font-medium">Нетто, т</th>

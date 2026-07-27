@@ -1,4 +1,6 @@
 // Local storage abstraction for weighing system
+import { scheduleConfigSync, scheduleDatabaseSync } from './storage-sync';
+
 export type WeightSource = 'manual' | 'instrument';
 export type TicketStatus = 'open' | 'completed';
 export type ReoStatus = 'pending' | 'sent';
@@ -73,6 +75,19 @@ const STORAGE_KEYS = {
   CURRENT_USER: 'app_current_user',
 };
 
+function persist(key: string, value: string): void {
+  localStorage.setItem(key, value);
+  if (key === STORAGE_KEYS.SETTINGS) {
+    scheduleConfigSync();
+  } else {
+    scheduleDatabaseSync();
+  }
+}
+
+function hasStoredData(): boolean {
+  return Object.values(STORAGE_KEYS).some((key) => localStorage.getItem(key) !== null);
+}
+
 // Users storage
 export const UserStorage = {
   createUser: (username: string, password: string, displayName: string): User => {
@@ -96,7 +111,7 @@ export const UserStorage = {
     };
 
     users.push(storedUser);
-    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users));
 
     // Create default profile
     const profile: Profile = {
@@ -150,7 +165,7 @@ export const UserStorage = {
 
   deleteUser: (userId: string): void => {
     const users = getAllUsers().filter(u => u.id !== userId);
-    localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users));
     ProfileStorage.deleteProfile(userId);
   },
 };
@@ -170,13 +185,13 @@ export const ProfileStorage = {
   setProfile: (userId: string, profile: Profile): void => {
     const profiles = getAllProfiles();
     profiles[userId] = profile;
-    localStorage.setItem(STORAGE_KEYS.USERS + '_profiles', JSON.stringify(profiles));
+    persist(STORAGE_KEYS.USERS + '_profiles', JSON.stringify(profiles));
   },
 
   deleteProfile: (userId: string): void => {
     const profiles = getAllProfiles();
     delete profiles[userId];
-    localStorage.setItem(STORAGE_KEYS.USERS + '_profiles', JSON.stringify(profiles));
+    persist(STORAGE_KEYS.USERS + '_profiles', JSON.stringify(profiles));
   },
 
   getAllProfiles: (): Array<{ user_id: string } & Profile> => {
@@ -197,7 +212,7 @@ function getAllProfiles(): Record<string, Profile> {
 // Session storage
 export const SessionStorage = {
   setSession: (session: Session): void => {
-    localStorage.setItem(STORAGE_KEYS.CURRENT_USER, JSON.stringify(session));
+    persist(STORAGE_KEYS.CURRENT_USER, JSON.stringify(session));
   },
 
   getSession: (): Session | null => {
@@ -237,7 +252,7 @@ export const TicketStorage = {
     });
 
     tickets.push(newTicket);
-    localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
+    persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
     return newTicket;
   },
 
@@ -254,7 +269,7 @@ export const TicketStorage = {
 
   delete: (id: string): void => {
     const tickets = getAllTickets().filter(t => t.id !== id);
-    localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
+    persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
   },
 
   update: (id: string, updates: Partial<WeighingTicket>): WeighingTicket | null => {
@@ -263,7 +278,7 @@ export const TicketStorage = {
     if (index === -1) return null;
 
     tickets[index] = normalizeTicket({ ...tickets[index], ...updates });
-    localStorage.setItem(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
+    persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
     return tickets[index];
   },
 
@@ -330,7 +345,7 @@ export const DictionaryStorage = {
     };
 
     items.push(newEntry);
-    localStorage.setItem(key, JSON.stringify(items));
+    persist(key, JSON.stringify(items));
     return newEntry;
   },
 
@@ -341,14 +356,14 @@ export const DictionaryStorage = {
     if (index === -1) return null;
 
     items[index] = { ...items[index], ...updates };
-    localStorage.setItem(key, JSON.stringify(items));
+    persist(key, JSON.stringify(items));
     return items[index];
   },
 
   delete: (table: DictionaryTable, id: string): void => {
     const key = STORAGE_KEYS[table.toUpperCase() as keyof typeof STORAGE_KEYS];
     const items = DictionaryStorage.getTable(table).filter(i => i.id !== id);
-    localStorage.setItem(key, JSON.stringify(items));
+    persist(key, JSON.stringify(items));
   },
 };
 
@@ -396,7 +411,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   vescom_db_user: 'SYSDBA',
   vescom_db_password: 'masterkey',
   metra_enabled: false,
-  metra_db_path: 'TWeights.db',
+  metra_db_path: '',
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -413,7 +428,7 @@ export const SettingsStorage = {
   set: (key: string, value: string): void => {
     const settings = getAllSettings();
     settings[key] = value;
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+    persist(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
   },
 
   getAppSettings: (): AppSettings => {
@@ -465,7 +480,7 @@ export const SettingsStorage = {
       metra_enabled: String(next.metra_enabled),
       metra_db_path: next.metra_db_path,
     };
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
+    persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
   },
 };
@@ -485,24 +500,22 @@ function parseReoCargoNames(raw: string | undefined): string[] {
   }
 }
 
-// Initialize default data
+// Initialize default data (only on first run)
 export const initializeStorage = () => {
-  if (!localStorage.getItem(STORAGE_KEYS.USERS)) {
-    try {
-      UserStorage.createUser('admin', 'admin123', 'Администратор');
-    } catch {
-      // Default admin user already exists
-    }
+  if (hasStoredData()) return;
 
-    // Create demo vehicles
-    DictionaryStorage.add('vehicles', {
-      name: 'А001АА',
-      vehicle_number: 'А001АА',
-      notes: 'Тестовый грузовик',
-      default_tare_weight: 2500,
-    });
-
-    // Set org name
-    SettingsStorage.set('org_name', 'Полигон отходов');
+  try {
+    UserStorage.createUser('admin', 'admin123', 'Администратор');
+  } catch {
+    // Default admin user already exists
   }
+
+  DictionaryStorage.add('vehicles', {
+    name: 'А001АА',
+    vehicle_number: 'А001АА',
+    notes: 'Тестовый грузовик',
+    default_tare_weight: 2500,
+  });
+
+  SettingsStorage.set('org_name', 'Полигон отходов');
 };

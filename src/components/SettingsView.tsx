@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ChangeEvent } from 'react';
 import {
   SettingsStorage,
   DictionaryStorage,
@@ -7,9 +7,16 @@ import {
   type AppSettings,
   type PrintLayout,
 } from '@/lib/storage';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale } from 'lucide-react';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale, Download, Upload, FolderOpen } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
+import {
+  exportStorageBackup,
+  fetchStoragePaths,
+  importStorageBackup,
+  type StoragePaths,
+} from '@/lib/storage-sync';
+import { PathBrowserModal } from '@/components/PathBrowserModal';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 
@@ -27,6 +34,10 @@ export function SettingsView({ onSaved }: Props) {
   const [vescomTesting, setVescomTesting] = useState(false);
   const [metraTestMessage, setMetraTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [metraTesting, setMetraTesting] = useState(false);
+  const [storagePaths, setStoragePaths] = useState<StoragePaths | null>(null);
+  const [backupMessage, setBackupMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [pathPicker, setPathPicker] = useState<'vescom' | 'metra' | null>(null);
 
   useEffect(() => {
     setSettings(SettingsStorage.getAppSettings());
@@ -37,6 +48,7 @@ export function SettingsView({ onSaved }: Props) {
         a.localeCompare(b, 'ru'),
       ),
     );
+    void fetchStoragePaths().then(setStoragePaths);
   }, []);
 
   const toggleReoCargo = (cargoName: string) => {
@@ -60,6 +72,46 @@ export function SettingsView({ onSaved }: Props) {
     setSaved(true);
     onSaved?.();
     setTimeout(() => setSaved(false), 2500);
+  };
+
+  const handleExportBackup = async () => {
+    setBackupMessage(null);
+    setBackupBusy(true);
+    try {
+      await exportStorageBackup();
+      setBackupMessage({ type: 'success', text: 'Резервная копия сохранена в файл' });
+    } catch (err: unknown) {
+      setBackupMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Ошибка экспорта',
+      });
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleImportBackup = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    if (!confirm('Импорт заменит текущие данные и настройки. Продолжить?')) {
+      return;
+    }
+
+    setBackupMessage(null);
+    setBackupBusy(true);
+    try {
+      await importStorageBackup(file);
+      setBackupMessage({ type: 'success', text: 'Импорт выполнен. Страница будет перезагружена.' });
+      window.setTimeout(() => window.location.reload(), 800);
+    } catch (err: unknown) {
+      setBackupMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Ошибка импорта',
+      });
+      setBackupBusy(false);
+    }
   };
 
   const handleTestReo = async () => {
@@ -379,13 +431,22 @@ export function SettingsView({ onSaved }: Props) {
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="sm:col-span-2">
             <label className={labelClass}>Путь к базе данных</label>
-            <input
-              type="text"
-              value={settings.vescom_db_path}
-              onChange={(e) => updateField('vescom_db_path', e.target.value)}
-              placeholder="C:\\Path\\To\\VESCOM.GDB"
-              className={inputClass}
-            />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={settings.vescom_db_path}
+                onChange={(e) => updateField('vescom_db_path', e.target.value)}
+                placeholder="C:\\Path\\To\\VESCOM.GDB"
+                className={inputClass}
+              />
+              <button
+                type="button"
+                onClick={() => setPathPicker('vescom')}
+                className="shrink-0 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                Обзор...
+              </button>
+            </div>
           </div>
           <div>
             <label className={labelClass}>Пользователь Firebird</label>
@@ -446,15 +507,24 @@ export function SettingsView({ onSaved }: Props) {
         </label>
 
         <div>
-          <label className={labelClass}>Путь к базе данных</label>
-          <input
-            type="text"
-            value={settings.metra_db_path}
-            onChange={(e) => updateField('metra_db_path', e.target.value)}
-            placeholder="TWeights.db"
-            className={inputClass}
-          />
-          <p className="mt-1 text-xs text-slate-500">Относительный путь — от корня проекта, абсолютный — полный путь к файлу.</p>
+          <label className={labelClass}>Каталог базы Metra</label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={settings.metra_db_path}
+              onChange={(e) => updateField('metra_db_path', e.target.value)}
+              placeholder="C:\\Path\\To\\Metra"
+              className={inputClass}
+            />
+            <button
+              type="button"
+              onClick={() => setPathPicker('metra')}
+              className="shrink-0 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            >
+              Обзор...
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">Выберите каталог, в котором лежит файл <code>TWeights.db</code>.</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -475,6 +545,74 @@ export function SettingsView({ onSaved }: Props) {
           )}
         </div>
       </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+          <FolderOpen size={18} className="text-slate-600" />
+          <h3 className="text-sm font-semibold text-slate-800">Данные и резервное копирование</h3>
+        </div>
+        <p className="text-xs text-slate-500">
+          Настройки сохраняются в <code>config.json</code>, журнал и справочники — в SQLite-базе <code>BD/weighing.db</code> рядом с приложением.
+        </p>
+        {storagePaths && (
+          <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 space-y-1">
+            <div><span className="font-medium">Конфиг:</span> {storagePaths.config_file}</div>
+            <div><span className="font-medium">База:</span> {storagePaths.database_file}</div>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleExportBackup}
+            disabled={backupBusy}
+            className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+          >
+            <Download size={16} /> Экспорт
+          </button>
+          <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50">
+            <Upload size={16} /> Импорт
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              disabled={backupBusy}
+              onChange={handleImportBackup}
+            />
+          </label>
+          {backupMessage && (
+            <span className={`flex items-center gap-1.5 text-sm ${backupMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
+              {backupMessage.type === 'error' && <AlertCircle size={16} />}
+              {backupMessage.type === 'success' && <CheckCircle2 size={16} />}
+              {backupMessage.text}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <PathBrowserModal
+        open={pathPicker === 'vescom'}
+        mode="file"
+        title="Выбор файла базы Vescom"
+        extensions={['.fdb', '.gdb']}
+        initialPath={settings.vescom_db_path}
+        onClose={() => setPathPicker(null)}
+        onSelect={(path) => {
+          updateField('vescom_db_path', path);
+          setPathPicker(null);
+        }}
+      />
+
+      <PathBrowserModal
+        open={pathPicker === 'metra'}
+        mode="directory"
+        title="Выбор каталога базы Metra"
+        initialPath={settings.metra_db_path}
+        onClose={() => setPathPicker(null)}
+        onSelect={(path) => {
+          updateField('metra_db_path', path);
+          setPathPicker(null);
+        }}
+      />
 
       <div className="flex items-center gap-3">
         <button

@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { UserStorage, SessionStorage, ProfileStorage, initializeStorage, type Session as LocalSession } from '@/lib/storage';
+import { loadStorageFromServer } from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 
 export type UserRole = 'user' | 'admin';
@@ -32,18 +33,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
 
   useEffect(() => {
-    initializeStorage();
+    let active = true;
 
-    const storedSession = SessionStorage.getSession();
-    if (storedSession) {
-      setSession(storedSession);
-      setProfile({
-        username: storedSession.profile.username,
-        display_name: storedSession.profile.display_name,
-        role: storedSession.profile.role,
-      });
-    }
-    setLoading(false);
+    void (async () => {
+      await loadStorageFromServer();
+      if (!active) return;
+
+      initializeStorage();
+
+      const storedSession = SessionStorage.getSession();
+      if (storedSession) {
+        setSession(storedSession);
+        setProfile({
+          username: storedSession.profile.username,
+          display_name: storedSession.profile.display_name,
+          role: storedSession.profile.role,
+        });
+      }
+      setLoading(false);
+    })();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const signIn = useCallback(async (username: string, password: string) => {
