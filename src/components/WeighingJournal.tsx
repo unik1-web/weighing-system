@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS } from '@/lib/storage';
-import { getReoSendState, sendTicketsToReo, isReoCargoEligible } from '@/lib/reo';
+import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
-import { Search, Calendar, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2 } from 'lucide-react';
+import { Search, Calendar, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson } from 'lucide-react';
 
 interface Props {
   refreshKey: number;
@@ -40,6 +40,9 @@ export function WeighingJournal({ refreshKey }: Props) {
 
   const reoSendState = getReoSendState(TicketStorage.getAll());
   const { eligibleTickets, disabledReason } = reoSendState;
+  const reoComplianceIssues = getReoComplianceIssues(eligibleTickets, { checkCredentials: false });
+  const reoComplianceErrors = reoComplianceIssues.filter((issue) => issue.level === 'error');
+  const reoComplianceWarnings = reoComplianceIssues.filter((issue) => issue.level === 'warning');
 
   const filtered = tickets.filter((t) => {
     if (!search) return true;
@@ -89,6 +92,21 @@ export function WeighingJournal({ refreshKey }: Props) {
     } catch (err: any) {
       setError(err.message);
     }
+  };
+
+  const handleCreateReoJson = () => {
+    if (eligibleTickets.length === 0) {
+      setError('Нет записей, подходящих для формирования JSON РЭО');
+      return;
+    }
+
+    if (reoComplianceErrors.length > 0) {
+      setError(`Нельзя сформировать JSON: ${reoComplianceErrors[0].message}`);
+      return;
+    }
+
+    setError(null);
+    downloadReoJsonFile(eligibleTickets);
   };
 
   const exportCSV = () => {
@@ -148,12 +166,34 @@ export function WeighingJournal({ refreshKey }: Props) {
           {sendingBulk ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
           Отправить в РЭО{eligibleTickets.length > 0 ? ` (${eligibleTickets.length})` : ''}
         </button>
+        <button
+          onClick={handleCreateReoJson}
+          disabled={eligibleTickets.length === 0 || reoComplianceErrors.length > 0}
+          title="Сформировать JSON-файл для отправки в РЭО (multipart/form-data -F file=@...)"
+          className="flex items-center gap-2 rounded-lg border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <FileJson size={16} />
+          Создать JSON для РЭО{eligibleTickets.length > 0 ? ` (${eligibleTickets.length})` : ''}
+        </button>
         <button onClick={exportCSV} className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"><Download size={16} /> Экспорт CSV</button>
       </div>
 
       {disabledReason && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           {disabledReason}
+        </div>
+      )}
+
+      {reoComplianceWarnings.length > 0 && eligibleTickets.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <p className="font-medium">Соответствие инструкции РЭО — рекомендуется заполнить:</p>
+          <ul className="mt-1 list-disc pl-5">
+            {reoComplianceWarnings.slice(0, 5).map((issue, index) => (
+              <li key={`${issue.ticketNumber}-${index}`}>
+                {issue.ticketNumber != null ? `Запись №${issue.ticketNumber}: ` : ''}{issue.message}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

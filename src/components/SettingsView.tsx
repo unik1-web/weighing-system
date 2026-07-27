@@ -7,7 +7,7 @@ import {
   type AppSettings,
   type PrintLayout,
 } from '@/lib/storage';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database } from 'lucide-react';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
 
@@ -25,6 +25,8 @@ export function SettingsView({ onSaved }: Props) {
   const [reoTesting, setReoTesting] = useState(false);
   const [vescomTestMessage, setVescomTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [vescomTesting, setVescomTesting] = useState(false);
+  const [metraTestMessage, setMetraTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [metraTesting, setMetraTesting] = useState(false);
 
   useEffect(() => {
     setSettings(SettingsStorage.getAppSettings());
@@ -101,6 +103,26 @@ export function SettingsView({ onSaved }: Props) {
       setVescomTestMessage({ type: 'error', text: err.message ?? 'Ошибка подключения к Vescom' });
     } finally {
       setVescomTesting(false);
+    }
+  };
+
+  const handleTestMetra = async () => {
+    setMetraTestMessage(null);
+    if (!settings.metra_db_path.trim()) {
+      setMetraTestMessage({ type: 'error', text: 'Укажите путь к базе Metra' });
+      return;
+    }
+
+    setMetraTesting(true);
+    try {
+      const response = await apiPost<{ success: true; message: string; count?: number }>('/api/metra/test', {
+        db_path: settings.metra_db_path.trim(),
+      });
+      setMetraTestMessage({ type: 'success', text: response.message ?? 'Подключение к Metra успешно' });
+    } catch (err: any) {
+      setMetraTestMessage({ type: 'error', text: err.message ?? 'Ошибка подключения к Metra' });
+    } finally {
+      setMetraTesting(false);
     }
   };
 
@@ -399,6 +421,56 @@ export function SettingsView({ onSaved }: Props) {
               {vescomTestMessage.type === 'error' && <AlertCircle size={16} />}
               {vescomTestMessage.type === 'success' && <CheckCircle2 size={16} />}
               {vescomTestMessage.text}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+          <Scale size={18} className="text-violet-600" />
+          <h3 className="text-sm font-semibold text-slate-800">База Metra (TWeights.db)</h3>
+        </div>
+        <p className="text-xs text-slate-500">
+          База ScaleData программы НПП «Метра». По умолчанию файл <code>TWeights.db</code> в корне проекта. Перед проверкой запустите backend: <code>npm run dev:api</code>
+        </p>
+
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.metra_enabled}
+            onChange={(e) => updateField('metra_enabled', e.target.checked)}
+            className="rounded border-slate-300"
+          />
+          <span className="text-sm text-slate-700">Включить импорт из Metra</span>
+        </label>
+
+        <div>
+          <label className={labelClass}>Путь к базе данных</label>
+          <input
+            type="text"
+            value={settings.metra_db_path}
+            onChange={(e) => updateField('metra_db_path', e.target.value)}
+            placeholder="TWeights.db"
+            className={inputClass}
+          />
+          <p className="mt-1 text-xs text-slate-500">Относительный путь — от корня проекта, абсолютный — полный путь к файлу.</p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={handleTestMetra}
+            disabled={metraTesting}
+            className="rounded-lg border border-violet-300 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700 transition hover:bg-violet-100 disabled:opacity-50"
+          >
+            {metraTesting ? 'Проверка...' : 'Проверка Metra'}
+          </button>
+          {metraTestMessage && (
+            <span className={`flex items-center gap-1.5 text-sm ${metraTestMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
+              {metraTestMessage.type === 'error' && <AlertCircle size={16} />}
+              {metraTestMessage.type === 'success' && <CheckCircle2 size={16} />}
+              {metraTestMessage.text}
             </span>
           )}
         </div>

@@ -141,7 +141,7 @@ export function WeighingForm({ onSaved }: Props) {
 
     setSaving(true);
     const now = new Date().toISOString();
-    const payload: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at'> = {
+    const payload: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at' | 'reo_status' | 'reo_sent_at'> = {
       vehicle_number: vehicleNumber,
       vehicle_brand: vehicleBrand,
       trailer_number: trailerNumber,

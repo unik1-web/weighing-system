@@ -373,6 +373,8 @@ export interface AppSettings {
   vescom_db_path: string;
   vescom_db_user: string;
   vescom_db_password: string;
+  metra_enabled: boolean;
+  metra_db_path: string;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -393,6 +395,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   vescom_db_path: '',
   vescom_db_user: 'SYSDBA',
   vescom_db_password: 'masterkey',
+  metra_enabled: false,
+  metra_db_path: 'TWeights.db',
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -432,6 +436,8 @@ export const SettingsStorage = {
       vescom_db_path: stored.vescom_db_path ?? DEFAULT_APP_SETTINGS.vescom_db_path,
       vescom_db_user: stored.vescom_db_user ?? DEFAULT_APP_SETTINGS.vescom_db_user,
       vescom_db_password: stored.vescom_db_password ?? DEFAULT_APP_SETTINGS.vescom_db_password,
+      metra_enabled: stored.metra_enabled === 'true',
+      metra_db_path: stored.metra_db_path ?? DEFAULT_APP_SETTINGS.metra_db_path,
     };
   },
 
@@ -456,6 +462,8 @@ export const SettingsStorage = {
       vescom_db_path: next.vescom_db_path,
       vescom_db_user: next.vescom_db_user,
       vescom_db_password: next.vescom_db_password,
+      metra_enabled: String(next.metra_enabled),
+      metra_db_path: next.metra_db_path,
     };
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;

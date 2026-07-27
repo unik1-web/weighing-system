@@ -73,6 +73,18 @@ export interface VescomWeighingItem {
   cargo_name: string;
 }
 
+export interface MetraWeighingItem {
+  rec_no: number;
+  datetimebrutto: string;
+  datetimetara: string;
+  vehicle_number: string;
+  gross_weight: number | null;
+  tare_weight: number | null;
+  net_weight: number | null;
+  operator_name: string;
+  cargo_name: string;
+}
+
 export function normalizeImportDateTime(value: string | null | undefined): string {
   if (!value) return '';
   const normalized = value.includes('T') ? value : value.replace(' ', 'T');
@@ -84,6 +96,10 @@ export function normalizeImportDateTime(value: string | null | undefined): strin
 
 export function vescomImportKey(item: VescomWeighingItem): string {
   return `${normalizeImportDateTime(item.datetimebrutto)}_${normalizeImportDateTime(item.datetimetara)}_${item.vehicle_number.trim()}`;
+}
+
+export function metraImportKey(item: MetraWeighingItem): string {
+  return `${normalizeImportDateTime(item.datetimebrutto)}_${normalizeImportDateTime(item.datetimetara)}_${item.vehicle_number.trim()}_${item.rec_no}`;
 }
 
 export function ticketImportKey(ticket: {

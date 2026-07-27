@@ -7,12 +7,13 @@ import { DictionariesView } from '@/components/DictionariesView';
 import { ReportsView } from '@/components/ReportsView';
 import { SettingsView } from '@/components/SettingsView';
 import { VescomImportView } from '@/components/VescomImportView';
+import { MetraImportView } from '@/components/MetraImportView';
 import { printTicket } from '@/components/PrintAct';
 import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
-import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, ShieldCheck, Settings, Database } from 'lucide-react';
+import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, ShieldCheck, Settings, Database, HardDrive } from 'lucide-react';
 
-type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'settings';
+type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'settings';
 
 function MainApp() {
   const { displayName, signOut, isAdmin } = useAuth();
@@ -39,7 +40,10 @@ function MainApp() {
     if (tab === 'vescom' && !appSettings.vescom_enabled) {
       setTab('weighing');
     }
-  }, [tab, appSettings.vescom_enabled]);
+    if (tab === 'metra' && !appSettings.metra_enabled) {
+      setTab('weighing');
+    }
+  }, [tab, appSettings.vescom_enabled, appSettings.metra_enabled]);
 
   const tabs: { id: Tab; label: string; icon: typeof Scale }[] = [
     { id: 'weighing', label: 'Взвешивание', icon: Scale },
@@ -48,6 +52,9 @@ function MainApp() {
     { id: 'dictionaries', label: 'Справочники', icon: Library },
     ...(appSettings.vescom_enabled
       ? [{ id: 'vescom' as const, label: 'Импорт Vescom', icon: Database }]
+      : []),
+    ...(appSettings.metra_enabled
+      ? [{ id: 'metra' as const, label: 'Импорт Metra', icon: HardDrive }]
       : []),
     { id: 'settings', label: 'Настройки', icon: Settings },
   ];
@@ -104,6 +111,9 @@ function MainApp() {
         {tab === 'dictionaries' && <DictionariesView />}
         {tab === 'vescom' && appSettings.vescom_enabled && (
           <VescomImportView onImported={() => setJournalKey((k) => k + 1)} />
+        )}
+        {tab === 'metra' && appSettings.metra_enabled && (
+          <MetraImportView onImported={() => setJournalKey((k) => k + 1)} />
         )}
         {tab === 'settings' && <SettingsView onSaved={() => setSettingsKey((k) => k + 1)} />}
       </main>

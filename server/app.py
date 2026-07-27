@@ -13,6 +13,14 @@ try:
 except ImportError:  # pragma: no cover - optional until Vescom is used
     fdb = None
 
+from metra import fetch_metra_items, resolve_metra_db_path, test_metra_connection
+from reo_client import (
+    build_reo_test_payload,
+    format_reo_error,
+    is_reo_test_successful,
+    post_reo_import,
+)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -113,19 +121,14 @@ def reo_test():
         return error_response('Не указаны URL сервиса или ключ доступа')
 
     try:
-        logger.info('REO test request to %s', object_url)
-        response = requests.post(
-            object_url,
-            json={
-                'ObjectId': object_id,
-                'AccessKey': access_key,
-                'WeightControls': [],
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        logger.info('REO test successful')
-        return jsonify({'success': True, 'message': 'Подключение к РЭО успешно'})
+        logger.info('REO test connection to %s', object_url)
+        payload = build_reo_test_payload(object_id, access_key)
+        response = post_reo_import(object_url, payload, filename='data_test.json')
+        if is_reo_test_successful(response):
+            logger.info('REO test successful (HTTP %s)', response.status_code)
+            return jsonify({'success': True, 'message': 'Подключение к РЭО успешно'})
+        logger.warning('REO test failed: %s', format_reo_error(response))
+        return error_response(f'Ошибка подключения к РЭО: {format_reo_error(response)}')
     except Exception as exc:
         logger.exception('REO test failed')
         return error_response(f'Ошибка подключения к РЭО: {exc}')
@@ -142,11 +145,16 @@ def reo_send():
     if not isinstance(payload, dict):
         return error_response('Некорректный формат данных для отправки')
 
-    count = len(payload.get('WeightControls', []))
+    count = len(payload.get('weightControls') or payload.get('WeightControls') or [])
     try:
         logger.info('REO send request to %s (%s records)', object_url, count)
-        response = requests.post(object_url, json=payload, timeout=60)
-        response.raise_for_status()
+        filename = f'data_{datetime.now().strftime("%Y-%m-%d")}.json'
+        response = post_reo_import(object_url, payload, filename=filename)
+        if response.status_code not in (200, 422):
+            response.raise_for_status()
+        if response.status_code == 422:
+            logger.warning('REO send validation error: %s', format_reo_error(response))
+            return error_response(f'Ошибка отправки в РЭО: {format_reo_error(response)}')
         logger.info('REO send successful (%s records)', count)
         return jsonify({'success': True, 'sent': count})
     except Exception as exc:
@@ -214,6 +222,51 @@ def vescom_weighing_data():
     except Exception as exc:
         logger.exception('Vescom fetch failed')
         return error_response(f'Ошибка чтения Vescom: {exc}')
+
+
+@app.post('/api/metra/test')
+def metra_test():
+    data = request.get_json(silent=True) or {}
+    db_path = (data.get('db_path') or '').strip()
+
+    if not db_path:
+        return error_response('Не указан путь к базе Metra')
+
+    try:
+        resolved = resolve_metra_db_path(db_path)
+        logger.info('Metra test connection to %s', resolved)
+        count = test_metra_connection(db_path)
+        logger.info('Metra test successful (%s records)', count)
+        return jsonify({
+            'success': True,
+            'message': f'Подключение к базе Metra успешно ({count} записей)',
+            'count': count,
+        })
+    except Exception as exc:
+        logger.exception('Metra test failed')
+        return error_response(f'Ошибка подключения к Metra: {exc}')
+
+
+@app.get('/api/metra/weighing_data')
+def metra_weighing_data():
+    date_str = (request.args.get('date') or datetime.now().strftime('%Y-%m-%d')).strip()
+    db_path = (request.args.get('db_path') or '').strip()
+
+    if not db_path:
+        return error_response('Не указан путь к базе Metra')
+
+    try:
+        datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError:
+        return error_response('Некорректная дата')
+
+    try:
+        items = fetch_metra_items(db_path, date_str)
+        logger.info('Metra fetch completed: %s records for %s', len(items), date_str)
+        return jsonify({'success': True, 'items': items})
+    except Exception as exc:
+        logger.exception('Metra fetch failed')
+        return error_response(f'Ошибка чтения Metra: {exc}')
 
 
 if __name__ == '__main__':
