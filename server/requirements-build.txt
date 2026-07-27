@@ -1,0 +1,2 @@
+# Build dependencies (install on the build machine only)
+pyinstaller>=6.0.0

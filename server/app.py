@@ -22,6 +22,7 @@ from metra import fetch_metra_dictionary_names, fetch_metra_items, resolve_metra
 from persistence import (
     backup_to_ini,
     build_backup,
+    get_app_root,
     get_storage_paths,
     import_backup,
     import_backup_file,
@@ -43,9 +44,10 @@ from reo_client import (
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, 'frozen', False):
     DIST_DIR = os.path.join(sys._MEIPASS, 'dist')
+    LOG_DIR = os.path.join(get_app_root(), 'logs')
 else:
     DIST_DIR = os.path.abspath(os.path.join(BASE_DIR, '..', 'dist'))
-LOG_DIR = os.path.join(BASE_DIR, 'logs')
+    LOG_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'

@@ -73,6 +73,50 @@ npm run dev
 
 Интерфейс: `http://localhost:5173`, API проксируется на `:5001`.
 
+## Установка на Windows (exe / setup)
+
+Для пользователей **не нужны** Node.js и Python — всё уже внутри пакета.
+
+### Сборка установщика (на машине разработчика)
+
+Требования для сборки:
+
+| Компонент | Назначение |
+|-----------|------------|
+| Node.js 18+ | `npm run build` |
+| Python 3.11/3.12 | PyInstaller, backend |
+| [Inno Setup 6](https://jrsoftware.org/isinfo.php) | создание `WeighingSystem-Setup.exe` (опционально) |
+
+```powershell
+cd weighing-system
+npm install
+pip install -r server/requirements.txt -r server/requirements-build.txt
+npm run build:win
+```
+
+Результат:
+
+| Файл / каталог | Описание |
+|----------------|----------|
+| `release/WeighingSystem-Setup.exe` | установщик (Program Files или выбранный каталог) |
+| `dist/WeighingSystem/WeighingSystem.exe` | portable-версия без установки |
+
+Только exe без setup:
+
+```powershell
+npm run build:win:exe
+```
+
+### Установка у пользователя
+
+1. Запустить `WeighingSystem-Setup.exe`
+2. Выбрать каталог (по умолчанию `C:\Program Files\Система учёта взвешиваний`)
+3. Запустить **WeighingSystem.exe** — откроется браузер на `http://127.0.0.1:5001`
+
+Данные хранятся рядом с программой: `config.ini`, каталог `BD/`, логи `logs/`.
+
+> Для Vescom нужен Firebird client на компьютере (как и при обычном запуске).
+
 ## Первый вход
 
 | Логин | Пароль |
@@ -121,8 +165,14 @@ weighing-system/
 ├── config.ini              # настройки (создаётся при работе)
 ├── BD/
 │   └── weighing.db         # SQLite
+├── installer/
+│   ├── build.ps1           # сборка exe + setup
+│   ├── weighing-system.spec
+│   └── weighing-system.iss # Inno Setup
+├── release/                # WeighingSystem-Setup.exe (после сборки)
 ├── server/
 │   ├── app.py              # Flask API + раздача dist/
+│   ├── launcher.py         # точка входа для exe
 │   ├── persistence.py      # config.ini, backup INI
 │   ├── sqlite_store.py     # SQLite
 │   ├── metra.py            # импорт Metra

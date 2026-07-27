@@ -8,6 +8,8 @@
     "dev:api": "python server/app.py",
     "build": "vite build",
     "start": "python server/app.py",
+    "build:win": "powershell -ExecutionPolicy Bypass -File installer/build.ps1",
+    "build:win:exe": "powershell -ExecutionPolicy Bypass -File installer/build.ps1 -SkipInstaller",
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json"

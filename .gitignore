@@ -29,3 +29,6 @@ config.ini
 config.json
 BD/
 server/data/
+build/
+release/
+dist/WeighingSystem/

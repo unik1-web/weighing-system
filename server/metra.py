@@ -7,8 +7,8 @@ except ImportError:  # pragma: no cover
     Table = None
 
 from text_encoding import decode_db_text, format_vehicle_plate, is_readable_name, looks_like_mojibake, split_person_names
+from persistence import get_app_root
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENCODING = 'cp1251'
 DEFAULT_LABEL = '—'
 UNDEFINED_LABELS = {
@@ -26,7 +26,7 @@ def resolve_metra_db_dir(db_path: str) -> str:
     if os.path.isabs(cleaned):
         resolved = cleaned
     else:
-        resolved = os.path.join(PROJECT_ROOT, cleaned.replace('/', os.sep))
+        resolved = os.path.join(get_app_root(), cleaned.replace('/', os.sep))
 
     if os.path.isdir(resolved):
         return resolved
