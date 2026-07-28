@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import sys
+import threading
 import time
 import webbrowser
 from datetime import datetime
@@ -18,7 +19,14 @@ except ImportError:  # pragma: no cover - optional until Vescom is used
 
 from browse import browse_path
 from dictionary_import import format_import_message, merge_dictionaries
-from metra import fetch_metra_dictionary_names, fetch_metra_items, resolve_metra_db_path, test_metra_connection
+from metra import (
+    fetch_metra_dictionary_names,
+    fetch_metra_items,
+    metra_dictionary_warning,
+    resolve_metra_db_dir,
+    resolve_metra_db_path,
+    test_metra_connection,
+)
 from persistence import (
     backup_to_ini,
     build_backup,
@@ -33,7 +41,7 @@ from persistence import (
     write_config,
     write_database,
 )
-from vescom import connect_vescom, fetch_vescom_dictionaries
+from vescom import connect_vescom, fetch_vescom_dictionaries, fetch_vescom_weighings
 from reo_client import (
     build_reo_test_payload,
     format_reo_error,
@@ -107,36 +115,30 @@ def fetch_vescom_rows(db_path: str, date_str: str, user: str, password: str):
         )
 
     logger.info('Vescom query for date=%s db=%s', date_str, db_path)
-    conn = connect_vescom(db_path, user, password)
-    cursor = conn.cursor()
-
-    query = """
-        SELECT DATE_BRUTTO + TIME_BRUTTO AS DATETIME_BRUTTO,
-               DATE_TARA + TIME_TARA AS DATETIME_TARA,
-               NOMER_TS || REGION_TS AS NOMER_TS_FULL,
-               MARKA_TS,
-               FIRMA_POL,
-               BRUTTO,
-               TARA,
-               NETTO,
-               GRUZ_NAME
-        FROM EVENTS
-        WHERE DATE_TARA IS NOT NULL
-          AND DATE_BRUTTO = ?
-          AND ENABLE = 0
-    """
-
-    cursor.execute(query, (date_str,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    logger.info('Vescom query completed: %s rows', len(rows))
-    return rows
+    items = fetch_vescom_weighings(db_path, date_str, user, password)
+    logger.info('Vescom query completed: %s rows', len(items))
+    return items
 
 
 @app.get('/api/health')
 def health():
     return jsonify({'success': True, 'service': 'weighing-system-api'})
+
+
+@app.post('/api/shutdown')
+def shutdown_application():
+    shutdown_func = request.environ.get('werkzeug.server.shutdown')
+
+    def _stop() -> None:
+        time.sleep(0.4)
+        if shutdown_func is not None:
+            shutdown_func()
+            return
+        os._exit(0)
+
+    logger.info('Application shutdown requested from %s', request.remote_addr)
+    threading.Thread(target=_stop, daemon=True).start()
+    return jsonify({'success': True, 'message': 'Приложение завершает работу'})
 
 
 @app.get('/api/storage/paths')
@@ -379,20 +381,7 @@ def vescom_weighing_data():
         return error_response('Некорректная дата')
 
     try:
-        rows = fetch_vescom_rows(db_path, date_str, user, password)
-        items = []
-        for row in rows:
-            items.append({
-                'datetimebrutto': row[0].strftime('%Y-%m-%d %H:%M:%S') if row[0] else '',
-                'datetimetara': row[1].strftime('%Y-%m-%d %H:%M:%S') if row[1] else '',
-                'vehicle_number': row[2] or '',
-                'vehicle_brand': row[3] or '',
-                'receiver_name': row[4] or '',
-                'gross_weight': float(row[5]) if row[5] is not None else None,
-                'tare_weight': float(row[6]) if row[6] is not None else None,
-                'net_weight': float(row[7]) if row[7] is not None else None,
-                'cargo_name': row[8] or '',
-            })
+        items = fetch_vescom_rows(db_path, date_str, user, password)
         return jsonify({'success': True, 'items': items})
     except Exception as exc:
         logger.exception('Vescom fetch failed')
@@ -470,8 +459,10 @@ def metra_weighing_data():
 
     try:
         items = fetch_metra_items(db_path, date_str)
+        db_dir = resolve_metra_db_dir(db_path)
+        warning = metra_dictionary_warning(db_dir) if db_dir else None
         logger.info('Metra fetch completed: %s records for %s', len(items), date_str)
-        return jsonify({'success': True, 'items': items})
+        return jsonify({'success': True, 'items': items, 'warning': warning})
     except Exception as exc:
         logger.exception('Metra fetch failed')
         return error_response(f'Ошибка чтения Metra: {exc}')
@@ -517,9 +508,17 @@ def serve_frontend(path: str):
     if path:
         asset_path = os.path.join(DIST_DIR, path)
         if os.path.isfile(asset_path):
-            return send_from_directory(DIST_DIR, path)
+            response = send_from_directory(DIST_DIR, path)
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            return response
 
-    return send_from_directory(DIST_DIR, 'index.html')
+    response = send_from_directory(DIST_DIR, 'index.html')
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 
 if __name__ == '__main__':

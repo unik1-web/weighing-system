@@ -2,6 +2,7 @@
 import { scheduleConfigSync, scheduleDatabaseSync, flushDatabaseSync, DICTIONARIES_UPDATED_EVENT } from './storage-sync';
 import { formatVehiclePlate } from './vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from './text-format';
+import { ticketImportKey } from './import-keys';
 
 export type WeightSource = 'manual' | 'instrument';
 export type TicketStatus = 'open' | 'completed';
@@ -241,27 +242,53 @@ export const TicketStorage = {
     ticket: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at' | 'reo_status' | 'reo_sent_at'> &
       Partial<Pick<WeighingTicket, 'reo_status' | 'reo_sent_at'>>,
   ): WeighingTicket => {
-    const tickets = getAllTickets();
-    const maxNumber = Math.max(0, ...tickets.map(t => t.ticket_number || 0));
+    return TicketStorage.createMany([ticket])[0];
+  },
 
-    const newTicket: WeighingTicket = normalizeTicket({
-      id: crypto.randomUUID(),
-      ticket_number: maxNumber + 1,
-      created_at: new Date().toISOString(),
-      reo_status: ticket.reo_status ?? 'pending',
-      reo_sent_at: ticket.reo_sent_at ?? null,
-      ...ticket,
+  createMany: (
+    tickets: Array<
+      Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at' | 'reo_status' | 'reo_sent_at'> &
+        Partial<Pick<WeighingTicket, 'reo_status' | 'reo_sent_at'>>
+    >,
+  ): WeighingTicket[] => {
+    if (tickets.length === 0) return [];
+
+    const stored = getAllTickets();
+    let maxNumber = Math.max(0, ...stored.map((ticket) => ticket.ticket_number || 0));
+    const createdAt = new Date().toISOString();
+    const created: WeighingTicket[] = tickets.map((ticket) => {
+      maxNumber += 1;
+      return normalizeTicket({
+        id: crypto.randomUUID(),
+        ticket_number: maxNumber,
+        created_at: createdAt,
+        reo_status: ticket.reo_status ?? 'pending',
+        reo_sent_at: ticket.reo_sent_at ?? null,
+        ...ticket,
+      });
     });
 
-    tickets.push(newTicket);
-    persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
-    return newTicket;
+    stored.push(...created);
+    persist(STORAGE_KEYS.TICKETS, JSON.stringify(stored));
+    return created;
   },
 
   getAll: (): WeighingTicket[] => {
     return getAllTickets()
       .map(normalizeTicket)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  },
+
+  getImportKeys: (): Set<string> => {
+    return new Set(
+      getAllTickets().map((ticket) =>
+        ticketImportKey({
+          gross_datetime: ticket.gross_datetime,
+          tare_datetime: ticket.tare_datetime,
+          vehicle_number: ticket.vehicle_number,
+        }),
+      ),
+    );
   },
 
   getById: (id: string): WeighingTicket | null => {
@@ -439,6 +466,7 @@ export function normalizeVehicleDictionaryPlates(): boolean {
 
 // Settings storage
 export type PrintLayout = 'act' | 'receipt';
+export type NavTabMode = 'full' | 'compact';
 
 export interface AppSettings {
   org_name: string;
@@ -449,6 +477,7 @@ export interface AppSettings {
   org_ogrn: string;
   org_bik: string;
   print_layout: PrintLayout;
+  nav_tab_mode: NavTabMode;
   reo_enabled: boolean;
   reo_access_key: string;
   reo_object_id: string;
@@ -471,6 +500,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   org_ogrn: '',
   org_bik: '',
   print_layout: 'act',
+  nav_tab_mode: 'full',
   reo_enabled: false,
   reo_access_key: '',
   reo_object_id: '',
@@ -487,6 +517,11 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
   act: 'Акт взвешивания',
   receipt: 'Талон (квитанция)',
+};
+
+export const NAV_TAB_MODE_LABELS: Record<NavTabMode, string> = {
+  full: 'Полное — иконки с названиями',
+  compact: 'Сжатое — только иконки',
 };
 
 export const SettingsStorage = {
@@ -512,6 +547,7 @@ export const SettingsStorage = {
       org_ogrn: stored.org_ogrn ?? DEFAULT_APP_SETTINGS.org_ogrn,
       org_bik: stored.org_bik ?? DEFAULT_APP_SETTINGS.org_bik,
       print_layout: (stored.print_layout as PrintLayout) ?? DEFAULT_APP_SETTINGS.print_layout,
+      nav_tab_mode: stored.nav_tab_mode === 'compact' ? 'compact' : 'full',
       reo_enabled: stored.reo_enabled === 'true',
       reo_access_key: stored.reo_access_key ?? DEFAULT_APP_SETTINGS.reo_access_key,
       reo_object_id: stored.reo_object_id ?? DEFAULT_APP_SETTINGS.reo_object_id,
@@ -538,6 +574,7 @@ export const SettingsStorage = {
       org_ogrn: next.org_ogrn,
       org_bik: next.org_bik,
       print_layout: next.print_layout,
+      nav_tab_mode: next.nav_tab_mode,
       reo_enabled: String(next.reo_enabled),
       reo_access_key: next.reo_access_key,
       reo_object_id: next.reo_object_id,

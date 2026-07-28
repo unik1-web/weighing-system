@@ -39,7 +39,13 @@ function Find-InnoSetup {
 
 Write-Host "==> Project root: $Root"
 
-$pythonVersion = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+$pythonVersion = (py -3.11 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null)
+if (-not $pythonVersion) {
+    $pythonVersion = python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+    Write-Warning "Python 3.11 not found, using $pythonVersion"
+} else {
+    Write-Host "==> Using Python $pythonVersion for packaging"
+}
 if ($pythonVersion -notin @('3.11', '3.12')) {
     Write-Warning "Recommended Python 3.11 or 3.12 for Vescom (fdb). Current: $pythonVersion"
 }
@@ -56,11 +62,12 @@ if (-not (Test-Path (Join-Path $Root 'dist\index.html'))) {
 }
 
 Write-Host "==> Installing Python build dependencies..."
-python -m pip install -r (Join-Path $Root 'server\requirements.txt') -r (Join-Path $Root 'server\requirements-build.txt')
+py -3.11 -m pip install -r (Join-Path $Root 'server\requirements.txt') -r (Join-Path $Root 'server\requirements-build.txt')
 
-Write-Host "==> Packaging with PyInstaller..."
+Write-Host "==> Packaging with PyInstaller (Python 3.11)..."
+Remove-Item -Recurse -Force (Join-Path $Root 'build'), (Join-Path $Root 'dist\WeighingSystem') -ErrorAction SilentlyContinue
 Push-Location $Root
-python -m PyInstaller --noconfirm --clean (Join-Path $Root 'installer\weighing-system.spec')
+py -3.11 -m PyInstaller --noconfirm --clean (Join-Path $Root 'installer\weighing-system.spec')
 Pop-Location
 
 $exePath = Join-Path $Root 'dist\WeighingSystem\WeighingSystem.exe'

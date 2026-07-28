@@ -115,7 +115,8 @@ npm run build:win:exe
 
 Данные хранятся рядом с программой: `config.ini`, каталог `BD/`, логи `logs/`.
 
-> Для Vescom нужен Firebird client на компьютере (как и при обычном запуске).
+> Для Vescom нужен Firebird client на компьютере (как и при обычном запуске).  
+> Сборка exe выполняется через **Python 3.11**: `py -3.11 -m pip install pypxlib` (нужен для Metra).
 
 ## Первый вход
 

@@ -1,11 +1,6 @@
 import os
 from datetime import datetime
 
-try:
-    from pypxlib import Table
-except ImportError:  # pragma: no cover
-    Table = None
-
 from text_encoding import decode_db_text, format_vehicle_plate, is_readable_name, looks_like_mojibake, split_person_names
 from persistence import get_app_root
 
@@ -16,6 +11,36 @@ UNDEFINED_LABELS = {
     'не определён',
     'не определена',
 }
+
+_Table = None
+_table_error: Exception | None = None
+_dictionary_cache: dict[str, tuple[str, dict[str, dict[int, str]]]] = {}
+_price_cache: dict[str, tuple[str, dict[int, float]]] = {}
+
+
+def get_table_class():
+    global _Table, _table_error
+    if _Table is not None:
+        return _Table
+    if _table_error is not None:
+        return None
+    try:
+        from pypxlib import Table as PxTable
+        _Table = PxTable
+    except Exception as exc:  # pragma: no cover - optional dependency
+        _table_error = exc
+        _Table = None
+    return _Table
+
+
+def _require_table():
+    table_cls = get_table_class()
+    if table_cls is None:
+        message = 'Модуль pypxlib недоступен'
+        if _table_error is not None:
+            message = f'{message}: {_table_error}'
+        raise RuntimeError(message)
+    return table_cls
 
 
 def resolve_metra_db_dir(db_path: str) -> str:
@@ -101,12 +126,41 @@ def _lookup_name(mapping: dict[int, str], key, default: str = DEFAULT_LABEL) -> 
     return name or default
 
 
+def _resolve_dictionary_path(db_dir: str, file_name: str) -> str:
+    direct = os.path.join(db_dir, file_name)
+    if os.path.isfile(direct):
+        return direct
+
+    target = file_name.casefold()
+    try:
+        for name in os.listdir(db_dir):
+            if name.casefold() == target:
+                return os.path.join(db_dir, name)
+    except OSError:
+        pass
+    return direct
+
+
+def _metra_cache_signature(db_dir: str) -> str:
+    parts: list[str] = []
+    try:
+        for name in sorted(os.listdir(db_dir)):
+            if not name.upper().endswith('.DB'):
+                continue
+            path = os.path.join(db_dir, name)
+            if os.path.isfile(path):
+                parts.append(f'{name}:{os.path.getmtime(path)}:{os.path.getsize(path)}')
+    except OSError:
+        return db_dir
+    return '|'.join(parts)
+
+
 def _load_dictionary(db_dir: str, file_name: str, id_field: str, name_field: str) -> dict[int, str]:
-    path = os.path.join(db_dir, file_name)
+    path = _resolve_dictionary_path(db_dir, file_name)
     if not os.path.isfile(path):
         return {}
 
-    table = Table(path, encoding=ENCODING)
+    table = _require_table()(path, encoding=ENCODING)
     result: dict[int, str] = {}
     try:
         for row in table:
@@ -121,11 +175,17 @@ def _load_dictionary(db_dir: str, file_name: str, id_field: str, name_field: str
 
 
 def _load_price_dictionary(db_dir: str) -> dict[int, float]:
-    path = os.path.join(db_dir, 'TypeMerc.DB')
+    signature = _metra_cache_signature(db_dir)
+    cached = _price_cache.get(db_dir)
+    if cached and cached[0] == signature:
+        return cached[1]
+
+    path = _resolve_dictionary_path(db_dir, 'TypeMerc.DB')
     if not os.path.isfile(path):
+        _price_cache[db_dir] = (signature, {})
         return {}
 
-    table = Table(path, encoding=ENCODING)
+    table = _require_table()(path, encoding=ENCODING)
     result: dict[int, float] = {}
     try:
         for row in table:
@@ -136,17 +196,25 @@ def _load_price_dictionary(db_dir: str) -> dict[int, float]:
                 continue
     finally:
         table.close()
+    _price_cache[db_dir] = (signature, result)
     return result
 
 
 def load_metra_dictionaries(db_dir: str) -> dict[str, dict[int, str]]:
-    return {
+    signature = _metra_cache_signature(db_dir)
+    cached = _dictionary_cache.get(db_dir)
+    if cached and cached[0] == signature:
+        return cached[1]
+
+    data = {
         'merchants': _load_dictionary(db_dir, 'TypeMerc.DB', 'MerchNo', 'TypeMerch'),
         'recipients': _load_dictionary(db_dir, 'TypeRecp.DB', 'RecipNo', 'TypeRecip'),
         'carriers': _load_dictionary(db_dir, 'TypeCatr.DB', 'CaterNo', 'TypeCater'),
         'operations': _load_dictionary(db_dir, 'TypeOper.DB', 'OperNo', 'TypeOper'),
         'drivers': _load_metra_driver_dictionary(db_dir),
     }
+    _dictionary_cache[db_dir] = (signature, data)
+    return data
 
 
 def _load_metra_driver_dictionary(db_dir: str) -> dict[int, str]:
@@ -165,11 +233,11 @@ def _load_metra_driver_dictionary(db_dir: str) -> dict[int, str]:
 
 
 def _collect_driver_names_from_weights(resolved: str) -> set[str]:
-    if not resolved or not os.path.isfile(resolved) or Table is None:
+    if not resolved or not os.path.isfile(resolved) or get_table_class() is None:
         return set()
 
     names: set[str] = set()
-    table = Table(resolved, encoding=ENCODING)
+    table = _require_table()(resolved, encoding=ENCODING)
     try:
         fields = set(table.fields.keys())
         for row in table:
@@ -205,20 +273,60 @@ def _looks_like_driver_name(value: str) -> bool:
 
 
 def _resolve_cargo_name(row, dictionaries: dict[str, dict[int, str]]) -> str:
+    operation = _lookup_name(dictionaries['operations'], row['OperNo'], default='')
+    if operation and operation != DEFAULT_LABEL:
+        return operation
+
     for field in ('Comment', 'Comment2'):
         comment = _clean_text(row[field])
         if comment:
             return comment
 
-    operation = _lookup_name(dictionaries['operations'], row['OperNo'], default='')
-    if operation:
-        return operation
+    merchant = _lookup_name(dictionaries['merchants'], row['MerchNo'], default='')
+    if merchant and merchant != DEFAULT_LABEL:
+        return merchant
 
     return DEFAULT_LABEL
 
 
+def _resolve_driver_name(row, fields: set[str], dictionaries: dict[str, dict[int, str]]) -> str:
+    driver_map = dictionaries.get('drivers', {})
+    if 'DriverNo' in fields and row['DriverNo'] is not None:
+        driver_name = _lookup_name(driver_map, row['DriverNo'], default='')
+        if driver_name and driver_name != DEFAULT_LABEL:
+            return driver_name
+
+    for field in ('Comment', 'Comment2', 'Name1CID'):
+        if field not in fields:
+            continue
+        comment = _clean_text(row[field])
+        if not comment:
+            continue
+        for part in split_person_names(comment):
+            if part and _looks_like_driver_name(part):
+                return part
+
+    return DEFAULT_LABEL
+
+
+def get_metra_dictionary_stats(db_dir: str) -> dict[str, int]:
+    dictionaries = load_metra_dictionaries(db_dir)
+    return {key: len(values) for key, values in dictionaries.items()}
+
+
+def metra_dictionary_warning(db_dir: str) -> str | None:
+    stats = get_metra_dictionary_stats(db_dir)
+    if stats.get('recipients', 0) <= 2 or stats.get('carriers', 0) <= 2:
+        return (
+            'Справочники Metra (TypeRecp.DB / TypeCatr.DB) почти пусты — '
+            'получатель и перевозчик могут не заполняться. '
+            'Обновите справочники в программе Metra или выполните «Импорт справочников».'
+        )
+    return None
+
+
 def test_metra_connection(db_path: str) -> int:
-    if Table is None:
+    if get_table_class() is None:
         raise RuntimeError('Модуль pypxlib не установлен. Выполните: pip install pypxlib')
 
     resolved = resolve_metra_db_path(db_path)
@@ -227,7 +335,7 @@ def test_metra_connection(db_path: str) -> int:
     if not os.path.exists(resolved):
         raise FileNotFoundError(f'Файл базы не найден: {resolved}')
 
-    table = Table(resolved, encoding=ENCODING)
+    table = _require_table()(resolved, encoding=ENCODING)
     try:
         return len(table)
     finally:
@@ -275,8 +383,8 @@ def fetch_metra_dictionary_names(db_path: str) -> dict[str, list[str]]:
 
     vehicles: set[str] = set()
     resolved = resolve_metra_db_path(db_path)
-    if resolved and os.path.isfile(resolved) and Table is not None:
-        table = Table(resolved, encoding=ENCODING)
+    if resolved and os.path.isfile(resolved) and get_table_class() is not None:
+        table = _require_table()(resolved, encoding=ENCODING)
         try:
             fields = set(table.fields.keys())
             driver_map = dictionaries.get('drivers', {})
@@ -304,7 +412,7 @@ def fetch_metra_dictionary_names(db_path: str) -> dict[str, list[str]]:
 
 
 def fetch_metra_items(db_path: str, date_str: str) -> list[dict]:
-    if Table is None:
+    if get_table_class() is None:
         raise RuntimeError('Модуль pypxlib не установлен. Выполните: pip install pypxlib')
 
     db_dir = resolve_metra_db_dir(db_path)
@@ -318,8 +426,9 @@ def fetch_metra_items(db_path: str, date_str: str) -> list[dict]:
     dictionaries = load_metra_dictionaries(db_dir)
     merchant_prices = _load_price_dictionary(db_dir)
 
-    table = Table(resolved, encoding=ENCODING)
+    table = _require_table()(resolved, encoding=ENCODING)
     items: list[dict] = []
+    fields = set(table.fields.keys())
 
     try:
         for row in table:
@@ -358,7 +467,7 @@ def fetch_metra_items(db_path: str, date_str: str) -> list[dict]:
                 'vehicle_number': vehicle_number,
                 'vehicle_brand': '',
                 'trailer_number': trailer_number,
-                'driver_name': DEFAULT_LABEL,
+                'driver_name': _resolve_driver_name(row, fields, dictionaries),
                 'cargo_name': _resolve_cargo_name(row, dictionaries),
                 'shipper_name': _lookup_name(dictionaries['merchants'], merch_no),
                 'receiver_name': _lookup_name(dictionaries['recipients'], row['RecipNo']),

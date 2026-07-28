@@ -10,7 +10,7 @@ import {
   ticketImportKey,
   type MetraWeighingItem,
 } from '@/lib/api';
-import { pauseDatabaseSync, resumeDatabaseSync } from '@/lib/storage-sync';
+import { flushDatabaseSync, pauseDatabaseSync, resumeDatabaseSync } from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 import {
   AlertCircle,
@@ -33,13 +33,14 @@ interface ViewState {
   importing: boolean;
   error: string | null;
   success: string | null;
+  warning: string | null;
   journalVersion: number;
 }
 
 type ViewAction =
   | { type: 'set_date'; date: string }
   | { type: 'load_start' }
-  | { type: 'load_success'; items: MetraWeighingItem[] }
+  | { type: 'load_success'; items: MetraWeighingItem[]; warning?: string | null }
   | { type: 'load_error'; error: string }
   | { type: 'toggle_all'; keys: string[] }
   | { type: 'toggle_item'; key: string; checked: boolean }
@@ -56,6 +57,7 @@ const initialState: ViewState = {
   importing: false,
   error: null,
   success: null,
+  warning: null,
   journalVersion: 0,
 };
 
@@ -64,7 +66,7 @@ function viewReducer(state: ViewState, action: ViewAction): ViewState {
     case 'set_date':
       return { ...state, date: action.date };
     case 'load_start':
-      return { ...state, loading: true, error: null, success: null };
+      return { ...state, loading: true, error: null, success: null, warning: null };
     case 'load_success': {
       const keys = action.items.map(metraImportKey);
       return {
@@ -72,6 +74,7 @@ function viewReducer(state: ViewState, action: ViewAction): ViewState {
         loading: false,
         items: action.items,
         selectedKeys: keys,
+        warning: action.warning ?? null,
       };
     }
     case 'load_error':
@@ -218,7 +221,7 @@ export function MetraImportView({ onImported }: Props) {
 
     dispatch({ type: 'load_start' });
     try {
-      const response = await apiGet<{ success: true; items: MetraWeighingItem[] }>(
+      const response = await apiGet<{ success: true; items: MetraWeighingItem[]; warning?: string | null }>(
         '/api/metra/weighing_data',
         {
           date: state.date,
@@ -229,7 +232,7 @@ export function MetraImportView({ onImported }: Props) {
       if (!mountedRef.current || requestId !== requestRef.current) return;
 
       const loadedItems = normalizeItems(response.items);
-      dispatch({ type: 'load_success', items: loadedItems });
+      dispatch({ type: 'load_success', items: loadedItems, warning: response.warning ?? null });
       logger.info('metra', `Загружено записей: ${loadedItems.length}`, { date: state.date });
     } catch (err: unknown) {
       if (!mountedRef.current || requestId !== requestRef.current) return;
@@ -264,9 +267,7 @@ export function MetraImportView({ onImported }: Props) {
     dispatch({ type: 'import_start' });
     pauseDatabaseSync();
     try {
-      for (const item of selectedItems) {
-        TicketStorage.create(buildTicketFromMetra(item));
-      }
+      TicketStorage.createMany(selectedItems.map(buildTicketFromMetra));
 
       if (!mountedRef.current) return;
 
@@ -288,6 +289,7 @@ export function MetraImportView({ onImported }: Props) {
       });
     } finally {
       resumeDatabaseSync();
+      void flushDatabaseSync();
     }
   };
 
@@ -346,6 +348,12 @@ export function MetraImportView({ onImported }: Props) {
       {!settings.metra_db_path.trim() && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           Укажите каталог базы Metra в разделе «Настройки» и запустите backend: <code>npm run dev:api</code>
+        </div>
+      )}
+
+      {state.warning && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {state.warning}
         </div>
       )}
 
@@ -408,6 +416,10 @@ export function MetraImportView({ onImported }: Props) {
                         </div>
                         <div className="text-slate-600">
                           {item.cargo_name} · {item.shipper_name} → {item.receiver_name} · {item.carrier_name}
+                        </div>
+                        <div className="text-slate-500">
+                          Водитель: {item.driver_name}
+                          {item.trailer_number ? ` · Прицеп: ${item.trailer_number}` : ''}
                         </div>
                         <div className="text-slate-500">
                           Брутто {formatWeight(item.gross_weight)} / Тара {formatWeight(item.tare_weight)} / Нетто {formatWeight(item.net_weight)} · {item.operator_name}

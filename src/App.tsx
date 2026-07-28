@@ -11,7 +11,9 @@ import { MetraImportView } from '@/components/MetraImportView';
 import { printTicket } from '@/components/PrintAct';
 import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
-import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, User, ShieldCheck, Settings, Database, HardDrive } from 'lucide-react';
+import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive } from 'lucide-react';
+import { exitApplication } from '@/lib/api';
+import { logger } from '@/lib/logger';
 
 type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'settings';
 
@@ -20,6 +22,26 @@ function MainApp() {
   const [tab, setTab] = useState<Tab>('weighing');
   const [journalKey, setJournalKey] = useState(0);
   const [settingsKey, setSettingsKey] = useState(0);
+
+  const [exiting, setExiting] = useState(false);
+
+  const handleExitApplication = useCallback(async () => {
+    if (exiting) return;
+    if (!window.confirm('Закрыть программу? Несохранённые данные будут записаны на диск.')) {
+      return;
+    }
+
+    setExiting(true);
+    try {
+      await exitApplication();
+      logger.info('app', 'Завершение работы приложения');
+      window.close();
+    } catch (err: unknown) {
+      setExiting(false);
+      const message = err instanceof Error ? err.message : 'Не удалось закрыть программу';
+      window.alert(message);
+    }
+  }, [exiting]);
 
   const handleImported = useCallback(() => {
     setJournalKey((k) => k + 1);
@@ -63,6 +85,8 @@ function MainApp() {
     { id: 'settings', label: 'Настройки', icon: Settings },
   ];
 
+  const compactTabs = appSettings.nav_tab_mode === 'compact';
+
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
@@ -87,9 +111,17 @@ function MainApp() {
               {tabs.map((t) => {
                 const Icon = t.icon;
                 return (
-                  <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-2 rounded-lg px-3 sm:px-4 py-2 text-sm font-semibold transition whitespace-nowrap ${tab === t.id ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}>
+                  <button
+                    key={t.id}
+                    type="button"
+                    title={compactTabs ? t.label : undefined}
+                    onClick={() => setTab(t.id)}
+                    className={`flex items-center rounded-lg py-2 text-sm font-semibold transition whitespace-nowrap ${
+                      compactTabs ? 'justify-center gap-0 px-2.5' : 'gap-2 px-3 sm:px-4'
+                    } ${tab === t.id ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                  >
                     <Icon size={16} />
-                    <span className="hidden sm:inline">{t.label}</span>
+                    {!compactTabs && <span>{t.label}</span>}
                   </button>
                 );
               })}
@@ -105,8 +137,16 @@ function MainApp() {
                   </span>
                 )}
               </div>
+              <button
+                onClick={handleExitApplication}
+                disabled={exiting}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
+                title="Закрыть программу"
+              >
+                <Power size={15} /> <span className="hidden sm:inline">{exiting ? 'Выход...' : 'Выход'}</span>
+              </button>
               <button onClick={signOut} className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-red-50 hover:text-red-600 hover:border-red-200">
-                <LogOut size={15} /> <span className="hidden sm:inline">Выйти</span>
+                <LogOut size={15} /> <span className="hidden sm:inline">Сменить пользователя</span>
               </button>
             </div>
           </div>
@@ -118,15 +158,11 @@ function MainApp() {
         {tab === 'journal' && <WeighingJournal refreshKey={journalKey} />}
         {tab === 'reports' && <ReportsView />}
         {tab === 'dictionaries' && <DictionariesView />}
-        {appSettings.vescom_enabled && (
-          <div className={tab === 'vescom' ? undefined : 'hidden'}>
-            <VescomImportView onImported={handleImported} />
-          </div>
+        {tab === 'vescom' && appSettings.vescom_enabled && (
+          <VescomImportView onImported={handleImported} />
         )}
-        {appSettings.metra_enabled && (
-          <div className={tab === 'metra' ? undefined : 'hidden'}>
-            <MetraImportView onImported={handleImported} />
-          </div>
+        {tab === 'metra' && appSettings.metra_enabled && (
+          <MetraImportView onImported={handleImported} />
         )}
         {tab === 'settings' && <SettingsView onSaved={() => setSettingsKey((k) => k + 1)} />}
       </main>
@@ -134,6 +170,7 @@ function MainApp() {
       <footer className="border-t border-slate-200 bg-white py-4">
         <div className="mx-auto max-w-7xl px-4 text-center text-xs text-slate-400">
           Система учёта взвешивания · Полигон отходов
+          <span className="ml-2 text-slate-300">· сборка {__APP_BUILD_ID__}</span>
         </div>
       </footer>
     </div>

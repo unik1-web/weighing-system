@@ -1,4 +1,5 @@
 import { logger } from './logger';
+import { normalizeImportDateTime as normalizeImportDateTimeValue, ticketImportKey } from './import-keys';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 
@@ -62,15 +63,19 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
 }
 
 export interface VescomWeighingItem {
+  vescom_id?: number | null;
   datetimebrutto: string;
   datetimetara: string;
   vehicle_number: string;
   vehicle_brand: string;
+  driver_name: string;
+  cargo_name: string;
+  shipper_name: string;
   receiver_name: string;
+  carrier_name: string;
   gross_weight: number | null;
   tare_weight: number | null;
   net_weight: number | null;
-  cargo_name: string;
 }
 
 export interface MetraWeighingItem {
@@ -93,27 +98,24 @@ export interface MetraWeighingItem {
   invoice: string;
 }
 
+export async function exitApplication(): Promise<void> {
+  const { flushDatabaseSync, flushStorageSync } = await import('./storage-sync');
+  flushStorageSync();
+  await flushDatabaseSync();
+  await apiPost<{ success: true; message?: string }>('/api/shutdown', {});
+}
+
 export function normalizeImportDateTime(value: string | null | undefined): string {
-  if (!value) return '';
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
-  const date = new Date(normalized);
-  if (Number.isNaN(date.getTime())) return value.trim();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  return normalizeImportDateTimeValue(value);
 }
 
 export function vescomImportKey(item: VescomWeighingItem): string {
-  return `${normalizeImportDateTime(item.datetimebrutto)}_${normalizeImportDateTime(item.datetimetara)}_${item.vehicle_number.trim()}`;
+  const idPart = item.vescom_id != null ? String(item.vescom_id) : '0';
+  return `${idPart}|${item.datetimebrutto}|${item.datetimetara}|${item.vehicle_number.trim()}`;
 }
 
 export function metraImportKey(item: MetraWeighingItem): string {
-  return `${normalizeImportDateTime(item.datetimebrutto)}_${normalizeImportDateTime(item.datetimetara)}_${item.vehicle_number.trim()}_${item.rec_no}`;
+  return `${item.rec_no}|${item.datetimebrutto}|${item.datetimetara}|${item.vehicle_number.trim()}`;
 }
 
-export function ticketImportKey(ticket: {
-  gross_datetime: string | null;
-  tare_datetime: string | null;
-  vehicle_number: string;
-}): string {
-  return `${normalizeImportDateTime(ticket.gross_datetime)}_${normalizeImportDateTime(ticket.tare_datetime)}_${ticket.vehicle_number.trim()}`;
-}
+export { ticketImportKey };

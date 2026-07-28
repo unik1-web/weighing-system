@@ -4,11 +4,13 @@ import {
   DictionaryStorage,
   TicketStorage,
   PRINT_LAYOUT_LABELS,
+  NAV_TAB_MODE_LABELS,
   clearAllDictionaries,
   type AppSettings,
+  type NavTabMode,
   type PrintLayout,
 } from '@/lib/storage';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale, Download, Upload, FolderOpen, Trash2 } from 'lucide-react';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale, Download, Upload, FolderOpen, Trash2, LayoutPanelTop } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
 import {
@@ -22,6 +24,7 @@ import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
+const NAV_TAB_OPTIONS: NavTabMode[] = ['full', 'compact'];
 
 interface Props {
   onSaved?: () => void;
@@ -359,6 +362,44 @@ export function SettingsView({ onSaved }: Props) {
               className={inputClass}
             />
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+          <LayoutPanelTop size={18} className="text-blue-600" />
+          <h3 className="text-sm font-semibold text-slate-800">Вкладки меню</h3>
+        </div>
+        <p className="text-xs text-slate-500">
+          Как отображать пункты навигации в верхней панели.
+        </p>
+
+        <div className="space-y-3">
+          {NAV_TAB_OPTIONS.map((mode) => (
+            <label
+              key={mode}
+              className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition ${
+                settings.nav_tab_mode === mode
+                  ? 'border-blue-500 bg-blue-50/50 ring-1 ring-blue-500/30'
+                  : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <input
+                type="radio"
+                name="nav_tab_mode"
+                value={mode}
+                checked={settings.nav_tab_mode === mode}
+                onChange={() => updateField('nav_tab_mode', mode)}
+                className="mt-1"
+              />
+              <div>
+                <div className="text-sm font-semibold text-slate-800">
+                  {mode === 'full' ? 'Полное' : 'Сжатое'}
+                </div>
+                <div className="text-xs text-slate-500">{NAV_TAB_MODE_LABELS[mode]}</div>
+              </div>
+            </label>
+          ))}
         </div>
       </div>
 
