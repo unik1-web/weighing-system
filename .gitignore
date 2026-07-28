@@ -10,6 +10,9 @@ node_modules
 dist
 dist-ssr
 *.local
+__pycache__/
+.pytest_cache/
+*.pyc
 
 .vscode/*
 !.vscode/extensions.json
