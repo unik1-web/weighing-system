@@ -9,7 +9,7 @@ import {
   type VescomWeighingItem,
 } from '@/lib/api';
 import { ticketImportKey } from '@/lib/import-keys';
-import { pauseDatabaseSync, resumeDatabaseSync } from '@/lib/storage-sync';
+import { flushDatabaseSync, pauseDatabaseSync, resumeDatabaseSync } from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 import {
   AlertCircle,
@@ -287,6 +287,7 @@ export function VescomImportView({ onImported }: Props) {
       });
     } finally {
       resumeDatabaseSync();
+      void flushDatabaseSync();
     }
   };
 
