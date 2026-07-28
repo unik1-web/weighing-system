@@ -403,7 +403,11 @@ def write_database(data: dict[str, Any]) -> None:
                 pass
 
         if STORAGE_KEYS['session'] in data:
-            _replace_session(connection, str(data[STORAGE_KEYS['session']]))
+            session_payload = str(data[STORAGE_KEYS['session']]).strip()
+            if not session_payload or session_payload in ('null', '{}'):
+                connection.execute('DELETE FROM app_sessions')
+            else:
+                _replace_session(connection, session_payload)
 
         for storage_key, category in DICTIONARY_CATEGORIES.items():
             if storage_key not in data:

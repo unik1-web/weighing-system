@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { UserStorage, SessionStorage, ProfileStorage, initializeStorage, normalizeVehicleDictionaryPlates, type Session as LocalSession } from '@/lib/storage';
-import { loadStorageFromServer, DICTIONARIES_UPDATED_EVENT } from '@/lib/storage-sync';
+import { loadStorageFromServer, flushDatabaseSync, DICTIONARIES_UPDATED_EVENT } from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 
 export type UserRole = 'user' | 'admin';
@@ -116,6 +116,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     SessionStorage.clearSession();
     setSession(null);
     setProfile(null);
+    try {
+      await flushDatabaseSync();
+    } catch (err: unknown) {
+      logger.error('auth', 'Не удалось сохранить выход в BD/weighing.db', err);
+    }
   }, [profile?.username]);
 
   const displayName = profile?.display_name || '';

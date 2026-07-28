@@ -220,11 +220,23 @@ export const SessionStorage = {
 
   getSession: (): Session | null => {
     const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-    return stored ? JSON.parse(stored) : null;
+    if (!stored) return null;
+    try {
+      const parsed = JSON.parse(stored) as Session | null;
+      if (!parsed || typeof parsed !== 'object' || !parsed.user || !parsed.profile) {
+        return null;
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
   },
 
   clearSession: (): void => {
-    localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+    // Keep an empty tombstone in storage so the next database sync clears
+    // app_sessions in SQLite. removeItem alone omits the key from the sync
+    // payload and the previous session is restored on reload.
+    persist(STORAGE_KEYS.CURRENT_USER, '');
   },
 };
 
