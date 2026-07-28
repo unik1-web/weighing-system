@@ -1,0 +1,96 @@
+# Архитектура
+
+Кратко: React UI в браузере, Flask API на `127.0.0.1:5001`, постоянные данные на диске рядом с приложением.
+
+## Потоки данных
+
+```
+Браузер (localStorage, ключи app_*)
+        │  load / debounce-save
+        ▼
+Flask API  ──►  config.ini          (настройки)
+           ──►  BD/weighing.db      (журнал, справочники, пользователи)
+           ──►  logs/app.log        (ротация 2 МБ × 5)
+```
+
+- При старте UI читает `/api/config` и `/api/database` и заливает в `localStorage`.
+- Изменения настроек пишутся в `config.ini`; остальное — в SQLite.
+- Ключи без префикса `app_` API игнорирует при сохранении.
+- Адреса `localhost:5173` (Vite) и `127.0.0.1:5001` (Flask) — разный origin → разный `localStorage`. Для постоянной работы открывайте production URL.
+
+## Модули backend (`server/`)
+
+| Файл | Назначение |
+|------|------------|
+| `app.py` | HTTP API, раздача `dist/`, логирование |
+| `launcher.py` | Точка входа PyInstaller-сборки |
+| `persistence.py` | Пути, backup INI, миграция legacy |
+| `sqlite_store.py` | Схема и CRUD SQLite |
+| `config_ini.py` | Чтение/запись секций INI |
+| `vescom.py` | Firebird: взвешивания и справочники |
+| `metra.py` | Paradox `TWeights.db` и словари |
+| `dictionary_import.py` | Слияние справочников с нормализацией |
+| `text_encoding.py` | Декодирование, ФИО, госномера |
+| `reo_client.py` | multipart POST в РЭО |
+| `browse.py` | Обзор файловой системы для UI |
+
+## Модули frontend (`src/`)
+
+| Путь | Назначение |
+|------|------------|
+| `lib/storage.ts` | Модели, localStorage, настройки |
+| `lib/storage-sync.ts` | Синхронизация с API |
+| `lib/api.ts` | Обёртки fetch к `/api/*` |
+| `lib/reo.ts` | Сборка JSON РЭО, валидация |
+| `lib/scales.ts` | Web Serial: парсеры весов |
+| `lib/vehicle-plate.ts` | Нормализация госномеров |
+| `lib/import-keys.ts` | Ключ дедупликации импорта |
+| `components/*ImportView.tsx` | Импорт Vescom / Metra |
+| `components/PrintAct.tsx` | Макеты «акт» и «талон» |
+| `components/SettingsView.tsx` | Организация, РЭО, импорт, UI |
+
+## Нормализация справочников
+
+При импорте Vescom/Metra (`dictionary_import.merge_dictionaries`):
+
+- **Госномера** — латиница→кириллица, без пробелов/дефисов; если нет региона — добавляется `56`; дедуп по `normalize_vehicle_key`.
+- **Водители** — разбор нескольких ФИО из одной строки, формат ФИО.
+- **Прочее** — trim, читаемость текста, casefold-дедуп.
+- Уже существующие записи не дублируются; для авто выбирается более полный бренд/тара.
+
+На старте UI также прогоняет `normalizeVehicleDictionaryPlates()` для уже сохранённых авто.
+
+## Импорт взвешиваний
+
+Ключ записи: `брутто_тара_госномер` (`ticketImportKey` в `import-keys.ts`).  
+Уже импортированные строки в UI помечены и недоступны для повторного импорта.
+
+## Печать
+
+| `print_layout` | Макет | Экземпляров на листе |
+|----------------|-------|----------------------|
+| `act` (по умолчанию) | Акт взвешивания | 2 |
+| `receipt` | Талон-квитанция | 3 (копии 3, 1, 2) |
+
+## Навигация
+
+`nav_tab_mode`: `full` (иконка + подпись) или `compact` (только иконки, подпись в `title`).
+
+## Весы (Web Serial)
+
+Клиентский код, без backend. Браузер: Chrome / Edge. Модели: Микросим М0601, Ньютон, CAS, Мидл Ми ВДА (`src/lib/scales.ts`).
+
+## Переменные окружения
+
+| Переменная | По умолчанию | Назначение |
+|------------|--------------|------------|
+| `HOST` | `127.0.0.1` | bind Flask |
+| `PORT` | `5001` | порт |
+| `OPEN_BROWSER` | `1` | автооткрытие браузера |
+| `FLASK_DEBUG` | off | debug Flask |
+| `VITE_API_URL` | `''` (same-origin) | база API для frontend |
+
+## Сборка Windows
+
+`installer/build.ps1` → PyInstaller (`weighing-system.spec`) → опционально Inno Setup (`weighing-system.iss`).  
+Данные и логи — рядом с `WeighingSystem.exe`, не внутри `_MEIPASS`.
