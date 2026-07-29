@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { UserStorage, SessionStorage, ProfileStorage, initializeStorage, normalizeVehicleDictionaryPlates, type Session as LocalSession } from '@/lib/storage';
-import { loadStorageFromServer, DICTIONARIES_UPDATED_EVENT } from '@/lib/storage-sync';
+import { loadStorageFromServer, isServerDatabaseHydrated, DICTIONARIES_UPDATED_EVENT } from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 
 export type UserRole = 'user' | 'admin';
@@ -43,16 +43,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         window.dispatchEvent(new Event(DICTIONARIES_UPDATED_EVENT));
       }
 
-      initializeStorage();
+      // Only seed defaults after a successful server database read. Seeding while
+      // the API is down would later sync and wipe production data via full-table replace.
+      if (isServerDatabaseHydrated()) {
+        initializeStorage();
+      }
 
       const storedSession = SessionStorage.getSession();
       if (storedSession) {
-        setSession(storedSession);
-        setProfile({
-          username: storedSession.profile.username,
-          display_name: storedSession.profile.display_name,
-          role: storedSession.profile.role,
-        });
+        // Re-validate against live user/profile so demotions, deletes, and a stale
+        // role baked into the session blob cannot keep elevated privileges.
+        const liveProfile = ProfileStorage.getProfile(storedSession.user.id);
+        const liveUser = UserStorage.getUserById(storedSession.user.id);
+        if (!liveProfile || !liveUser) {
+          SessionStorage.clearSession();
+        } else {
+          const session: LocalSession = { user: liveUser, profile: liveProfile };
+          SessionStorage.setSession(session);
+          setSession(session);
+          setProfile({
+            username: liveProfile.username,
+            display_name: liveProfile.display_name,
+            role: liveProfile.role,
+          });
+        }
       }
       setLoading(false);
     })();

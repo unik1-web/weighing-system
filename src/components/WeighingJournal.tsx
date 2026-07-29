@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage } from '@/lib/storage';
+import { flushDatabaseSync } from '@/lib/storage-sync';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
@@ -57,6 +58,7 @@ export function WeighingJournal({ refreshKey }: Props) {
     if (!confirm('Удалить запись о взвешивании?')) return;
     try {
       TicketStorage.delete(id);
+      await flushDatabaseSync();
       await load();
     } catch (err: any) {
       setError(err.message);

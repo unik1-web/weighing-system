@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { type WeighingTicket, type WeightSource, type TicketStatus } from '@/lib/storage';
 import { TicketStorage } from '@/lib/storage';
+import { flushDatabaseSync } from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 import { useDictionary } from '@/hooks/useDictionary';
 import { useAuth } from '@/hooks/useAuth';
@@ -47,6 +48,7 @@ export function WeighingForm({ onSaved }: Props) {
   const [tareDatetime, setTareDatetime] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [lastTicket, setLastTicket] = useState<WeighingTicket | null>(null);
@@ -125,6 +127,9 @@ export function WeighingForm({ onSaved }: Props) {
   };
 
   const handleSave = async (status: TicketStatus) => {
+    // Ref guard: React state `saving` updates too late to block double-clicks in the same tick.
+    if (savingRef.current) return;
+
     setError(null);
     setSuccess(null);
 
@@ -141,6 +146,7 @@ export function WeighingForm({ onSaved }: Props) {
       return;
     }
 
+    savingRef.current = true;
     setSaving(true);
     const now = new Date().toISOString();
     const normalizedVehicleNumber = formatVehiclePlate(vehicleNumber);
@@ -175,19 +181,21 @@ export function WeighingForm({ onSaved }: Props) {
 
     try {
       const ticket = TicketStorage.create(payload);
+      await flushDatabaseSync();
       logger.info('weighing', `Сохранена запись №${ticket.ticket_number}`, {
         status,
         vehicle_number: ticket.vehicle_number,
         cargo_name: ticket.cargo_name,
       });
-      setSaving(false);
       setLastTicket(ticket);
       setSuccess(status === 'completed' ? 'Взвешивание завершено и сохранено.' : 'Запись сохранена как незавершённая.');
       onSaved(ticket);
       resetFormFields();
     } catch (err: any) {
-      setSaving(false);
       setError(err.message);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 

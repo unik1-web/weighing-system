@@ -69,7 +69,10 @@ function MainApp() {
     if (tab === 'metra' && !appSettings.metra_enabled) {
       setTab('weighing');
     }
-  }, [tab, appSettings.vescom_enabled, appSettings.metra_enabled]);
+    if (tab === 'settings' && !isAdmin) {
+      setTab('weighing');
+    }
+  }, [tab, appSettings.vescom_enabled, appSettings.metra_enabled, isAdmin]);
 
   const tabs: { id: Tab; label: string; icon: typeof Scale }[] = [
     { id: 'weighing', label: 'Взвешивание', icon: Scale },
@@ -82,7 +85,7 @@ function MainApp() {
     ...(appSettings.metra_enabled
       ? [{ id: 'metra' as const, label: 'Импорт Metra', icon: HardDrive }]
       : []),
-    { id: 'settings', label: 'Настройки', icon: Settings },
+    ...(isAdmin ? [{ id: 'settings' as const, label: 'Настройки', icon: Settings }] : []),
   ];
 
   const compactTabs = appSettings.nav_tab_mode === 'compact';
@@ -164,7 +167,9 @@ function MainApp() {
         {tab === 'metra' && appSettings.metra_enabled && (
           <MetraImportView onImported={handleImported} />
         )}
-        {tab === 'settings' && <SettingsView onSaved={() => setSettingsKey((k) => k + 1)} />}
+        {tab === 'settings' && isAdmin && (
+          <SettingsView onSaved={() => setSettingsKey((k) => k + 1)} />
+        )}
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-4">

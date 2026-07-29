@@ -175,7 +175,13 @@ export const UserStorage = {
 
 function getAllUsers(): any[] {
   const stored = localStorage.getItem(STORAGE_KEYS.USERS);
-  return stored ? JSON.parse(stored) : [];
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 // Profile storage
@@ -209,7 +215,15 @@ export const ProfileStorage = {
 
 function getAllProfiles(): Record<string, Profile> {
   const stored = localStorage.getItem(STORAGE_KEYS.USERS + '_profiles');
-  return stored ? JSON.parse(stored) : {};
+  if (!stored) return {};
+  try {
+    const parsed = JSON.parse(stored);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, Profile>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 // Session storage
@@ -220,7 +234,16 @@ export const SessionStorage = {
 
   getSession: (): Session | null => {
     const stored = localStorage.getItem(STORAGE_KEYS.CURRENT_USER);
-    return stored ? JSON.parse(stored) : null;
+    if (!stored) return null;
+    try {
+      const parsed = JSON.parse(stored);
+      if (!parsed || typeof parsed !== 'object' || !parsed.user || !parsed.profile) {
+        return null;
+      }
+      return parsed as Session;
+    } catch {
+      return null;
+    }
   },
 
   clearSession: (): void => {
@@ -258,13 +281,14 @@ export const TicketStorage = {
     const createdAt = new Date().toISOString();
     const created: WeighingTicket[] = tickets.map((ticket) => {
       maxNumber += 1;
+      // Spread ticket first so generated id / ticket_number / created_at cannot be overwritten.
       return normalizeTicket({
+        ...ticket,
         id: crypto.randomUUID(),
         ticket_number: maxNumber,
         created_at: createdAt,
         reo_status: ticket.reo_status ?? 'pending',
         reo_sent_at: ticket.reo_sent_at ?? null,
-        ...ticket,
       });
     });
 
@@ -328,7 +352,13 @@ export const TicketStorage = {
 
 function getAllTickets(): WeighingTicket[] {
   const stored = localStorage.getItem(STORAGE_KEYS.TICKETS);
-  return stored ? JSON.parse(stored) : [];
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 // Dictionary storage
@@ -369,7 +399,13 @@ export const DictionaryStorage = {
     const key = STORAGE_KEYS[table.toUpperCase() as keyof typeof STORAGE_KEYS];
     if (!key) return [];
     const stored = localStorage.getItem(key);
-    return stored ? JSON.parse(stored) : [];
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   },
 
   add: (table: DictionaryTable, entry: Omit<DictionaryEntry, 'id' | 'created_at'>): DictionaryEntry => {
@@ -594,7 +630,15 @@ export const SettingsStorage = {
 
 function getAllSettings(): Record<string, string> {
   const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-  return stored ? JSON.parse(stored) : {};
+  if (!stored) return {};
+  try {
+    const parsed = JSON.parse(stored);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, string>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function parseReoCargoNames(raw: string | undefined): string[] {

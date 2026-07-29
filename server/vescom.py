@@ -35,12 +35,24 @@ def connect_vescom(db_path: str, user: str, password: str):
 
 
 def connect_vescom_with_timeout(db_path: str, user: str, password: str, timeout_seconds: float = 8.0):
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(connect_vescom, db_path, user, password)
+    """Connect with a real timeout.
+
+    ThreadPoolExecutor's context manager calls shutdown(wait=True), which would
+    block until a hung fdb.connect() finishes — defeating the timeout. Keep the
+    executor alive without waiting so the caller unblocks after timeout_seconds.
+    """
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(connect_vescom, db_path, user, password)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(f'Таймаут подключения к базе Vescom: {db_path}') from exc
+    finally:
         try:
-            return future.result(timeout=timeout_seconds)
-        except FutureTimeoutError as exc:
-            raise TimeoutError(f'Таймаут подключения к базе Vescom: {db_path}') from exc
+            executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # pragma: no cover - Python < 3.9
+            executor.shutdown(wait=False)
 
 
 def _close_connection(conn) -> None:

@@ -12,7 +12,7 @@ interface ProfileRow {
 }
 
 export function UserManagement() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, user: currentUser } = useAuth();
   const [profiles, setProfiles] = useState<ProfileRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -34,26 +34,46 @@ export function UserManagement() {
 
   useEffect(() => { load(); }, [load]);
 
+  const adminCount = profiles.filter((p) => p.role === 'admin').length;
+
   const saveEdit = async () => {
     if (!editingId) return;
     setError(null);
     try {
       const profile = ProfileStorage.getProfile(editingId);
-      if (profile) {
-        ProfileStorage.setProfile(editingId, { 
-          ...profile,
-          display_name: editName.trim(),
-          role: editRole 
-        });
-        setEditingId(null);
-        await load();
+      if (!profile) return;
+
+      if (
+        profile.role === 'admin' &&
+        editRole !== 'admin' &&
+        adminCount <= 1
+      ) {
+        setError('Нельзя снять роль с последнего администратора');
+        return;
       }
+
+      ProfileStorage.setProfile(editingId, {
+        ...profile,
+        display_name: editName.trim(),
+        role: editRole,
+      });
+      setEditingId(null);
+      await load();
     } catch (err: any) {
       setError(err.message);
     }
   };
 
   const handleDelete = async (userId: string) => {
+    if (currentUser?.id === userId) {
+      setError('Нельзя удалить текущего пользователя. Сначала смените пользователя.');
+      return;
+    }
+    const target = profiles.find((p) => p.user_id === userId);
+    if (target?.role === 'admin' && adminCount <= 1) {
+      setError('Нельзя удалить последнего администратора');
+      return;
+    }
     if (!confirm('Удалить пользователя? Это действие необратимо.')) return;
     setError(null);
     try {
