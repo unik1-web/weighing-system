@@ -24,7 +24,16 @@ const GROUP_LABELS: Record<GroupBy, string> = {
 };
 
 function toDateLocal(d: Date) {
-  return d.toISOString().slice(0, 10);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function ticketLocalDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return toDateLocal(d);
 }
 
 export function ReportsView() {
@@ -44,7 +53,7 @@ export function ReportsView() {
     try {
       const allTickets = TicketStorage.getAll();
       const filtered = allTickets.filter(t => {
-        const created = new Date(t.created_at).toISOString().slice(0, 10);
+        const created = ticketLocalDate(t.created_at);
         return t.status === 'completed' && created >= dateFrom && created <= dateTo;
       });
       setTickets(filtered);

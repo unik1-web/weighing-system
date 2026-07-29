@@ -3,12 +3,42 @@ import { logger } from './logger';
 const APP_PREFIX = 'app_';
 const SETTINGS_KEY = 'app_settings';
 
+/** Keys that dictionary import may safely refresh into localStorage. */
+const DICTIONARY_STORAGE_KEYS = new Set([
+  'app_vehicles',
+  'app_drivers',
+  'app_cargos',
+  'app_shippers',
+  'app_receivers',
+  'app_carriers',
+]);
+
+/** Durable database keys — cleared before backup apply so omitted empty collections stay empty. */
+const DATABASE_STORAGE_KEYS = [
+  'app_users',
+  'app_users_profiles',
+  'app_weighing_tickets',
+  'app_current_user',
+  'app_vehicles',
+  'app_drivers',
+  'app_cargos',
+  'app_shippers',
+  'app_receivers',
+  'app_carriers',
+] as const;
+
 export const DICTIONARIES_UPDATED_EVENT = 'dictionaries-updated';
 
 let configSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let databaseSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let databaseSyncPaused = false;
 let databaseSyncPending = false;
+/** Serialize full-document SQLite writes so a stale in-flight sync cannot overwrite newer data. */
+let databaseSyncChain: Promise<void> = Promise.resolve();
+let databaseWriteInFlight = false;
+let databaseWriteAgain = false;
+/** True only after a successful server database read in this session. */
+let serverDatabaseHydrated = false;
 
 function collectDatabaseStorage(): Record<string, string> {
   const data: Record<string, string> = {};
@@ -42,6 +72,19 @@ export function applyStorageData(data: Record<string, string>): void {
   }
 }
 
+/** Apply only dictionary keys — never tickets/users/session from an import response. */
+export function applyDictionaryStorageData(data: Record<string, string>): void {
+  for (const [key, value] of Object.entries(data)) {
+    if (DICTIONARY_STORAGE_KEYS.has(key) && typeof value === 'string') {
+      localStorage.setItem(key, value);
+    }
+  }
+}
+
+export function isServerDatabaseHydrated(): boolean {
+  return serverDatabaseHydrated;
+}
+
 export async function loadStorageFromServer(): Promise<boolean> {
   try {
     const [configResponse, databaseResponse] = await Promise.all([
@@ -68,7 +111,9 @@ export async function loadStorageFromServer(): Promise<boolean> {
           localStorage.setItem(key, value);
         }
       }
-      if (Object.keys(database).length > 0) loaded = true;
+      // Successful read (even if empty) means we may safely sync local changes later.
+      serverDatabaseHydrated = true;
+      loaded = true;
     }
 
     if (loaded) {
@@ -81,8 +126,9 @@ export async function loadStorageFromServer(): Promise<boolean> {
       if (!response.ok) return false;
       const body = (await response.json()) as { data?: Record<string, string> };
       const data = body.data ?? {};
-      if (Object.keys(data).length === 0) return false;
       applyStorageData(data);
+      serverDatabaseHydrated = true;
+      if (Object.keys(data).length === 0) return true;
       logger.info('storage', `Загружено из объединённого хранилища: ${Object.keys(data).length} ключей`);
       return true;
     } catch {
@@ -109,6 +155,13 @@ async function syncConfigToServer(): Promise<void> {
 }
 
 async function syncDatabaseToServer(): Promise<void> {
+  if (!serverDatabaseHydrated) {
+    logger.debug('storage', 'Пропуск синхронизации BD: сервер ещё не загружен');
+    return;
+  }
+
+  // Capture payload only when this write actually runs (end of the chain),
+  // so a queued flush always persists the latest localStorage snapshot.
   const data = collectDatabaseStorage();
   try {
     const response = await fetch('/api/database', {
@@ -122,6 +175,27 @@ async function syncDatabaseToServer(): Promise<void> {
   } catch {
     // Backend недоступен
   }
+}
+
+function enqueueDatabaseSync(): Promise<void> {
+  if (databaseWriteInFlight) {
+    databaseWriteAgain = true;
+    return databaseSyncChain;
+  }
+
+  databaseWriteInFlight = true;
+  databaseSyncChain = (async () => {
+    try {
+      do {
+        databaseWriteAgain = false;
+        await syncDatabaseToServer();
+      } while (databaseWriteAgain);
+    } finally {
+      databaseWriteInFlight = false;
+    }
+  })();
+
+  return databaseSyncChain;
 }
 
 export function scheduleConfigSync(): void {
@@ -154,7 +228,7 @@ export function scheduleDatabaseSync(): void {
   }
   if (databaseSyncTimer) clearTimeout(databaseSyncTimer);
   databaseSyncTimer = setTimeout(() => {
-    void syncDatabaseToServer();
+    void enqueueDatabaseSync();
   }, 400);
 }
 
@@ -164,6 +238,10 @@ export function scheduleStorageSync(): void {
 }
 
 export function flushStorageSync(): void {
+  if (databaseSyncTimer) {
+    clearTimeout(databaseSyncTimer);
+    databaseSyncTimer = null;
+  }
   const config = collectConfigStorage();
   const data = collectDatabaseStorage();
   try {
@@ -173,12 +251,14 @@ export function flushStorageSync(): void {
       body: JSON.stringify({ config }),
       keepalive: true,
     });
-    void fetch('/api/database', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data }),
-      keepalive: true,
-    });
+    if (serverDatabaseHydrated) {
+      void fetch('/api/database', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data }),
+        keepalive: true,
+      });
+    }
   } catch {
     // ignore
   }
@@ -189,7 +269,7 @@ export async function flushDatabaseSync(): Promise<void> {
     clearTimeout(databaseSyncTimer);
     databaseSyncTimer = null;
   }
-  await syncDatabaseToServer();
+  await enqueueDatabaseSync();
 }
 
 export interface StoragePaths {
@@ -258,7 +338,13 @@ export async function importStorageBackup(file: File): Promise<void> {
     throw new Error(body.message ?? 'Не удалось выполнить импорт');
   }
 
+  // Server omits empty collections from read_database(). Clear durable keys first so
+  // a backup with an empty journal/dictionaries actually replaces local data.
+  for (const key of DATABASE_STORAGE_KEYS) {
+    localStorage.removeItem(key);
+  }
   applyStorageData(body.data);
+  scheduleStorageSync();
   logger.info('storage', 'Импорт резервной копии INI выполнен');
 }
 
@@ -285,10 +371,13 @@ export async function importExternalDictionaries(
 
   pauseDatabaseSync();
   try {
-    applyStorageData(body.data);
+    // Only refresh dictionaries. Applying the full read_database() snapshot would
+    // overwrite unsynced weighing tickets / users still only in localStorage.
+    applyDictionaryStorageData(body.data);
   } finally {
     resumeDatabaseSync();
   }
+  await flushDatabaseSync();
 
   if (typeof window !== 'undefined') {
     window.setTimeout(() => {

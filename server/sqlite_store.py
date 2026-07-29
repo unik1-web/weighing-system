@@ -378,7 +378,15 @@ def write_database(data: dict[str, Any]) -> None:
     with connect() as connection:
         init_schema(connection)
 
-        if STORAGE_KEYS['users'] in data:
+        has_users = STORAGE_KEYS['users'] in data
+        has_profiles = STORAGE_KEYS['profiles'] in data
+        saved_profiles: dict[str, dict[str, str]] | None = None
+        if has_users and not has_profiles:
+            # _replace_users deletes profiles (FK cascade). Preserve them when
+            # the client payload omits app_users_profiles.
+            saved_profiles = _load_profiles(connection)
+
+        if has_users:
             try:
                 users = json.loads(str(data[STORAGE_KEYS['users']]))
                 if isinstance(users, list):
@@ -386,13 +394,15 @@ def write_database(data: dict[str, Any]) -> None:
             except json.JSONDecodeError:
                 pass
 
-        if STORAGE_KEYS['profiles'] in data:
+        if has_profiles:
             try:
                 profiles = json.loads(str(data[STORAGE_KEYS['profiles']]))
                 if isinstance(profiles, dict):
                     _replace_profiles(connection, profiles)
             except json.JSONDecodeError:
                 pass
+        elif saved_profiles:
+            _replace_profiles(connection, saved_profiles)
 
         if STORAGE_KEYS['tickets'] in data:
             try:
