@@ -5,7 +5,7 @@ import {
   type WeighingTicket,
 } from '@/lib/storage';
 import {
-  apiGet,
+  apiPost,
   type VescomWeighingItem,
 } from '@/lib/api';
 import { ticketImportKey } from '@/lib/import-keys';
@@ -217,7 +217,7 @@ export function VescomImportView({ onImported }: Props) {
 
     dispatch({ type: 'load_start' });
     try {
-      const response = await apiGet<{ success: true; items: VescomWeighingItem[] }>(
+      const response = await apiPost<{ success: true; items: VescomWeighingItem[] }>(
         '/api/vescom/weighing_data',
         {
           date: state.date,

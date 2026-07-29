@@ -8,6 +8,23 @@ interface ApiErrorBody {
   success?: boolean;
 }
 
+const SENSITIVE_LOG_KEYS = new Set(['password', 'access_key', 'accessKey']);
+
+/** Redact credentials before writing them to the in-app log / console. */
+function redactForLog(value: unknown): unknown {
+  if (value == null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(redactForLog);
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (SENSITIVE_LOG_KEYS.has(key)) {
+      out[key] = '[redacted]';
+    } else {
+      out[key] = redactForLog(entry);
+    }
+  }
+  return out;
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
 
@@ -33,7 +50,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
 
 export async function apiGet<T>(path: string, params?: Record<string, string>): Promise<T> {
   const query = params ? `?${new URLSearchParams(params).toString()}` : '';
-  logger.debug('api', `GET ${path}`, params);
+  logger.debug('api', `GET ${path}`, redactForLog(params));
   try {
     const response = await fetch(`${API_BASE}${path}${query}`);
     const data = await parseResponse<T>(response);
@@ -46,7 +63,7 @@ export async function apiGet<T>(path: string, params?: Record<string, string>): 
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  logger.debug('api', `POST ${path}`, body);
+  logger.debug('api', `POST ${path}`, redactForLog(body));
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       method: 'POST',

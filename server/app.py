@@ -365,12 +365,15 @@ def vescom_test():
         return error_response(f'Ошибка подключения к Vescom: {exc}')
 
 
-@app.get('/api/vescom/weighing_data')
+@app.post('/api/vescom/weighing_data')
 def vescom_weighing_data():
-    date_str = (request.args.get('date') or datetime.now().strftime('%Y-%m-%d')).strip()
-    db_path = normalize_firebird_dsn(request.args.get('db_path') or '')
-    user = (request.args.get('user') or 'SYSDBA').strip()
-    password = request.args.get('password') or 'masterkey'
+    # POST + JSON body so Firebird credentials are not stored in browser history,
+    # proxy logs, or server access logs (unlike the former GET query-string API).
+    data = request.get_json(silent=True) or {}
+    date_str = (data.get('date') or datetime.now().strftime('%Y-%m-%d')).strip()
+    db_path = normalize_firebird_dsn(data.get('db_path') or '')
+    user = (data.get('user') or 'SYSDBA').strip()
+    password = data.get('password') or 'masterkey'
 
     if not db_path:
         return error_response('Не указан путь к базе данных Vescom')
