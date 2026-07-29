@@ -35,7 +35,7 @@
 | `mode` | `file` \| `directory` | Режим выбора |
 | `extensions` | `.fdb,.gdb` | Фильтр расширений (через запятую) |
 
-Используется модалкой выбора пути Vescom/Metra.
+Используется модалкой выбора пути Vescom/Metra/WA.
 
 ## РЭО
 
@@ -65,6 +65,16 @@
 | `POST` | `/api/metra/test` | `db_path` → `{ message, count }` |
 | `GET` | `/api/metra/weighing_data` | `date`, `db_path` → `{ items, warning? }` |
 | `POST` | `/api/metra/import_dictionaries` | `db_path` → `{ message, fetched, added, data }` |
+
+## WA («Весы Авто», Firebird/SQL)
+
+Нужны `fdb` и Firebird client (для `.gdb`/`.fdb`). Путь — каталог установки (обычно `C:\Program Files (x86)\WA`) или файл базы.
+
+| Метод | Путь | Параметры / тело |
+|-------|------|------------------|
+| `POST` | `/api/wa/test` | `db_path`, `user?` (SYSDBA), `password?` (masterkey) → `{ message, count, resolved_path }` |
+| `GET` | `/api/wa/weighing_data` | `date`, `db_path`, `user?`, `password?` → `{ items }` |
+| `POST` | `/api/wa/import_dictionaries` | `db_path`, `user?`, `password?` → `{ message, fetched, added, data }` |
 
 ## Frontend
 

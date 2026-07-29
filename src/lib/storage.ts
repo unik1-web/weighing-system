@@ -489,6 +489,10 @@ export interface AppSettings {
   vescom_db_password: string;
   metra_enabled: boolean;
   metra_db_path: string;
+  wa_enabled: boolean;
+  wa_db_path: string;
+  wa_db_user: string;
+  wa_db_password: string;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -512,6 +516,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   vescom_db_password: 'masterkey',
   metra_enabled: false,
   metra_db_path: '',
+  wa_enabled: false,
+  wa_db_path: 'C:\\Program Files (x86)\\WA',
+  wa_db_user: 'SYSDBA',
+  wa_db_password: 'masterkey',
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -559,6 +567,10 @@ export const SettingsStorage = {
       vescom_db_password: stored.vescom_db_password ?? DEFAULT_APP_SETTINGS.vescom_db_password,
       metra_enabled: stored.metra_enabled === 'true',
       metra_db_path: stored.metra_db_path ?? DEFAULT_APP_SETTINGS.metra_db_path,
+      wa_enabled: stored.wa_enabled === 'true',
+      wa_db_path: stored.wa_db_path ?? DEFAULT_APP_SETTINGS.wa_db_path,
+      wa_db_user: stored.wa_db_user ?? DEFAULT_APP_SETTINGS.wa_db_user,
+      wa_db_password: stored.wa_db_password ?? DEFAULT_APP_SETTINGS.wa_db_password,
     };
   },
 
@@ -586,6 +598,10 @@ export const SettingsStorage = {
       vescom_db_password: next.vescom_db_password,
       metra_enabled: String(next.metra_enabled),
       metra_db_path: next.metra_db_path,
+      wa_enabled: String(next.wa_enabled),
+      wa_db_path: next.wa_db_path,
+      wa_db_user: next.wa_db_user,
+      wa_db_password: next.wa_db_password,
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;

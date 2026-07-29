@@ -8,14 +8,15 @@ import { ReportsView } from '@/components/ReportsView';
 import { SettingsView } from '@/components/SettingsView';
 import { VescomImportView } from '@/components/VescomImportView';
 import { MetraImportView } from '@/components/MetraImportView';
+import { WaImportView } from '@/components/WaImportView';
 import { printTicket } from '@/components/PrintAct';
 import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
-import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive } from 'lucide-react';
+import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive, Server } from 'lucide-react';
 import { exitApplication } from '@/lib/api';
 import { logger } from '@/lib/logger';
 
-type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'settings';
+type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
 
 function MainApp() {
   const { displayName, signOut, isAdmin } = useAuth();
@@ -69,7 +70,10 @@ function MainApp() {
     if (tab === 'metra' && !appSettings.metra_enabled) {
       setTab('weighing');
     }
-  }, [tab, appSettings.vescom_enabled, appSettings.metra_enabled]);
+    if (tab === 'wa' && !appSettings.wa_enabled) {
+      setTab('weighing');
+    }
+  }, [tab, appSettings.vescom_enabled, appSettings.metra_enabled, appSettings.wa_enabled]);
 
   const tabs: { id: Tab; label: string; icon: typeof Scale }[] = [
     { id: 'weighing', label: 'Взвешивание', icon: Scale },
@@ -81,6 +85,9 @@ function MainApp() {
       : []),
     ...(appSettings.metra_enabled
       ? [{ id: 'metra' as const, label: 'Импорт Metra', icon: HardDrive }]
+      : []),
+    ...(appSettings.wa_enabled
+      ? [{ id: 'wa' as const, label: 'Импорт WA', icon: Server }]
       : []),
     { id: 'settings', label: 'Настройки', icon: Settings },
   ];
@@ -163,6 +170,9 @@ function MainApp() {
         )}
         {tab === 'metra' && appSettings.metra_enabled && (
           <MetraImportView onImported={handleImported} />
+        )}
+        {tab === 'wa' && appSettings.wa_enabled && (
+          <WaImportView onImported={handleImported} />
         )}
         {tab === 'settings' && <SettingsView onSaved={() => setSettingsKey((k) => k + 1)} />}
       </main>

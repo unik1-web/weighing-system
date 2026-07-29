@@ -37,6 +37,7 @@ hiddenimports = [
     'sqlite_store',
     'text_encoding',
     'vescom',
+    'wa',
     'flask',
     'flask_cors',
     'werkzeug',
