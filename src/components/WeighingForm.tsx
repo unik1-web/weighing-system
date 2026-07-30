@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { type WeighingTicket, type WeightSource, type TicketStatus } from '@/lib/storage';
 import { TicketStorage } from '@/lib/storage';
 import { logger } from '@/lib/logger';
@@ -7,16 +7,19 @@ import { useAuth } from '@/hooks/useAuth';
 import { ScalePanel } from '@/components/ScalePanel';
 import { formatVehiclePlate } from '@/lib/vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from '@/lib/text-format';
+import { defaultsForCargoChange, defaultsForVehicleChange } from '@/lib/weighing-defaults';
 import { SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
 
 interface Props {
   onSaved: (ticket: WeighingTicket) => void;
+  editingTicket?: WeighingTicket | null;
+  onCancelEdit?: () => void;
 }
 
 type WeighingPhase = 'gross' | 'tare';
 
-export function WeighingForm({ onSaved }: Props) {
+export function WeighingForm({ onSaved, editingTicket = null, onCancelEdit }: Props) {
   const { displayName } = useAuth();
   const vehicles = useDictionary('vehicles');
   const drivers = useDictionary('drivers');
@@ -27,6 +30,8 @@ export function WeighingForm({ onSaved }: Props) {
 
   const [phase, setPhase] = useState<WeighingPhase>('gross');
   const [deviceId, setDeviceId] = useState<ScaleDeviceId>('microsim-m0601');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingTicketNumber, setEditingTicketNumber] = useState<number | null>(null);
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [vehicleBrand, setVehicleBrand] = useState('');
   const [trailerNumber, setTrailerNumber] = useState('');
@@ -51,6 +56,9 @@ export function WeighingForm({ onSaved }: Props) {
   const [success, setSuccess] = useState<string | null>(null);
   const [lastTicket, setLastTicket] = useState<WeighingTicket | null>(null);
 
+  const prevVehicleRef = useRef('');
+  const prevCargoRef = useRef('');
+
   const netWeight = grossWeight != null && tareWeight != null
     ? Math.max(0, grossWeight - tareWeight)
     : null;
@@ -60,6 +68,8 @@ export function WeighingForm({ onSaved }: Props) {
 
   const resetFormFields = useCallback(() => {
     setPhase('gross');
+    setEditingId(null);
+    setEditingTicketNumber(null);
     setVehicleNumber('');
     setVehicleBrand('');
     setTrailerNumber('');
@@ -80,35 +90,72 @@ export function WeighingForm({ onSaved }: Props) {
     setTareDatetime(null);
     setNotes('');
     setError(null);
+    prevVehicleRef.current = '';
+    prevCargoRef.current = '';
   }, []);
 
   const reset = useCallback(() => {
     resetFormFields();
     setSuccess(null);
     setLastTicket(null);
-  }, [resetFormFields]);
+    onCancelEdit?.();
+  }, [resetFormFields, onCancelEdit]);
 
   useEffect(() => {
-    if (cargoName) {
-      const cargo = cargos.entries.find((c) => c.name === cargoName);
-      if (cargo?.default_price != null && !price) {
-        setPrice(cargo.default_price.toString());
-      }
-    }
-  }, [cargoName, cargos.entries, price]);
+    if (!editingTicket) return;
+
+    // Sync refs before state so dictionary-default effects skip this load.
+    prevVehicleRef.current = editingTicket.vehicle_number ?? '';
+    prevCargoRef.current = editingTicket.cargo_name ?? '';
+
+    setEditingId(editingTicket.id);
+    setEditingTicketNumber(editingTicket.ticket_number);
+    setVehicleNumber(editingTicket.vehicle_number ?? '');
+    setVehicleBrand(editingTicket.vehicle_brand ?? '');
+    setTrailerNumber(editingTicket.trailer_number ?? '');
+    setDriverName(editingTicket.driver_name ?? '');
+    setCargoName(editingTicket.cargo_name ?? '');
+    setShipperName(editingTicket.shipper_name ?? '');
+    setReceiverName(editingTicket.receiver_name ?? '');
+    setCarrierName(editingTicket.carrier_name ?? '');
+    setPrice(editingTicket.price != null ? String(editingTicket.price) : '');
+    setVatRate(editingTicket.vat_rate != null ? String(editingTicket.vat_rate) : '20');
+    setGrossWeight(editingTicket.gross_weight);
+    setTareWeight(editingTicket.tare_weight);
+    setGrossSource(editingTicket.gross_source ?? 'manual');
+    setTareSource(editingTicket.tare_source ?? 'manual');
+    setGrossRaw(editingTicket.gross_raw);
+    setTareRaw(editingTicket.tare_raw);
+    setGrossDatetime(editingTicket.gross_datetime);
+    setTareDatetime(editingTicket.tare_datetime);
+    setNotes(editingTicket.notes ?? '');
+    setPhase(editingTicket.tare_weight == null ? 'tare' : 'gross');
+    setError(null);
+    setSuccess(null);
+    setLastTicket(null);
+  }, [editingTicket]);
 
   useEffect(() => {
-    if (vehicleNumber) {
-      const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
-      if (vehicle) {
-        if (vehicle.vehicle_brand && !vehicleBrand) setVehicleBrand(vehicle.vehicle_brand);
-        if (vehicle.default_tare_weight != null && tareWeight == null) {
-          setTareWeight(vehicle.default_tare_weight);
-          setTareSource('manual');
-        }
-      }
+    const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
+    const defaults = defaultsForVehicleChange(prevVehicleRef.current, vehicleNumber, vehicle);
+    prevVehicleRef.current = vehicleNumber;
+    if (!defaults) return;
+    if (defaults.brand !== undefined) setVehicleBrand(defaults.brand);
+    if (defaults.tare !== undefined) {
+      setTareWeight(defaults.tare);
+      setTareSource('manual');
+      setTareRaw(null);
+      setTareDatetime(new Date().toISOString());
     }
-  }, [vehicleNumber, vehicles.entries, tareWeight, vehicleBrand]);
+  }, [vehicleNumber, vehicles.entries]);
+
+  useEffect(() => {
+    const cargo = cargos.entries.find((c) => c.name === cargoName);
+    const defaults = defaultsForCargoChange(prevCargoRef.current, cargoName, cargo);
+    prevCargoRef.current = cargoName;
+    if (!defaults || defaults.price === undefined) return;
+    setPrice(defaults.price.toString());
+  }, [cargoName, cargos.entries]);
 
   const captureGross = (w: number, raw: string) => {
     setGrossWeight(w);
@@ -174,15 +221,29 @@ export function WeighingForm({ onSaved }: Props) {
     };
 
     try {
-      const ticket = TicketStorage.create(payload);
+      let ticket: WeighingTicket;
+      if (editingId) {
+        const updated = TicketStorage.update(editingId, payload);
+        if (!updated) {
+          throw new Error('Незавершённая запись не найдена. Обновите журнал и попробуйте снова.');
+        }
+        ticket = updated;
+      } else {
+        ticket = TicketStorage.create(payload);
+      }
       logger.info('weighing', `Сохранена запись №${ticket.ticket_number}`, {
         status,
         vehicle_number: ticket.vehicle_number,
         cargo_name: ticket.cargo_name,
+        resumed: Boolean(editingId),
       });
       setSaving(false);
       setLastTicket(ticket);
-      setSuccess(status === 'completed' ? 'Взвешивание завершено и сохранено.' : 'Запись сохранена как незавершённая.');
+      setSuccess(
+        status === 'completed'
+          ? (editingId ? 'Незавершённое взвешивание завершено и сохранено.' : 'Взвешивание завершено и сохранено.')
+          : (editingId ? 'Незавершённая запись обновлена.' : 'Запись сохранена как незавершённая.'),
+      );
       onSaved(ticket);
       resetFormFields();
     } catch (err: any) {
@@ -207,12 +268,22 @@ export function WeighingForm({ onSaved }: Props) {
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <ClipboardList size={20} className="text-blue-600" />
-              <h2 className="text-base font-semibold text-slate-800">Данные взвешивания</h2>
+              <h2 className="text-base font-semibold text-slate-800">
+                {editingId
+                  ? `Дополнение записи №${editingTicketNumber ?? '—'}`
+                  : 'Данные взвешивания'}
+              </h2>
             </div>
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
               Весовщик: {displayName}
             </span>
           </div>
+
+          {editingId && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Продолжение незавершённого взвешивания. После сохранения тара и нетто обновят исходную запись.
+            </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
@@ -341,10 +412,10 @@ export function WeighingForm({ onSaved }: Props) {
 
         <div className="flex flex-wrap gap-3">
           <button onClick={() => handleSave('completed')} disabled={saving} className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50">
-            <Save size={18} /> {saving ? 'Сохранение...' : 'Сохранить и завершить'}
+            <Save size={18} /> {saving ? 'Сохранение...' : (editingId ? 'Завершить запись' : 'Сохранить и завершить')}
           </button>
           <button onClick={() => handleSave('open')} disabled={saving} className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50">
-            <FileText size={18} /> Сохранить как незавершённое
+            <FileText size={18} /> {editingId ? 'Сохранить незавершённой' : 'Сохранить как незавершённое'}
           </button>
           {lastTicket && (
             <button onClick={handlePrint} className="flex items-center gap-2 rounded-xl border border-blue-300 bg-blue-50 px-6 py-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-100">
@@ -352,7 +423,7 @@ export function WeighingForm({ onSaved }: Props) {
             </button>
           )}
           <button onClick={reset} className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50">
-            <RotateCcw size={18} /> Очистить
+            <RotateCcw size={18} /> {editingId ? 'Отменить дополнение' : 'Очистить'}
           </button>
         </div>
       </div>
@@ -366,6 +437,7 @@ export function WeighingForm({ onSaved }: Props) {
             <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">2</span> Выберите прибор и подключите COM-порт</li>
             <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">3</span> Зафиксируйте брутто и тару</li>
             <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">4</span> Сохраните талон и распечатайте акт</li>
+            <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">5</span> Незавершённые записи продолжайте из журнала</li>
           </ol>
         </div>
       </div>

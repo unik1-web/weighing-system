@@ -11,6 +11,7 @@ import {
   type MetraWeighingItem,
 } from '@/lib/api';
 import { flushDatabaseSync, pauseDatabaseSync, resumeDatabaseSync } from '@/lib/storage-sync';
+import { importTicketStatus } from '@/lib/weighing-defaults';
 import { logger } from '@/lib/logger';
 import {
   AlertCircle,
@@ -134,7 +135,11 @@ function buildTicketFromMetra(item: MetraWeighingItem): Omit<
 > {
   const grossDatetime = parseMetraDateTime(item.datetimebrutto);
   const tareDatetime = parseMetraDateTime(item.datetimetara);
-  const completedAt = tareDatetime ?? grossDatetime ?? new Date().toISOString();
+  const status = importTicketStatus(item.tare_weight);
+  const completedAt =
+    status === 'completed'
+      ? (tareDatetime ?? grossDatetime ?? new Date().toISOString())
+      : null;
 
   return {
     vehicle_number: item.vehicle_number,
@@ -160,7 +165,7 @@ function buildTicketFromMetra(item: MetraWeighingItem): Omit<
     scale_device: 'Metra',
     operator_id: null,
     operator_name: item.operator_name || 'Импорт Metra',
-    status: 'completed',
+    status,
     notes: [
       `Импортировано из Metra (RecNo: ${item.rec_no})`,
       item.invoice ? `Накладная: ${item.invoice}` : '',
