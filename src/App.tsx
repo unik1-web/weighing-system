@@ -51,7 +51,7 @@ function MainApp() {
 
   const appSettings = useMemo(() => SettingsStorage.getAppSettings(), [settingsKey]);
 
-  const handleSaved = useCallback((_ticket: WeighingTicket) => {
+  const handleSaved = useCallback(() => {
     setJournalKey((k) => k + 1);
   }, []);
 
