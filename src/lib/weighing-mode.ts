@@ -1,0 +1,258 @@
+/** Domain helpers for single/dual weighing modes. */
+
+export type WeighingMode = 'single' | 'dual';
+export type WeightPhase = 'gross' | 'tare';
+/** Alias for WeightPhase (slot name). */
+export type WeightSlot = WeightPhase;
+export type OpenWeightState = 'zero' | 'one' | 'two';
+/** Alias for OpenWeightState. */
+export type OpenWeightClass = OpenWeightState;
+
+export interface SlotEditability {
+  grossEditable: boolean;
+  tareEditable: boolean;
+}
+
+function isWeightPresent(value: number | null | undefined): boolean {
+  return value != null && value > 0;
+}
+
+/**
+ * Suggests capture phase by tara_threshold: weight ≤ threshold → tare, else gross.
+ */
+export function suggestPhase(weight: number, threshold: number): WeightPhase {
+  return weight <= threshold ? 'tare' : 'gross';
+}
+
+/**
+ * Returns true when interval between first and now exceeds maxHours.
+ * maxHours ≤ 0 means "do not warn".
+ */
+export function isMaxTimeExceeded(firstIso: string, nowIso: string, maxHours: number): boolean {
+  if (maxHours <= 0) return false;
+  const first = Date.parse(firstIso);
+  const now = Date.parse(nowIso);
+  if (Number.isNaN(first) || Number.isNaN(now)) return false;
+  return (now - first) / 3_600_000 > maxHours;
+}
+
+/** Alias for isMaxTimeExceeded. */
+export const isMaxTimeBetweenExceeded = isMaxTimeExceeded;
+
+/**
+ * Fills weighing_mode only when the field is absent.
+ * open → dual, otherwise → single. Existing value is kept.
+ */
+export function normalizeWeighingMode(ticket: {
+  status: string;
+  weighing_mode?: WeighingMode;
+}): WeighingMode {
+  if (ticket.weighing_mode !== undefined) return ticket.weighing_mode;
+  return ticket.status === 'open' ? 'dual' : 'single';
+}
+
+/** Open dual tickets for the incomplete panel. */
+export function filterIncompleteDual<T extends { status: string; weighing_mode?: WeighingMode }>(
+  tickets: T[],
+): T[] {
+  return tickets.filter((t) => t.status === 'open' && t.weighing_mode === 'dual');
+}
+
+export function netWeight(gross: number, tare: number): number {
+  return Math.max(0, gross - tare);
+}
+
+export function totalAmount(net: number, price: number): number {
+  return (net / 1000) * price;
+}
+
+/**
+ * Autofill tare only in single mode and not during dual completion.
+ */
+export function shouldAutofillTare(
+  modeOrOpts: WeighingMode | { mode: WeighingMode; completing?: boolean },
+  completing = false,
+): boolean {
+  if (typeof modeOrOpts === 'object') {
+    return modeOrOpts.mode === 'single' && !modeOrOpts.completing;
+  }
+  return modeOrOpts === 'single' && !completing;
+}
+
+/** Alias matching naming in the run brief. */
+export const shouldAutoFillTare = shouldAutofillTare;
+
+export function isCaptureAllowed(stable: boolean, stableMode: boolean): boolean {
+  return stable || stableMode;
+}
+
+/**
+ * Classifies open-ticket weight slots: null/≤0 count as empty.
+ */
+export function classifyOpenWeightState(ticket: {
+  gross_weight: number | null;
+  tare_weight: number | null;
+}): OpenWeightState {
+  const count =
+    (isWeightPresent(ticket.gross_weight) ? 1 : 0) + (isWeightPresent(ticket.tare_weight) ? 1 : 0);
+  if (count === 0) return 'zero';
+  if (count === 1) return 'one';
+  return 'two';
+}
+
+/** Alias for classifyOpenWeightState. */
+export function classifyOpenWeights(
+  gross: number | null,
+  tare: number | null,
+): OpenWeightClass {
+  return classifyOpenWeightState({ gross_weight: gross, tare_weight: tare });
+}
+
+/**
+ * Slot editability for completion UI.
+ * Prefer passing weights for state `one` so the filled slot is locked.
+ */
+export function slotEditability(
+  state: OpenWeightState,
+  weights?: { gross_weight: number | null; tare_weight: number | null },
+): SlotEditability {
+  if (state === 'zero') return { grossEditable: true, tareEditable: true };
+  if (state === 'two') return { grossEditable: false, tareEditable: false };
+  if (weights) {
+    return {
+      grossEditable: !isWeightPresent(weights.gross_weight),
+      tareEditable: !isWeightPresent(weights.tare_weight),
+    };
+  }
+  return { grossEditable: true, tareEditable: true };
+}
+
+/**
+ * Empty slot for open-weight state `one` (the other slot is filled).
+ * Returns null when not exactly one weight is present.
+ */
+export function emptySlotForOne(weights: {
+  gross_weight: number | null;
+  tare_weight: number | null;
+}): WeightPhase | null {
+  if (classifyOpenWeightState(weights) !== 'one') return null;
+  return isWeightPresent(weights.gross_weight) ? 'tare' : 'gross';
+}
+
+/**
+ * Resolves which weight slot instrument capture should write to.
+ * Without override, if threshold points at a locked slot and the other is editable
+ * (completion `one`), redirects to the empty slot. Explicit override on a locked
+ * slot returns null.
+ */
+export function resolveCaptureSlot(args: {
+  phaseOverride: boolean;
+  overridePhase: WeightPhase;
+  weight: number;
+  threshold: number;
+  editability?: SlotEditability;
+  editableGross?: boolean;
+  editableTare?: boolean;
+}): WeightPhase | null {
+  const editability: SlotEditability = args.editability ?? {
+    grossEditable: args.editableGross ?? true,
+    tareEditable: args.editableTare ?? true,
+  };
+
+  const target: WeightPhase = args.phaseOverride
+    ? args.overridePhase
+    : suggestPhase(args.weight, args.threshold);
+
+  if (target === 'gross' && !editability.grossEditable) {
+    if (!args.phaseOverride && editability.tareEditable) return 'tare';
+    return null;
+  }
+  if (target === 'tare' && !editability.tareEditable) {
+    if (!args.phaseOverride && editability.grossEditable) return 'gross';
+    return null;
+  }
+  return target;
+}
+
+/**
+ * Parses a weight input string: empty → null; "0" / 0 → 0.
+ */
+export function parseWeightInput(raw: string): number | null {
+  if (raw === '') return null;
+  const n = Number(raw);
+  if (Number.isNaN(n)) return null;
+  return n;
+}
+
+/** Datetime of the first filled weight slot, fallback created_at. */
+export function firstWeightDatetime(ticket: {
+  gross_weight: number | null;
+  tare_weight: number | null;
+  gross_datetime: string | null;
+  tare_datetime: string | null;
+  created_at: string;
+}): string {
+  if (isWeightPresent(ticket.gross_weight) && ticket.gross_datetime) {
+    return ticket.gross_datetime;
+  }
+  if (isWeightPresent(ticket.tare_weight) && ticket.tare_datetime) {
+    return ticket.tare_datetime;
+  }
+  if (ticket.gross_datetime) return ticket.gross_datetime;
+  if (ticket.tare_datetime) return ticket.tare_datetime;
+  return ticket.created_at;
+}
+
+/**
+ * Validates single-mode complete: gross required; tare required (explicit 0 ok).
+ * Returns Russian error message or null if ok.
+ */
+export function validateSingleComplete(args: {
+  gross: number | null;
+  tare: number | null;
+}): string | null {
+  if (args.gross == null) return 'Введите брутто вес.';
+  if (args.tare == null) return 'Для одиночного режима нужна тара.';
+  return null;
+}
+
+/**
+ * Validates dual first pass: exactly one weight > 0.
+ */
+export function validateDualFirstPass(args: {
+  gross: number | null;
+  tare: number | null;
+}): string | null {
+  const hasGross = isWeightPresent(args.gross);
+  const hasTare = isWeightPresent(args.tare);
+  if (!hasGross && !hasTare) {
+    return 'Зафиксируйте вес первого прохода (значение больше 0).';
+  }
+  if (hasGross && hasTare) {
+    return 'Оставьте ровно один вес либо переключитесь в одиночный режим.';
+  }
+  return null;
+}
+
+/**
+ * Validates dual complete by open-weight class.
+ */
+export function validateDualComplete(args: {
+  state: OpenWeightState;
+  gross: number | null;
+  tare: number | null;
+}): string | null {
+  const hasGross = isWeightPresent(args.gross);
+  const hasTare = isWeightPresent(args.tare);
+  if (args.state === 'two') {
+    if (hasGross && hasTare) return null;
+    return 'Для завершения нужны оба веса.';
+  }
+  if (args.state === 'zero') {
+    if (hasGross && hasTare) return null;
+    return 'Введите оба веса (больше 0) для завершения.';
+  }
+  // one: second weight must be > 0
+  if (hasGross && hasTare) return null;
+  return 'Введите второй вес (больше 0).';
+}

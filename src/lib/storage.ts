@@ -3,10 +3,13 @@ import { scheduleConfigSync, scheduleDatabaseSync, flushDatabaseSync, DICTIONARI
 import { formatVehiclePlate } from './vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from './text-format';
 import { ticketImportKey } from './import-keys';
+import { normalizeWeighingMode, type WeighingMode } from './weighing-mode';
+import { logger } from './logger';
 
 export type WeightSource = 'manual' | 'instrument';
 export type TicketStatus = 'open' | 'completed';
 export type ReoStatus = 'pending' | 'sent';
+export type { WeighingMode };
 
 export const REO_STATUS_LABELS: Record<ReoStatus, string> = {
   pending: 'Не отправлено',
@@ -45,6 +48,17 @@ export interface WeighingTicket {
   notes: string;
   created_at: string;
   completed_at: string | null;
+  weighing_mode?: WeighingMode;
+  version?: number;
+}
+
+export interface TicketAuditEvent {
+  id: string;
+  ticket_id: string;
+  action: 'created' | 'completed';
+  at: string;
+  operator_name: string;
+  operator_id: string | null;
 }
 
 export interface User {
@@ -68,6 +82,7 @@ const STORAGE_KEYS = {
   USERS: 'app_users',
   SESSIONS: 'app_sessions',
   TICKETS: 'app_weighing_tickets',
+  TICKET_AUDIT: 'app_ticket_audit',
   VEHICLES: 'app_vehicles',
   DRIVERS: 'app_drivers',
   CARGOS: 'app_cargos',
@@ -229,18 +244,25 @@ export const SessionStorage = {
 };
 
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
-  return {
+  const next: WeighingTicket = {
     ...ticket,
     reo_status: ticket.reo_status ?? 'pending',
     reo_sent_at: ticket.reo_sent_at ?? null,
   };
+  if (ticket.weighing_mode === undefined) {
+    next.weighing_mode = normalizeWeighingMode(ticket);
+  }
+  if (ticket.version === undefined) {
+    next.version = 1;
+  }
+  return next;
 }
 
 // Weighing tickets storage
 export const TicketStorage = {
   create: (
     ticket: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at' | 'reo_status' | 'reo_sent_at'> &
-      Partial<Pick<WeighingTicket, 'reo_status' | 'reo_sent_at'>>,
+      Partial<Pick<WeighingTicket, 'reo_status' | 'reo_sent_at' | 'weighing_mode' | 'version'>>,
   ): WeighingTicket => {
     return TicketStorage.createMany([ticket])[0];
   },
@@ -248,7 +270,7 @@ export const TicketStorage = {
   createMany: (
     tickets: Array<
       Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at' | 'reo_status' | 'reo_sent_at'> &
-        Partial<Pick<WeighingTicket, 'reo_status' | 'reo_sent_at'>>
+        Partial<Pick<WeighingTicket, 'reo_status' | 'reo_sent_at' | 'weighing_mode' | 'version'>>
     >,
   ): WeighingTicket[] => {
     if (tickets.length === 0) return [];
@@ -258,6 +280,9 @@ export const TicketStorage = {
     const createdAt = new Date().toISOString();
     const created: WeighingTicket[] = tickets.map((ticket) => {
       maxNumber += 1;
+      const weighingMode =
+        ticket.weighing_mode ??
+        normalizeWeighingMode({ status: ticket.status, weighing_mode: ticket.weighing_mode });
       return normalizeTicket({
         id: crypto.randomUUID(),
         ticket_number: maxNumber,
@@ -265,11 +290,33 @@ export const TicketStorage = {
         reo_status: ticket.reo_status ?? 'pending',
         reo_sent_at: ticket.reo_sent_at ?? null,
         ...ticket,
+        weighing_mode: weighingMode,
+        version: 1,
       });
     });
 
     stored.push(...created);
     persist(STORAGE_KEYS.TICKETS, JSON.stringify(stored));
+
+    for (const ticket of created) {
+      TicketAuditStorage.append({
+        ticket_id: ticket.id,
+        action: 'created',
+        at: createdAt,
+        operator_name: ticket.operator_name,
+        operator_id: ticket.operator_id,
+      });
+      if (ticket.status === 'completed') {
+        TicketAuditStorage.append({
+          ticket_id: ticket.id,
+          action: 'completed',
+          at: ticket.completed_at ?? createdAt,
+          operator_name: ticket.operator_name,
+          operator_id: ticket.operator_id,
+        });
+      }
+    }
+
     return created;
   },
 
@@ -301,14 +348,51 @@ export const TicketStorage = {
     persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
   },
 
-  update: (id: string, updates: Partial<WeighingTicket>): WeighingTicket | null => {
+  update: (
+    id: string,
+    updates: Partial<WeighingTicket>,
+    options?: { expectedVersion?: number },
+  ): WeighingTicket | null => {
     const tickets = getAllTickets();
-    const index = tickets.findIndex(t => t.id === id);
+    const index = tickets.findIndex((t) => t.id === id);
     if (index === -1) return null;
 
-    tickets[index] = normalizeTicket({ ...tickets[index], ...updates });
+    const current = normalizeTicket(tickets[index]);
+    if (
+      options?.expectedVersion !== undefined &&
+      options.expectedVersion !== current.version
+    ) {
+      logger.warn('tickets', 'Конфликт version', {
+        id,
+        expected: options.expectedVersion,
+        actual: current.version,
+      });
+      return null;
+    }
+
+    const safeUpdates = { ...updates };
+    delete safeUpdates.version;
+    const wasCompleted = current.status === 'completed';
+    const merged = normalizeTicket({
+      ...current,
+      ...safeUpdates,
+      version: (current.version ?? 1) + 1,
+    });
+
+    tickets[index] = merged;
     persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
-    return tickets[index];
+
+    if (!wasCompleted && merged.status === 'completed') {
+      TicketAuditStorage.append({
+        ticket_id: merged.id,
+        action: 'completed',
+        at: merged.completed_at ?? new Date().toISOString(),
+        operator_name: merged.operator_name,
+        operator_id: merged.operator_id,
+      });
+    }
+
+    return merged;
   },
 
   markReoSent: (id: string): WeighingTicket | null => {
@@ -330,6 +414,41 @@ function getAllTickets(): WeighingTicket[] {
   const stored = localStorage.getItem(STORAGE_KEYS.TICKETS);
   return stored ? JSON.parse(stored) : [];
 }
+
+/** Minimal create/complete audit events (sync key app_ticket_audit). */
+export const TicketAuditStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.TICKET_AUDIT) === null) {
+      localStorage.setItem(STORAGE_KEYS.TICKET_AUDIT, '[]');
+    }
+  },
+
+  append(event: Omit<TicketAuditEvent, 'id'>): void {
+    TicketAuditStorage.ensureInitialized();
+    const events = TicketAuditStorage.getAll();
+    events.push({
+      id: crypto.randomUUID(),
+      ...event,
+    });
+    persist(STORAGE_KEYS.TICKET_AUDIT, JSON.stringify(events));
+  },
+
+  getAll(): TicketAuditEvent[] {
+    TicketAuditStorage.ensureInitialized();
+    const stored = localStorage.getItem(STORAGE_KEYS.TICKET_AUDIT);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  getByTicketId(ticketId: string): TicketAuditEvent[] {
+    return TicketAuditStorage.getAll().filter((e) => e.ticket_id === ticketId);
+  },
+};
 
 // Dictionary storage
 export type DictionaryTable = 'vehicles' | 'drivers' | 'cargos' | 'shippers' | 'receivers' | 'carriers';
@@ -493,6 +612,11 @@ export interface AppSettings {
   wa_db_path: string;
   wa_db_user: string;
   wa_db_password: string;
+  weighing_mode_default: WeighingMode;
+  stable_mode: boolean;
+  tara_threshold: number;
+  max_time_between: number;
+  tara_default: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -520,6 +644,11 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   wa_db_path: 'C:\\Program Files (x86)\\WA',
   wa_db_user: 'SYSDBA',
   wa_db_password: 'masterkey',
+  weighing_mode_default: 'single',
+  stable_mode: false,
+  tara_threshold: 15000,
+  max_time_between: 24,
+  tara_default: 0,
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -546,6 +675,15 @@ export const SettingsStorage = {
 
   getAppSettings: (): AppSettings => {
     const stored = getAllSettings();
+    const parseNumber = (raw: string | undefined, fallback: number): number => {
+      if (raw === undefined || raw === '') return fallback;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    const weighingMode =
+      stored.weighing_mode_default === 'dual' || stored.weighing_mode_default === 'single'
+        ? stored.weighing_mode_default
+        : DEFAULT_APP_SETTINGS.weighing_mode_default;
     return {
       org_name: stored.org_name ?? DEFAULT_APP_SETTINGS.org_name,
       org_address: stored.org_address ?? DEFAULT_APP_SETTINGS.org_address,
@@ -571,6 +709,11 @@ export const SettingsStorage = {
       wa_db_path: stored.wa_db_path ?? DEFAULT_APP_SETTINGS.wa_db_path,
       wa_db_user: stored.wa_db_user ?? DEFAULT_APP_SETTINGS.wa_db_user,
       wa_db_password: stored.wa_db_password ?? DEFAULT_APP_SETTINGS.wa_db_password,
+      weighing_mode_default: weighingMode,
+      stable_mode: stored.stable_mode === 'true',
+      tara_threshold: parseNumber(stored.tara_threshold, DEFAULT_APP_SETTINGS.tara_threshold),
+      max_time_between: parseNumber(stored.max_time_between, DEFAULT_APP_SETTINGS.max_time_between),
+      tara_default: parseNumber(stored.tara_default, DEFAULT_APP_SETTINGS.tara_default),
     };
   },
 
@@ -602,6 +745,11 @@ export const SettingsStorage = {
       wa_db_path: next.wa_db_path,
       wa_db_user: next.wa_db_user,
       wa_db_password: next.wa_db_password,
+      weighing_mode_default: next.weighing_mode_default,
+      stable_mode: String(next.stable_mode),
+      tara_threshold: String(next.tara_threshold),
+      max_time_between: String(next.max_time_between),
+      tara_default: String(next.tara_default),
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
@@ -633,7 +781,10 @@ export async function clearAllDictionaries(): Promise<void> {
 
 // Initialize default data (only on first run)
 export const initializeStorage = () => {
-  if (hasStoredData()) return;
+  if (hasStoredData()) {
+    TicketAuditStorage.ensureInitialized();
+    return;
+  }
 
   try {
     UserStorage.createUser('admin', 'admin123', 'Администратор');
@@ -649,4 +800,5 @@ export const initializeStorage = () => {
   });
 
   SettingsStorage.set('org_name', 'Полигон отходов');
+  TicketAuditStorage.ensureInitialized();
 };

@@ -35,3 +35,7 @@ server/data/
 build/
 release/
 dist/WeighingSystem/
+
+# Multi-agent pipeline working drafts (keep directory via .gitkeep)
+docs/implementation/*
+!docs/implementation/.gitkeep

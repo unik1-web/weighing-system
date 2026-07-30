@@ -7,9 +7,10 @@ import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Se
 
 interface Props {
   refreshKey: number;
+  onCompleteOpen?: (ticketId: string) => void;
 }
 
-export function WeighingJournal({ refreshKey }: Props) {
+export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const reoEnabled = SettingsStorage.getAppSettings().reo_enabled;
   const [tickets, setTickets] = useState<WeighingTicket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -277,6 +278,15 @@ export function WeighingJournal({ refreshKey }: Props) {
                       </td>
                     )}
                     <td className="px-2 py-2.5 text-center whitespace-nowrap">
+                      {t.status === 'open' && (
+                        <button
+                          onClick={() => onCompleteOpen?.(t.id)}
+                          className="rounded bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 transition mr-1"
+                          title="Завершить на форме взвешивания"
+                        >
+                          Завершить
+                        </button>
+                      )}
                       {reoEnabled && t.reo_status === 'sent' && (
                         <button
                           onClick={() => handleResetReo(t)}

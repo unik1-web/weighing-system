@@ -39,7 +39,8 @@ Flask API  ──►  config.ini          (настройки)
 
 | Путь | Назначение |
 |------|------------|
-| `lib/storage.ts` | Модели, localStorage, настройки |
+| `lib/storage.ts` | Модели, localStorage, настройки; тикет: `weighing_mode`, `version`; audit `app_ticket_audit` |
+| `lib/weighing-mode.ts` | Pure-логика режимов single/dual (фаза, валидация, CAS-хелперы) |
 | `lib/storage-sync.ts` | Синхронизация с API |
 | `lib/api.ts` | Обёртки fetch к `/api/*` |
 | `lib/reo.ts` | Сборка JSON РЭО, валидация |
@@ -48,7 +49,7 @@ Flask API  ──►  config.ini          (настройки)
 | `lib/import-keys.ts` | Ключ дедупликации импорта |
 | `components/*ImportView.tsx` | Импорт Vescom / Metra / WA |
 | `components/PrintAct.tsx` | Макеты «акт» и «талон» |
-| `components/SettingsView.tsx` | Организация, РЭО, импорт, UI |
+| `components/SettingsView.tsx` | Организация, РЭО, импорт, UI, режимы взвешивания |
 
 ## Нормализация справочников
 
@@ -76,6 +77,13 @@ Flask API  ──►  config.ini          (настройки)
 ## Навигация
 
 `nav_tab_mode`: `full` (иконка + подпись) или `compact` (только иконки, подпись в `title`).
+
+## Режимы взвешивания (этап 1)
+
+- Тикет: `weighing_mode` (`single` \| `dual`), `version` (оптимистичная блокировка при дозавершении).
+- Audit: ключ sync `app_ticket_audit` / таблица SQLite `ticket_audit` (`created` / `completed`).
+- Настройки (`config.ini` / `AppSettings`): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`.
+- Миграция и деплой: `docs/weighing-modes-deploy.md`.
 
 ## Весы (Web Serial)
 

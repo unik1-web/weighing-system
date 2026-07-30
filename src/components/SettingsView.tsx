@@ -51,6 +51,7 @@ export function SettingsView({ onSaved }: Props) {
   const [dictClearMessage, setDictClearMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [dictClearBusy, setDictClearBusy] = useState(false);
   const [pathPicker, setPathPicker] = useState<'vescom' | 'metra' | 'wa' | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
 
   useEffect(() => {
     setSettings(SettingsStorage.getAppSettings());
@@ -85,7 +86,26 @@ export function SettingsView({ onSaved }: Props) {
   };
 
   const handleSave = () => {
+    setSettingsError(null);
+    if (
+      settings.tara_threshold < 0 ||
+      settings.max_time_between < 0 ||
+      settings.tara_default < 0 ||
+      Number.isNaN(settings.tara_threshold) ||
+      Number.isNaN(settings.max_time_between) ||
+      Number.isNaN(settings.tara_default)
+    ) {
+      setSettingsError('Порог тары, интервал и тара по умолчанию должны быть ≥ 0.');
+      return;
+    }
     SettingsStorage.updateAppSettings(settings);
+    logger.info('settings', 'Сохранены настройки режимов взвешивания', {
+      weighing_mode_default: settings.weighing_mode_default,
+      stable_mode: settings.stable_mode,
+      tara_threshold: settings.tara_threshold,
+      max_time_between: settings.max_time_between,
+      tara_default: settings.tara_default,
+    });
     logger.info('settings', 'Настройки сохранены');
     setSaved(true);
     onSaved?.();
@@ -415,6 +435,75 @@ export function SettingsView({ onSaved }: Props) {
               onChange={(e) => updateField('org_bik', e.target.value)}
               className={inputClass}
             />
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+          <Scale size={18} className="text-blue-600" />
+          <h3 className="text-sm font-semibold text-slate-800">Режимы взвешивания</h3>
+        </div>
+        <p className="text-xs text-slate-500">
+          Параметры одиночного и двойного режимов. Значение тары по умолчанию 0 означает «не задано».
+        </p>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <label className={labelClass}>Режим по умолчанию</label>
+            <select
+              value={settings.weighing_mode_default}
+              onChange={(e) =>
+                updateField('weighing_mode_default', e.target.value === 'dual' ? 'dual' : 'single')
+              }
+              className={inputClass}
+            >
+              <option value="single">Одиночное</option>
+              <option value="dual">Двойное</option>
+            </select>
+          </div>
+          <div className="sm:col-span-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.stable_mode}
+                onChange={(e) => updateField('stable_mode', e.target.checked)}
+              />
+              <span className="text-sm text-slate-700">Разрешить фиксацию при нестабильном весе</span>
+            </label>
+          </div>
+          <div>
+            <label className={labelClass}>Порог тары, кг</label>
+            <input
+              type="number"
+              min={0}
+              value={settings.tara_threshold}
+              onChange={(e) => updateField('tara_threshold', Number(e.target.value))}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Макс. интервал между проходами, ч</label>
+            <input
+              type="number"
+              min={0}
+              value={settings.max_time_between}
+              onChange={(e) => updateField('max_time_between', Number(e.target.value))}
+              className={inputClass}
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <label className={labelClass}>Тара по умолчанию, кг</label>
+            <input
+              type="number"
+              min={0}
+              value={settings.tara_default}
+              onChange={(e) => updateField('tara_default', Number(e.target.value))}
+              className={inputClass}
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              0 = не задано (автоподстановка в одиночном режиме не выполняется).
+            </p>
           </div>
         </div>
       </div>
@@ -917,6 +1006,11 @@ export function SettingsView({ onSaved }: Props) {
         {saved && (
           <span className="flex items-center gap-1.5 text-sm text-emerald-600">
             <CheckCircle2 size={16} /> Сохранено
+          </span>
+        )}
+        {settingsError && (
+          <span className="flex items-center gap-1.5 text-sm text-red-600">
+            <AlertCircle size={16} /> {settingsError}
           </span>
         )}
       </div>

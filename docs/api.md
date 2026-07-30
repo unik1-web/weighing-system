@@ -20,6 +20,10 @@
 | `POST` | `/api/config` | `{ "config": { ... } }` | Сохранить настройки |
 | `GET` | `/api/database` | — | Данные SQLite → `{ data }` (ключи `app_*`) |
 | `POST` | `/api/database` | `{ "data": { ... } }` | Сохранить БД |
+
+Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`.
+
+В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version`; audit — `app_ticket_audit` (частичный POST без этого ключа audit не очищает).
 | `GET` | `/api/storage` | — | Объединённое чтение config + database |
 | `POST` | `/api/storage` | `{ "data": { "app_...": "..." } }` | Сохранить; принимаются только строковые `app_*` |
 | `GET` | `/api/storage/export` | — | Резервная копия INI (`format: "ini"`, `content`, `backup`) |
