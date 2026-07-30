@@ -1,17 +1,19 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   type WeighingTicket,
   type WeightSource,
   TicketStorage,
   SettingsStorage,
+  VehicleDriversStorage,
+  onTicketCompletedLearning,
 } from '@/lib/storage';
 import { logger } from '@/lib/logger';
 import { useDictionary } from '@/hooks/useDictionary';
 import { useAuth } from '@/hooks/useAuth';
 import { ScalePanel } from '@/components/ScalePanel';
-import { formatVehiclePlate } from '@/lib/vehicle-plate';
+import { formatVehiclePlate, normalizeVehicleKey } from '@/lib/vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from '@/lib/text-format';
-import { SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
+import { SCALE_DEVICES, normalizeScaleDeviceId, type ScaleDeviceId } from '@/lib/scales';
 import {
   type WeighingMode,
   type WeightPhase,
@@ -33,6 +35,12 @@ import {
   isMaxTimeExceeded,
   WEIGHT_SOURCE_LABELS,
 } from '@/lib/weighing-mode';
+import {
+  driverDatalistOptions,
+  findVehicleByKey,
+  resolvePlateSource,
+  resolveTripFields,
+} from '@/lib/vehicle-resolve';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
 
 interface Props {
@@ -66,7 +74,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [completingTicket, setCompletingTicket] = useState<WeighingTicket | null>(null);
   const [incompleteRefresh, setIncompleteRefresh] = useState(0);
 
-  const [deviceId, setDeviceId] = useState<ScaleDeviceId>('microsim-m0601');
+  const [deviceId, setDeviceId] = useState<ScaleDeviceId>(() =>
+    normalizeScaleDeviceId(SettingsStorage.getAppSettings().scale_device_id),
+  );
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [vehicleBrand, setVehicleBrand] = useState('');
   const [trailerNumber, setTrailerNumber] = useState('');
@@ -81,7 +91,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [tareWeight, setTareWeight] = useState<number | null>(null);
   const [grossSource, setGrossSource] = useState<WeightSource>('manual');
   const [tareSource, setTareSource] = useState<WeightSource>('manual');
-  const [tareAutofillLocked, setTareAutofillLocked] = useState(false);
+  const tareAutofillLockedRef = useRef(false);
   const [grossRaw, setGrossRaw] = useState<string | null>(null);
   const [tareRaw, setTareRaw] = useState<string | null>(null);
   const [grossDatetime, setGrossDatetime] = useState<string | null>(null);
@@ -152,6 +162,99 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     }
   }, [showIntervalBanner, completingTicket, intervalWarnedForId, appSettings.max_time_between]);
 
+  useEffect(() => {
+    const refreshSettings = () => {
+      const settings = SettingsStorage.getAppSettings();
+      setAppSettings(settings);
+      setDeviceId(normalizeScaleDeviceId(settings.scale_device_id));
+    };
+    window.addEventListener('focus', refreshSettings);
+    document.addEventListener('visibilitychange', refreshSettings);
+    return () => {
+      window.removeEventListener('focus', refreshSettings);
+      document.removeEventListener('visibilitychange', refreshSettings);
+    };
+  }, []);
+
+  const setTareAutofillLockedSafe = useCallback((locked: boolean) => {
+    tareAutofillLockedRef.current = locked;
+  }, []);
+
+  const applyConfirmedVehicleNumber = useCallback(
+    (rawNumber: string) => {
+      if (isCompleting) return;
+      const key = normalizeVehicleKey(rawNumber);
+      if (!key) return;
+
+      const history = VehicleDriversStorage.getByVehicleKey(key);
+      const patch = resolveTripFields({
+        key,
+        vehicles: vehicles.entries,
+        tickets: TicketStorage.getAll(),
+        driversHistory: history,
+        current: {
+          vehicle_brand: vehicleBrand,
+          driver_name: driverName,
+          cargo_name: cargoName,
+          shipper_name: shipperName,
+        },
+      });
+
+      if (patch.vehicle_brand !== undefined) setVehicleBrand(patch.vehicle_brand);
+      if (patch.driver_name !== undefined) setDriverName(patch.driver_name);
+      if (patch.cargo_name !== undefined) setCargoName(patch.cargo_name);
+      if (patch.shipper_name !== undefined) setShipperName(patch.shipper_name);
+
+      const allowed = shouldAutofillTare({ mode: formMode, completing: isCompleting });
+      const vehicle = findVehicleByKey(vehicles.entries, key);
+      const tareResult = resolveTareAutofill({
+        allowed,
+        locked: tareAutofillLockedRef.current,
+        vehicleNumber: rawNumber,
+        tareWeight,
+        defaultTareWeight: vehicle?.default_tare_weight ?? null,
+        taraDefault: appSettings.tara_default,
+      });
+      if (tareResult) {
+        setTareWeight(tareResult.tareWeight);
+        setTareSource(tareResult.tareSource);
+      }
+    },
+    [
+      isCompleting,
+      vehicles.entries,
+      vehicleBrand,
+      driverName,
+      cargoName,
+      shipperName,
+      formMode,
+      tareWeight,
+      appSettings.tara_default,
+    ],
+  );
+
+  const handleVehicleNumberChange = (value: string) => {
+    setVehicleNumber(value);
+    setTareAutofillLockedSafe(false);
+    const key = normalizeVehicleKey(value);
+    if (!key || isCompleting) return;
+    const matched = vehicles.entries.some((entry) => {
+      const plate = entry.vehicle_number ?? entry.name ?? '';
+      return (
+        normalizeVehicleKey(plate) === key &&
+        (plate === value || formatVehiclePlate(plate) === formatVehiclePlate(value))
+      );
+    });
+    if (matched) {
+      applyConfirmedVehicleNumber(value);
+    }
+  };
+
+  const handleDeviceChange = (id: ScaleDeviceId) => {
+    setDeviceId(id);
+    SettingsStorage.updateAppSettings({ scale_device_id: id });
+  };
+
   const resetFormFields = useCallback(() => {
     setActiveField('gross');
     setPhaseOverride(false);
@@ -170,7 +273,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setTareWeight(null);
     setGrossSource('manual');
     setTareSource('manual');
-    setTareAutofillLocked(false);
+    setTareAutofillLockedSafe(false);
     setGrossRaw(null);
     setTareRaw(null);
     setGrossDatetime(null);
@@ -178,7 +281,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setNotes('');
     setError(null);
     setUnstableWarning(null);
-  }, []);
+  }, [setTareAutofillLockedSafe]);
 
   const exitCompletion = useCallback(() => {
     setCompletingTicket(null);
@@ -231,7 +334,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setTareWeight(ticket.tare_weight);
       setGrossSource(ticket.gross_source);
       setTareSource(ticket.tare_source);
-      setTareAutofillLocked(true);
+      setTareAutofillLockedSafe(true);
       setGrossRaw(ticket.gross_raw);
       setTareRaw(ticket.tare_raw);
       setGrossDatetime(ticket.gross_datetime);
@@ -251,7 +354,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         setActiveField('gross');
       }
     },
-    [exitCompletion],
+    [exitCompletion, setTareAutofillLockedSafe],
   );
 
   useEffect(() => {
@@ -268,38 +371,6 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       }
     }
   }, [cargoName, cargos.entries, price]);
-
-  useEffect(() => {
-    if (!vehicleNumber) return;
-    const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
-    if (vehicle?.vehicle_brand && !vehicleBrand) {
-      setVehicleBrand(vehicle.vehicle_brand);
-    }
-  }, [vehicleNumber, vehicles.entries, vehicleBrand]);
-
-  useEffect(() => {
-    const allowed = shouldAutofillTare({ mode: formMode, completing: isCompleting });
-    const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
-    const result = resolveTareAutofill({
-      allowed,
-      locked: tareAutofillLocked,
-      vehicleNumber,
-      tareWeight,
-      defaultTareWeight: vehicle?.default_tare_weight ?? null,
-      taraDefault: appSettings.tara_default,
-    });
-    if (!result) return;
-    setTareWeight(result.tareWeight);
-    setTareSource(result.tareSource);
-  }, [
-    vehicleNumber,
-    vehicles.entries,
-    tareWeight,
-    formMode,
-    isCompleting,
-    appSettings.tara_default,
-    tareAutofillLocked,
-  ]);
 
   const handleModeChange = (mode: WeighingMode) => {
     if (isCompleting) return;
@@ -367,6 +438,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     const now = new Date().toISOString();
     const net = calcNetWeight(grossWeight!, tareWeight!);
     const amount = calcTotalAmount(net, parseFloat(price) || 0);
+    const plateKey = normalizeVehicleKey(vehicleNumber);
     try {
       const ticket = TicketStorage.create({
         vehicle_number: formatVehiclePlate(vehicleNumber),
@@ -397,7 +469,12 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         notes,
         weighing_mode: 'single',
         version: 1,
+        plate_source: resolvePlateSource(plateKey, vehicles.entries),
+        scale_role: null,
+        photo_entry_path: null,
+        photo_exit_path: null,
       });
+      onTicketCompletedLearning(ticket);
       logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
         id: ticket.id,
         mode: 'single',
@@ -431,6 +508,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     }
 
     const hasGross = grossWeight != null && grossWeight > 0;
+    const plateKey = normalizeVehicleKey(vehicleNumber);
     setSaving(true);
     try {
       const ticket = TicketStorage.create({
@@ -462,6 +540,10 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         notes,
         weighing_mode: 'dual',
         version: 1,
+        plate_source: resolvePlateSource(plateKey, vehicles.entries),
+        scale_role: null,
+        photo_entry_path: null,
+        photo_exit_path: null,
       });
       logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
         id: ticket.id,
@@ -505,6 +587,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     const net = calcNetWeight(grossWeight!, tareWeight!);
     const amount = calcTotalAmount(net, parseFloat(price) || 0);
 
+    const plateKey = normalizeVehicleKey(vehicleNumber);
     const updates: Partial<WeighingTicket> = {
       vehicle_number: formatVehiclePlate(vehicleNumber),
       vehicle_brand: formatVehicleBrand(vehicleBrand),
@@ -521,6 +604,10 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       completed_at: now,
       net_weight: net,
       total_amount: amount,
+      plate_source: resolvePlateSource(plateKey, vehicles.entries),
+      scale_role: null,
+      photo_entry_path: null,
+      photo_exit_path: null,
     };
 
     // Only write weight meta for slots that were editable (new on this step)
@@ -560,6 +647,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         setIncompleteRefresh((n) => n + 1);
         return;
       }
+      onTicketCompletedLearning(ticket);
       logger.info('weighing', `Завершён тикет №${ticket.ticket_number}`, {
         id: ticket.id,
         mode: ticket.weighing_mode,
@@ -601,6 +689,14 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition';
   const labelClass = 'block text-xs font-medium text-slate-600 mb-1';
   const showIncompletePanel = formMode === 'dual' || isCompleting;
+  const confirmedVehicleKey = normalizeVehicleKey(vehicleNumber);
+  const driverOptions = driverDatalistOptions({
+    mode: appSettings.driver_input_mode,
+    history: VehicleDriversStorage.getByVehicleKey(confirmedVehicleKey),
+    allDrivers: drivers.entries,
+  });
+  const driverListId =
+    appSettings.driver_input_mode === 'free' ? undefined : 'drivers-list';
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] min-w-0">
@@ -655,7 +751,14 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className={labelClass}>Номер автомобиля *</label>
-              <input list="vehicles-list" value={vehicleNumber} onChange={(e) => { setVehicleNumber(e.target.value); setTareAutofillLocked(false); }} placeholder="А123ВС77" className={inputClass} />
+              <input
+                list="vehicles-list"
+                value={vehicleNumber}
+                onChange={(e) => handleVehicleNumberChange(e.target.value)}
+                onBlur={() => applyConfirmedVehicleNumber(vehicleNumber)}
+                placeholder="А123ВС77"
+                className={inputClass}
+              />
               <datalist id="vehicles-list">
                 {vehicles.entries.map((v) => <option key={v.id} value={v.vehicle_number} />)}
               </datalist>
@@ -673,10 +776,20 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             </div>
             <div>
               <label className={labelClass}>ФИО водителя *</label>
-              <input list="drivers-list" value={driverName} onChange={(e) => setDriverName(e.target.value)} placeholder="Иванов И.И." className={inputClass} />
-              <datalist id="drivers-list">
-                {drivers.entries.map((d) => <option key={d.id} value={d.name} />)}
-              </datalist>
+              <input
+                list={driverListId}
+                value={driverName}
+                onChange={(e) => setDriverName(e.target.value)}
+                placeholder="Иванов И.И."
+                className={inputClass}
+              />
+              {driverListId && (
+                <datalist id="drivers-list">
+                  {driverOptions.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+              )}
             </div>
             <div>
               <label className={labelClass}>Наименование груза *</label>
@@ -814,7 +927,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
                 onChange={(e) => {
                   setTareWeight(parseWeightInput(e.target.value));
                   setTareSource('manual');
-                  setTareAutofillLocked(true);
+                  setTareAutofillLockedSafe(true);
                   setTareRaw(null);
                   setTareDatetime(new Date().toISOString());
                 }}
@@ -952,7 +1065,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           label={captureLabel}
           capturedWeight={highlightPhase === 'gross' ? grossWeight : tareWeight}
           deviceId={deviceId}
-          onDeviceChange={setDeviceId}
+          onDeviceChange={handleDeviceChange}
           stableMode={appSettings.stable_mode}
           onUnstableCapture={() => {
             setUnstableWarning('Зафиксирован нестабильный вес.');

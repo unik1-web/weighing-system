@@ -21,9 +21,9 @@
 | `GET` | `/api/database` | — | Данные SQLite → `{ data }` (ключи `app_*`) |
 | `POST` | `/api/database` | `{ "data": { ... } }` | Сохранить БД |
 
-Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`.
+Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` \| `all` \| `free`), `scale_device_id`.
 
-В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version`; audit — `app_ticket_audit` (частичный POST без этого ключа audit не очищает).
+В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version` и nullable audit-заготовки `plate_source`, `scale_role`, `photo_entry_path`, `photo_exit_path`; audit — `app_ticket_audit`; история водителей — `app_vehicle_drivers` (частичный POST без ключа `app_ticket_audit` / `app_vehicle_drivers` соответствующие таблицы не очищает).
 | `GET` | `/api/storage` | — | Объединённое чтение config + database |
 | `POST` | `/api/storage` | `{ "data": { "app_...": "..." } }` | Сохранить; принимаются только строковые `app_*` |
 | `GET` | `/api/storage/export` | — | Резервная копия INI (`format: "ini"`, `content`, `backup`) |

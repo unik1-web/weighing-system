@@ -31,7 +31,7 @@
 | Источник веса | `manual` \| `instrument` \| `dictionary` \| `default` | талон, форма, журнал, отчёты |
 | Терминалы | 4 Web Serial-профиля, один `ScaleConnection` | `scales.ts`, `ScalePanel` |
 | Справочники | авто, водители, грузы, контрагенты | импорт Vescom/Metra/WA |
-| Подстановка по номеру | только марка и стандартная тара | `WeighingForm.tsx` |
+| Подстановка по номеру | марка, тара, ФИО/груз/ГО, история водителей | `vehicle-resolve.ts`, `WeighingForm` |
 | Статус тикета | `open` \| `completed`; single/dual, дозавершение из формы и журнала | форма / журнал |
 | Печать, РЭО, отчёты | акт, талон, CSV | `PrintAct`, `reo.ts` |
 | Режимы Vescom (этап 1) | `weighing_mode`, настройки порога/интервала/тары, `version`, зачаток audit | `weighing-mode.ts`, `storage.ts` |
@@ -304,7 +304,9 @@ site_runtime (active_scale_set, switch reason/by/at, camera_mode, anpr_mode)
 
 **Этап 2** (источник веса) — выполнен.
 
-**Следующий:** этап 3 — автоподстановка по номеру и водители ([docs/tasks/03-vehicle-resolve.md](tasks/03-vehicle-resolve.md)). Постановки: [docs/tasks/](tasks/).
+**Этап 3** (автоподстановка + водители) — выполнен.
+
+**Следующий:** этап 4 — площадка primary/spare ([docs/tasks/04-site-primary-spare.md](tasks/04-site-primary-spare.md)). Постановки: [docs/tasks/](tasks/).
 
 ---
 

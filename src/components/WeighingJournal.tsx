@@ -2,9 +2,24 @@ import { useState, useEffect, useCallback } from 'react';
 import { type WeighingTicket, type WeightSource, TicketStorage, REO_STATUS_LABELS, SettingsStorage } from '@/lib/storage';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import { logger } from '@/lib/logger';
-import { ticketMatchesWeightSource, WEIGHT_SOURCE_LABELS, WEIGHT_SOURCES } from '@/lib/weighing-mode';
+import {
+  ticketMatchesWeightSource,
+  WEIGHT_SOURCE_LABELS,
+  WEIGHT_SOURCES,
+  normalizeWeightSource,
+} from '@/lib/weighing-mode';
 import { printTicket } from './PrintAct';
-import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson } from 'lucide-react';
+import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson, Eye, X } from 'lucide-react';
+
+/** Canonical weight-source label for card/CSV (WEIGHT_SOURCE_LABELS). */
+export function weightSourceLabel(raw: string | null | undefined): string {
+  return WEIGHT_SOURCE_LABELS[normalizeWeightSource(raw)];
+}
+
+function displayDevice(value: string | null | undefined): string {
+  const trimmed = (value ?? '').trim();
+  return trimmed || '—';
+}
 
 interface Props {
   refreshKey: number;
@@ -21,6 +36,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const [reoFilter, setReoFilter] = useState<'all' | 'pending' | 'sent'>('all');
   const [sourceFilter, setSourceFilter] = useState<WeightSource | 'all'>('all');
   const [sendingBulk, setSendingBulk] = useState(false);
+  const [detailsTicket, setDetailsTicket] = useState<WeighingTicket | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -118,8 +134,48 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
 
   const exportCSV = () => {
     const headers = reoEnabled
-      ? ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Статус', 'РЭО', 'Дата отправки в РЭО']
-      : ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Статус'];
+      ? [
+          'ID',
+          'Дата',
+          'Номер',
+          'Водитель',
+          'Груз',
+          'Отправитель',
+          'Получатель',
+          'Перевозчик',
+          'Брутто',
+          'Тара',
+          'Нетто',
+          'Цена/т',
+          'Сумма',
+          'Весовщик',
+          'Источник брутто',
+          'Источник тары',
+          'Устройство весов',
+          'Статус',
+          'РЭО',
+          'Дата отправки в РЭО',
+        ]
+      : [
+          'ID',
+          'Дата',
+          'Номер',
+          'Водитель',
+          'Груз',
+          'Отправитель',
+          'Получатель',
+          'Перевозчик',
+          'Брутто',
+          'Тара',
+          'Нетто',
+          'Цена/т',
+          'Сумма',
+          'Весовщик',
+          'Источник брутто',
+          'Источник тары',
+          'Устройство весов',
+          'Статус',
+        ];
     const rows = filtered.map((t) => {
       const base = [
         t.ticket_number,
@@ -136,6 +192,9 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
         t.price,
         t.total_amount ?? '',
         t.operator_name,
+        weightSourceLabel(t.gross_source),
+        weightSourceLabel(t.tare_source),
+        displayDevice(t.scale_device) === '—' ? '' : displayDevice(t.scale_device),
         t.status === 'completed' ? 'Завершён' : 'Открыт',
       ];
       if (!reoEnabled) return base;
@@ -298,6 +357,13 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                       </td>
                     )}
                     <td className="px-2 py-2.5 text-center whitespace-nowrap">
+                      <button
+                        onClick={() => setDetailsTicket(t)}
+                        className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition mr-1"
+                        title="Карточка тикета"
+                      >
+                        <Eye size={15} />
+                      </button>
                       {t.status === 'open' && (
                         <button
                           onClick={() => onCompleteOpen?.(t.id)}
@@ -326,6 +392,89 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
           </table>
         </div>
       </div>
+
+      {detailsTicket && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => setDetailsTicket(null)}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Карточка тикета"
+          >
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h3 className="text-base font-semibold text-slate-800">Карточка тикета</h3>
+              <button
+                type="button"
+                onClick={() => setDetailsTicket(null)}
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                title="Закрыть"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+              <div>
+                <dt className="text-xs text-slate-500">Номер талона</dt>
+                <dd className="font-semibold text-slate-800">{detailsTicket.ticket_number ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Госномер</dt>
+                <dd className="font-medium text-slate-800">{detailsTicket.vehicle_number || '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Статус</dt>
+                <dd className="text-slate-800">
+                  {detailsTicket.status === 'completed' ? 'Завершён' : 'Открыт'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Дата / время</dt>
+                <dd className="text-slate-800">
+                  {new Date(detailsTicket.created_at).toLocaleString('ru-RU')}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Брутто</dt>
+                <dd className="tabular-nums text-slate-800">
+                  {detailsTicket.gross_weight?.toLocaleString('ru-RU') ?? '—'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Источник брутто</dt>
+                <dd className="text-slate-800">{weightSourceLabel(detailsTicket.gross_source)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Тара</dt>
+                <dd className="tabular-nums text-slate-800">
+                  {detailsTicket.tare_weight?.toLocaleString('ru-RU') ?? '—'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Источник тары</dt>
+                <dd className="text-slate-800">{weightSourceLabel(detailsTicket.tare_source)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Нетто</dt>
+                <dd className="tabular-nums font-semibold text-slate-800">
+                  {detailsTicket.net_weight?.toLocaleString('ru-RU') ?? '—'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-slate-500">Устройство весов</dt>
+                <dd className="text-slate-800">{displayDevice(detailsTicket.scale_device)}</dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-xs text-slate-500">Оператор</dt>
+                <dd className="text-slate-800">{detailsTicket.operator_name || '—'}</dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

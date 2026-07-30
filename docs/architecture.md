@@ -39,17 +39,19 @@ Flask API  ──►  config.ini          (настройки)
 
 | Путь | Назначение |
 |------|------------|
-| `lib/storage.ts` | Модели, localStorage, настройки; тикет: `weighing_mode`, `version`; audit `app_ticket_audit` |
+| `lib/storage.ts` | Модели, localStorage, настройки; тикет: `weighing_mode`, `version`, audit stubs; `VehicleDriversStorage` (`app_vehicle_drivers`); `preferred_*` на ТС |
 | `lib/weighing-mode.ts` | Pure-логика режимов single/dual и источника веса (`WeightSource`, автотара, фильтр, сводка) |
+| `lib/vehicle-resolve.ts` | Pure resolve реквизитов по госномеру, матрица водителя, datalist, `plate_source` |
 | `lib/storage-sync.ts` | Синхронизация с API |
 | `lib/api.ts` | Обёртки fetch к `/api/*` |
 | `lib/reo.ts` | Сборка JSON РЭО, валидация |
-| `lib/scales.ts` | Web Serial: парсеры весов |
+| `lib/scales.ts` | Web Serial: парсеры весов; `normalizeScaleDeviceId` |
 | `lib/vehicle-plate.ts` | Нормализация госномеров |
 | `lib/import-keys.ts` | Ключ дедупликации импорта |
 | `components/*ImportView.tsx` | Импорт Vescom / Metra / WA |
 | `components/PrintAct.tsx` | Макеты «акт» и «талон» |
-| `components/SettingsView.tsx` | Организация, РЭО, импорт, UI, режимы взвешивания |
+| `components/SettingsView.tsx` | Организация, РЭО, импорт, UI, режимы взвешивания, режим ввода водителя |
+| `components/WeighingJournal.tsx` | Журнал, карточка тикета (модалка), CSV с источниками веса и устройством |
 
 ## Нормализация справочников
 
@@ -84,6 +86,14 @@ Flask API  ──►  config.ini          (настройки)
 - Audit: ключ sync `app_ticket_audit` / таблица SQLite `ticket_audit` (`created` / `completed`).
 - Настройки (`config.ini` / `AppSettings`): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`.
 - Миграция и деплой: `docs/weighing-modes-deploy.md`.
+
+## Автоподстановка по номеру и водители (этап 3)
+
+- Resolve реквизитов: `src/lib/vehicle-resolve.ts` (марка / водитель / груз / грузоотправитель по приоритетам; триггер — confirmed plate select/blur).
+- История водителей: sync-ключ `app_vehicle_drivers`, таблица SQLite `vehicle_drivers` (отдельно от журнала).
+- Настройки: `driver_input_mode`, `scale_device_id`.
+- Audit stubs тикета: `plate_source`, `scale_role`, `photo_entry_path`, `photo_exit_path` (nullable).
+- Предпочтения ТС в payload карточки: `preferred_driver_name`, `preferred_cargo_name`, `preferred_shipper_name`.
 
 ## Весы (Web Serial)
 

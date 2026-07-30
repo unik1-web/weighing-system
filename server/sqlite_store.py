@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import sqlite3
 import sys
@@ -8,11 +9,14 @@ from typing import Any
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILENAME = 'weighing.db'
 
+logger = logging.getLogger('weighing-system-api')
+
 STORAGE_KEYS = {
     'users': 'app_users',
     'profiles': 'app_users_profiles',
     'tickets': 'app_weighing_tickets',
     'ticket_audit': 'app_ticket_audit',
+    'vehicle_drivers': 'app_vehicle_drivers',
     'session': 'app_current_user',
     'vehicles': 'app_vehicles',
     'drivers': 'app_drivers',
@@ -39,11 +43,23 @@ TICKET_COLUMNS = [
     'scale_device', 'operator_id', 'operator_name', 'status', 'reo_status', 'reo_sent_at',
     'notes', 'created_at', 'completed_at',
     'weighing_mode', 'version',
+    'plate_source', 'scale_role', 'photo_entry_path', 'photo_exit_path',
 ]
 
 AUDIT_COLUMNS = [
     'id', 'ticket_id', 'action', 'at', 'operator_name', 'operator_id',
 ]
+
+VEHICLE_DRIVER_COLUMNS = [
+    'id', 'vehicle_key', 'driver_name', 'last_used_at', 'use_count',
+]
+
+TICKET_STUB_COLUMNS = (
+    'plate_source',
+    'scale_role',
+    'photo_entry_path',
+    'photo_exit_path',
+)
 
 
 def get_app_root() -> str:
@@ -80,48 +96,90 @@ def connect():
         connection.close()
 
 
+def ensure_vehicle_drivers_schema(connection: sqlite3.Connection) -> None:
+    """Create vehicle_drivers table and indexes (no FK to tickets)."""
+    try:
+        connection.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS vehicle_drivers (
+                id TEXT PRIMARY KEY,
+                vehicle_key TEXT NOT NULL,
+                driver_name TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                use_count INTEGER NOT NULL DEFAULT 1
+            )
+            '''
+        )
+        connection.execute(
+            '''
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_key_name
+                ON vehicle_drivers(vehicle_key, driver_name)
+            '''
+        )
+        connection.execute(
+            '''
+            CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle_key
+                ON vehicle_drivers(vehicle_key)
+            '''
+        )
+    except Exception:
+        logger.exception('Failed to ensure vehicle_drivers schema')
+        raise
+
+
 def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
-    """Ensure weighing_tickets columns, ticket_audit table, and one-shot open→dual backfill."""
-    connection.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS ticket_audit (
-            id TEXT PRIMARY KEY,
-            ticket_id TEXT NOT NULL,
-            action TEXT NOT NULL,
-            at TEXT NOT NULL,
-            operator_name TEXT NOT NULL DEFAULT '',
-            operator_id TEXT
-        )
-        '''
-    )
-    connection.execute(
-        'CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket ON ticket_audit(ticket_id)'
-    )
-
-    existing = {
-        row['name']
-        for row in connection.execute('PRAGMA table_info(weighing_tickets)').fetchall()
-    }
-    if not existing:
-        return
-
-    column_weighing_mode_added = False
-    if 'weighing_mode' not in existing:
+    """Ensure weighing_tickets columns, ticket_audit, vehicle_drivers, open→dual backfill."""
+    try:
         connection.execute(
-            "ALTER TABLE weighing_tickets ADD COLUMN weighing_mode TEXT NOT NULL DEFAULT 'single'"
+            '''
+            CREATE TABLE IF NOT EXISTS ticket_audit (
+                id TEXT PRIMARY KEY,
+                ticket_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                at TEXT NOT NULL,
+                operator_name TEXT NOT NULL DEFAULT '',
+                operator_id TEXT
+            )
+            '''
         )
-        column_weighing_mode_added = True
-
-    if 'version' not in existing:
         connection.execute(
-            'ALTER TABLE weighing_tickets ADD COLUMN version INTEGER NOT NULL DEFAULT 1'
+            'CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket ON ticket_audit(ticket_id)'
         )
+        ensure_vehicle_drivers_schema(connection)
 
-    if column_weighing_mode_added:
-        # One-shot backfill: only right after ADD COLUMN weighing_mode.
-        connection.execute(
-            "UPDATE weighing_tickets SET weighing_mode = 'dual' WHERE status = 'open'"
-        )
+        existing = {
+            row['name']
+            for row in connection.execute('PRAGMA table_info(weighing_tickets)').fetchall()
+        }
+        if not existing:
+            return
+
+        column_weighing_mode_added = False
+        if 'weighing_mode' not in existing:
+            connection.execute(
+                "ALTER TABLE weighing_tickets ADD COLUMN weighing_mode TEXT NOT NULL DEFAULT 'single'"
+            )
+            column_weighing_mode_added = True
+
+        if 'version' not in existing:
+            connection.execute(
+                'ALTER TABLE weighing_tickets ADD COLUMN version INTEGER NOT NULL DEFAULT 1'
+            )
+
+        for column in TICKET_STUB_COLUMNS:
+            if column not in existing:
+                connection.execute(
+                    f'ALTER TABLE weighing_tickets ADD COLUMN {column} TEXT'
+                )
+
+        if column_weighing_mode_added:
+            # One-shot backfill: only right after ADD COLUMN weighing_mode.
+            connection.execute(
+                "UPDATE weighing_tickets SET weighing_mode = 'dual' WHERE status = 'open'"
+            )
+    except Exception:
+        logger.exception('Failed to ensure ticket schema')
+        raise
 
 
 def init_schema(connection: sqlite3.Connection) -> None:
@@ -176,7 +234,11 @@ def init_schema(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             completed_at TEXT,
             weighing_mode TEXT NOT NULL DEFAULT 'single',
-            version INTEGER NOT NULL DEFAULT 1
+            version INTEGER NOT NULL DEFAULT 1,
+            plate_source TEXT,
+            scale_role TEXT,
+            photo_entry_path TEXT,
+            photo_exit_path TEXT
         );
 
         CREATE TABLE IF NOT EXISTS dictionary_entries (
@@ -207,6 +269,20 @@ def init_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket
             ON ticket_audit(ticket_id);
+
+        CREATE TABLE IF NOT EXISTS vehicle_drivers (
+            id TEXT PRIMARY KEY,
+            vehicle_key TEXT NOT NULL,
+            driver_name TEXT NOT NULL,
+            last_used_at TEXT NOT NULL,
+            use_count INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_key_name
+            ON vehicle_drivers(vehicle_key, driver_name);
+
+        CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle_key
+            ON vehicle_drivers(vehicle_key);
         '''
     )
     ensure_ticket_schema(connection)
@@ -297,6 +373,17 @@ def _load_ticket_audit(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return [{column: row[column] for column in AUDIT_COLUMNS} for row in rows]
 
 
+def _load_vehicle_drivers(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'''
+        SELECT {", ".join(VEHICLE_DRIVER_COLUMNS)}
+        FROM vehicle_drivers
+        ORDER BY last_used_at DESC, use_count DESC
+        '''
+    ).fetchall()
+    return [{column: row[column] for column in VEHICLE_DRIVER_COLUMNS} for row in rows]
+
+
 def _load_dictionary(connection: sqlite3.Connection, category: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
@@ -352,6 +439,12 @@ def read_database() -> dict[str, str]:
         audit_events = _load_ticket_audit(connection)
         if audit_events:
             result[STORAGE_KEYS['ticket_audit']] = json.dumps(audit_events, ensure_ascii=False)
+
+        vehicle_drivers = _load_vehicle_drivers(connection)
+        if vehicle_drivers:
+            result[STORAGE_KEYS['vehicle_drivers']] = json.dumps(
+                vehicle_drivers, ensure_ascii=False
+            )
 
         session = _load_session(connection)
         if session:
@@ -447,6 +540,33 @@ def _replace_ticket_audit(connection: sqlite3.Connection, events: list[Any]) -> 
         )
 
 
+def _replace_vehicle_drivers(connection: sqlite3.Connection, rows: list[Any]) -> None:
+    connection.execute('DELETE FROM vehicle_drivers')
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        use_count = row.get('use_count')
+        try:
+            use_count_int = int(use_count) if use_count is not None else 1
+        except (TypeError, ValueError):
+            use_count_int = 1
+        if use_count_int < 1:
+            use_count_int = 1
+        connection.execute(
+            f'''
+            INSERT INTO vehicle_drivers ({", ".join(VEHICLE_DRIVER_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(VEHICLE_DRIVER_COLUMNS))})
+            ''',
+            (
+                str(row.get('id', '')),
+                str(row.get('vehicle_key', '')),
+                str(row.get('driver_name', '')),
+                str(row.get('last_used_at', '')),
+                use_count_int,
+            ),
+        )
+
+
 def _replace_dictionary(connection: sqlite3.Connection, category: str, items: list[Any]) -> None:
     connection.execute('DELETE FROM dictionary_entries WHERE category = ?', (category,))
     for item in items:
@@ -512,7 +632,21 @@ def write_database(data: dict[str, Any]) -> None:
                 if isinstance(events, list):
                     _replace_ticket_audit(connection, events)
             except json.JSONDecodeError:
-                pass
+                logger.warning('Invalid JSON for %s', STORAGE_KEYS['ticket_audit'])
+
+        if STORAGE_KEYS['vehicle_drivers'] in data:
+            try:
+                rows = json.loads(str(data[STORAGE_KEYS['vehicle_drivers']]))
+                if isinstance(rows, list):
+                    _replace_vehicle_drivers(connection, rows)
+            except json.JSONDecodeError:
+                logger.warning(
+                    'Invalid JSON for %s; vehicle_drivers not replaced',
+                    STORAGE_KEYS['vehicle_drivers'],
+                )
+            except Exception:
+                logger.exception('Failed to replace vehicle_drivers')
+                raise
 
         if STORAGE_KEYS['session'] in data:
             _replace_session(connection, str(data[STORAGE_KEYS['session']]))

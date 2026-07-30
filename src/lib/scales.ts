@@ -63,6 +63,16 @@ export const SCALE_DEVICES: Record<ScaleDeviceId, ScaleDeviceConfig> = {
 
 export const SCALE_DEVICE_LIST = Object.values(SCALE_DEVICES);
 
+const DEFAULT_SCALE_DEVICE_ID: ScaleDeviceId = 'microsim-m0601';
+
+/** Valid ScaleDeviceId or default microsim-m0601. */
+export function normalizeScaleDeviceId(raw: string | null | undefined): ScaleDeviceId {
+  if (raw && Object.prototype.hasOwnProperty.call(SCALE_DEVICES, raw)) {
+    return raw as ScaleDeviceId;
+  }
+  return DEFAULT_SCALE_DEVICE_ID;
+}
+
 type ReadingListener = (reading: ScaleReading) => void;
 type StatusListener = (connected: boolean) => void;
 

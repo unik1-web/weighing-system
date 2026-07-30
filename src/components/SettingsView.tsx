@@ -5,8 +5,11 @@ import {
   TicketStorage,
   PRINT_LAYOUT_LABELS,
   NAV_TAB_MODE_LABELS,
+  DRIVER_INPUT_MODE_LABELS,
   clearAllDictionaries,
+  normalizeDriverInputMode,
   type AppSettings,
+  type DriverInputMode,
   type NavTabMode,
   type PrintLayout,
 } from '@/lib/storage';
@@ -105,6 +108,7 @@ export function SettingsView({ onSaved }: Props) {
       tara_threshold: settings.tara_threshold,
       max_time_between: settings.max_time_between,
       tara_default: settings.tara_default,
+      driver_input_mode: settings.driver_input_mode,
     });
     logger.info('settings', 'Настройки сохранены');
     setSaved(true);
@@ -460,6 +464,22 @@ export function SettingsView({ onSaved }: Props) {
             >
               <option value="single">Одиночное</option>
               <option value="dual">Двойное</option>
+            </select>
+          </div>
+          <div className="sm:col-span-2">
+            <label className={labelClass}>Режим ввода водителя</label>
+            <select
+              value={settings.driver_input_mode}
+              onChange={(e) =>
+                updateField('driver_input_mode', normalizeDriverInputMode(e.target.value))
+              }
+              className={inputClass}
+            >
+              {(Object.keys(DRIVER_INPUT_MODE_LABELS) as DriverInputMode[]).map((mode) => (
+                <option key={mode} value={mode}>
+                  {DRIVER_INPUT_MODE_LABELS[mode]}
+                </option>
+              ))}
             </select>
           </div>
           <div className="sm:col-span-2">

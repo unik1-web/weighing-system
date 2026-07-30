@@ -1,15 +1,24 @@
 // Local storage abstraction for weighing system
 import { scheduleConfigSync, scheduleDatabaseSync, flushDatabaseSync, DICTIONARIES_UPDATED_EVENT } from './storage-sync';
-import { formatVehiclePlate } from './vehicle-plate';
+import { formatVehiclePlate, normalizeVehicleKey } from './vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from './text-format';
 import { ticketImportKey } from './import-keys';
 import { normalizeWeighingMode, normalizeWeightSource, type WeighingMode } from './weighing-mode';
+import { normalizeScaleDeviceId, type ScaleDeviceId } from './scales';
 import { logger } from './logger';
 
 export type WeightSource = 'manual' | 'instrument' | 'dictionary' | 'default';
 export type TicketStatus = 'open' | 'completed';
 export type ReoStatus = 'pending' | 'sent';
-export type { WeighingMode };
+export type DriverInputMode = 'vehicle' | 'all' | 'free';
+export type PlateSource = 'anpr' | 'operator' | 'directory';
+export type ScaleRole = 'primary' | 'spare';
+export type { WeighingMode, ScaleDeviceId };
+
+export function normalizeDriverInputMode(raw: string | null | undefined): DriverInputMode {
+  if (raw === 'vehicle' || raw === 'all' || raw === 'free') return raw;
+  return 'vehicle';
+}
 
 export const REO_STATUS_LABELS: Record<ReoStatus, string> = {
   pending: 'Не отправлено',
@@ -50,6 +59,18 @@ export interface WeighingTicket {
   completed_at: string | null;
   weighing_mode?: WeighingMode;
   version?: number;
+  plate_source?: PlateSource | null;
+  scale_role?: ScaleRole | null;
+  photo_entry_path?: string | null;
+  photo_exit_path?: string | null;
+}
+
+export interface VehicleDriverRecord {
+  id: string;
+  vehicle_key: string;
+  driver_name: string;
+  last_used_at: string;
+  use_count: number;
 }
 
 export interface TicketAuditEvent {
@@ -83,6 +104,7 @@ const STORAGE_KEYS = {
   SESSIONS: 'app_sessions',
   TICKETS: 'app_weighing_tickets',
   TICKET_AUDIT: 'app_ticket_audit',
+  VEHICLE_DRIVERS: 'app_vehicle_drivers',
   VEHICLES: 'app_vehicles',
   DRIVERS: 'app_drivers',
   CARGOS: 'app_cargos',
@@ -243,6 +265,16 @@ export const SessionStorage = {
   },
 };
 
+function normalizePlateSource(raw: unknown): PlateSource | null {
+  if (raw === 'anpr' || raw === 'operator' || raw === 'directory') return raw;
+  return null;
+}
+
+function normalizeScaleRole(raw: unknown): ScaleRole | null {
+  if (raw === 'primary' || raw === 'spare') return raw;
+  return null;
+}
+
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
   const next: WeighingTicket = {
     ...ticket,
@@ -250,6 +282,16 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     reo_sent_at: ticket.reo_sent_at ?? null,
     gross_source: normalizeWeightSource(ticket.gross_source as string),
     tare_source: normalizeWeightSource(ticket.tare_source as string),
+    plate_source: normalizePlateSource(ticket.plate_source),
+    scale_role: normalizeScaleRole(ticket.scale_role),
+    photo_entry_path:
+      ticket.photo_entry_path === undefined || ticket.photo_entry_path === null
+        ? null
+        : String(ticket.photo_entry_path),
+    photo_exit_path:
+      ticket.photo_exit_path === undefined || ticket.photo_exit_path === null
+        ? null
+        : String(ticket.photo_exit_path),
   };
   if (ticket.weighing_mode === undefined) {
     next.weighing_mode = normalizeWeighingMode(ticket);
@@ -465,6 +507,9 @@ export interface DictionaryEntry {
   vehicle_brand?: string;
   vehicle_number?: string;
   inn?: string;
+  preferred_driver_name?: string;
+  preferred_cargo_name?: string;
+  preferred_shipper_name?: string;
 }
 
 export const DICTIONARY_LABELS: Record<DictionaryTable, string> = {
@@ -619,6 +664,8 @@ export interface AppSettings {
   tara_threshold: number;
   max_time_between: number;
   tara_default: number;
+  driver_input_mode: DriverInputMode;
+  scale_device_id: ScaleDeviceId;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -651,6 +698,14 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   tara_threshold: 15000,
   max_time_between: 24,
   tara_default: 0,
+  driver_input_mode: 'vehicle',
+  scale_device_id: 'microsim-m0601',
+};
+
+export const DRIVER_INPUT_MODE_LABELS: Record<DriverInputMode, string> = {
+  vehicle: 'По машине',
+  all: 'Весь справочник',
+  free: 'Свободный ввод',
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -716,12 +771,23 @@ export const SettingsStorage = {
       tara_threshold: parseNumber(stored.tara_threshold, DEFAULT_APP_SETTINGS.tara_threshold),
       max_time_between: parseNumber(stored.max_time_between, DEFAULT_APP_SETTINGS.max_time_between),
       tara_default: parseNumber(stored.tara_default, DEFAULT_APP_SETTINGS.tara_default),
+      driver_input_mode: normalizeDriverInputMode(stored.driver_input_mode),
+      scale_device_id: normalizeScaleDeviceId(stored.scale_device_id),
     };
   },
 
   updateAppSettings: (updates: Partial<AppSettings>): AppSettings => {
     const current = SettingsStorage.getAppSettings();
-    const next = { ...current, ...updates };
+    const next = {
+      ...current,
+      ...updates,
+      driver_input_mode: normalizeDriverInputMode(
+        updates.driver_input_mode ?? current.driver_input_mode,
+      ),
+      scale_device_id: normalizeScaleDeviceId(
+        updates.scale_device_id ?? current.scale_device_id,
+      ),
+    };
     const flat: Record<string, string> = {
       org_name: next.org_name,
       org_address: next.org_address,
@@ -752,6 +818,8 @@ export const SettingsStorage = {
       tara_threshold: String(next.tara_threshold),
       max_time_between: String(next.max_time_between),
       tara_default: String(next.tara_default),
+      driver_input_mode: next.driver_input_mode,
+      scale_device_id: next.scale_device_id,
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
@@ -779,6 +847,150 @@ export async function clearAllDictionaries(): Promise<void> {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(DICTIONARIES_UPDATED_EVENT));
   }
+}
+
+function sortVehicleDriverRecords(records: VehicleDriverRecord[]): VehicleDriverRecord[] {
+  return [...records].sort((a, b) => {
+    const ta = Date.parse(a.last_used_at) || 0;
+    const tb = Date.parse(b.last_used_at) || 0;
+    if (tb !== ta) return tb - ta;
+    return (b.use_count ?? 0) - (a.use_count ?? 0);
+  });
+}
+
+function getAllVehicleDrivers(): VehicleDriverRecord[] {
+  const stored = localStorage.getItem(STORAGE_KEYS.VEHICLE_DRIVERS);
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (row): row is VehicleDriverRecord =>
+        !!row &&
+        typeof row === 'object' &&
+        typeof row.id === 'string' &&
+        typeof row.vehicle_key === 'string' &&
+        typeof row.driver_name === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** History of drivers per vehicle plate key (sync: app_vehicle_drivers). */
+export const VehicleDriversStorage = {
+  getAll(): VehicleDriverRecord[] {
+    return sortVehicleDriverRecords(getAllVehicleDrivers());
+  },
+
+  getByVehicleKey(key: string): VehicleDriverRecord[] {
+    if (!key) return [];
+    return sortVehicleDriverRecords(
+      getAllVehicleDrivers().filter((row) => row.vehicle_key === key),
+    );
+  },
+
+  /**
+   * Upsert usage for (vehicle_key, driver_name). Empty key/name → no-op.
+   * Best-effort: logs errors and does not throw.
+   */
+  recordUsage(vehicleKey: string, driverName: string, at: string): VehicleDriverRecord | null {
+    try {
+      const key = (vehicleKey ?? '').trim();
+      const name = formatPersonName(driverName ?? '');
+      if (!key || !name) return null;
+
+      const rows = getAllVehicleDrivers();
+      const index = rows.findIndex(
+        (row) => row.vehicle_key === key && row.driver_name.toLowerCase() === name.toLowerCase(),
+      );
+
+      let record: VehicleDriverRecord;
+      if (index === -1) {
+        record = {
+          id: crypto.randomUUID(),
+          vehicle_key: key,
+          driver_name: name,
+          last_used_at: at,
+          use_count: 1,
+        };
+        rows.push(record);
+      } else {
+        record = {
+          ...rows[index],
+          driver_name: name,
+          last_used_at: at,
+          use_count: (rows[index].use_count ?? 0) + 1,
+        };
+        rows[index] = record;
+      }
+
+      persist(STORAGE_KEYS.VEHICLE_DRIVERS, JSON.stringify(rows));
+      return record;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error('vehicle_drivers', `Ошибка записи истории водителей: ${message}`);
+      return null;
+    }
+  },
+};
+
+/**
+ * Update preferred_* on an existing vehicle card. Does not create a card.
+ * Does not touch vehicle_brand / default_tare_weight.
+ */
+export function updateVehiclePreferencesFromTrip(
+  vehicleKey: string,
+  prefs: {
+    preferred_driver_name?: string;
+    preferred_cargo_name?: string;
+    preferred_shipper_name?: string;
+  },
+): DictionaryEntry | null {
+  const key = (vehicleKey ?? '').trim();
+  if (!key) return null;
+
+  const vehicles = DictionaryStorage.getTable('vehicles');
+  const vehicle = vehicles.find((entry) => {
+    const raw = entry.vehicle_number ?? entry.name ?? '';
+    return normalizeVehicleKey(raw) === key;
+  });
+  if (!vehicle) return null;
+
+  const updates: Partial<DictionaryEntry> = {};
+  const driver = (prefs.preferred_driver_name ?? '').trim();
+  const cargo = (prefs.preferred_cargo_name ?? '').trim();
+  const shipper = (prefs.preferred_shipper_name ?? '').trim();
+  if (driver) updates.preferred_driver_name = formatPersonName(driver);
+  if (cargo) updates.preferred_cargo_name = cargo;
+  if (shipper) updates.preferred_shipper_name = shipper;
+  if (Object.keys(updates).length === 0) return vehicle;
+
+  return DictionaryStorage.update('vehicles', vehicle.id, updates);
+}
+
+/**
+ * Learning after ticket reaches completed: upsert vehicle_drivers + preferred_*.
+ * Caller must not invoke for open dual first pass.
+ */
+export function onTicketCompletedLearning(ticket: {
+  vehicle_number?: string | null;
+  driver_name?: string | null;
+  cargo_name?: string | null;
+  shipper_name?: string | null;
+  completed_at?: string | null;
+}): void {
+  const key = normalizeVehicleKey(ticket.vehicle_number ?? '');
+  const driver = formatPersonName(ticket.driver_name ?? '');
+  if (!key || !driver) return;
+
+  const at = ticket.completed_at || new Date().toISOString();
+  VehicleDriversStorage.recordUsage(key, driver, at);
+  updateVehiclePreferencesFromTrip(key, {
+    preferred_driver_name: driver,
+    preferred_cargo_name: ticket.cargo_name ?? '',
+    preferred_shipper_name: ticket.shipper_name ?? '',
+  });
 }
 
 // Initialize default data (only on first run)
