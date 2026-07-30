@@ -200,15 +200,60 @@ JSON-файл для ручной отправки содержит пустые
 |----------|------------|
 | [docs/architecture.md](docs/architecture.md) | Потоки данных, модули, нормализация, печать, env |
 | [docs/api.md](docs/api.md) | Справочник HTTP API Flask |
+| [docs/project-for-agents.md](docs/project-for-agents.md) | Контекст проекта для мультиагентного пайплайна |
+| [docs/roadmap.md](docs/roadmap.md) | Roadmap развития |
+
+## Мультиагентная разработка
+
+Промпты ролей подключены как git submodule из [rdudov/agents](https://github.com/rdudov/agents) в каталог `agents/`.
+
+```bash
+# после clone репозитория
+git submodule update --init --recursive
+
+# обновление промптов
+git submodule update --remote agents
+```
+
+Нужен [Cursor CLI](https://cursor.com/install): `agent login`, модели — `agent models`.
+
+Постановку задачи положите в `docs/tasks/`. Артефакты пайплайна пишутся в `docs/implementation/` (не коммитятся).
+
+Пример запуска в Cursor (Agent mode):
+
+```
+Используя подход по оркестрации мультиагентной разработки (agents/01_orchestrator.md),
+выполни доработку docs/tasks/{задача}.md.
+
+Описание проекта: docs/project-for-agents.md
+Дополнительный контекст: docs/architecture.md, docs/api.md, README.md
+
+Каталог артефактов пайплайна: docs/implementation
+
+Промпты агентов с указанными в 01_orchestrator.md ролями находятся в agents (02*.md..10.md).
+Агентов нужно вызывать shell-командами:
+agent -f --model {модель} -p {промпт}
+и дожидаться от них результатов.
+
+Промпт следующего формата:
+"{содержимое файла с ролью} {входные данные согласно описанию роли}"
+
+Модель:
+аналитик, архитектор, планировщик — gpt-5.4-high
+ревьюеры ТЗ, архитектуры, плана, кода и разработчик — gpt-5.3-codex
+```
 
 ## Структура проекта
 
 ```
 weighing-system/
+├── agents/                 # промпты мультиагентного пайплайна (submodule)
 ├── config.ini              # настройки (создаётся при работе)
 ├── BD/
 │   └── weighing.db         # SQLite
-├── docs/                   # архитектура и API
+├── docs/                   # архитектура, API, задачи и артефакты пайплайна
+│   ├── tasks/              # постановки задач для оркестратора
+│   └── implementation/     # черновики пайплайна (в .gitignore)
 ├── installer/
 │   ├── build.ps1           # сборка exe + setup
 │   ├── weighing-system.spec
