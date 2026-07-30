@@ -3,13 +3,14 @@ import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage 
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
-import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson } from 'lucide-react';
+import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson, Pencil } from 'lucide-react';
 
 interface Props {
   refreshKey: number;
+  onResume?: (ticket: WeighingTicket) => void;
 }
 
-export function WeighingJournal({ refreshKey }: Props) {
+export function WeighingJournal({ refreshKey, onResume }: Props) {
   const reoEnabled = SettingsStorage.getAppSettings().reo_enabled;
   const [tickets, setTickets] = useState<WeighingTicket[]>([]);
   const [loading, setLoading] = useState(true);
@@ -277,6 +278,15 @@ export function WeighingJournal({ refreshKey }: Props) {
                       </td>
                     )}
                     <td className="px-2 py-2.5 text-center whitespace-nowrap">
+                      {t.status === 'open' && onResume && (
+                        <button
+                          onClick={() => onResume(t)}
+                          className="p-1 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded transition"
+                          title="Продолжить незавершённое взвешивание"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                      )}
                       {reoEnabled && t.reo_status === 'sent' && (
                         <button
                           onClick={() => handleResetReo(t)}

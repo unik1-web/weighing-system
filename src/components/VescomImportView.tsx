@@ -9,6 +9,7 @@ import {
   type VescomWeighingItem,
 } from '@/lib/api';
 import { ticketImportKey } from '@/lib/import-keys';
+import { importTicketStatus } from '@/lib/weighing-defaults';
 import { pauseDatabaseSync, resumeDatabaseSync } from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 import {
@@ -133,7 +134,11 @@ function buildTicketFromVescom(item: VescomWeighingItem): Omit<
 > {
   const grossDatetime = parseVescomDateTime(item.datetimebrutto);
   const tareDatetime = parseVescomDateTime(item.datetimetara);
-  const completedAt = tareDatetime ?? grossDatetime ?? new Date().toISOString();
+  const status = importTicketStatus(item.tare_weight);
+  const completedAt =
+    status === 'completed'
+      ? (tareDatetime ?? grossDatetime ?? new Date().toISOString())
+      : null;
 
   return {
     vehicle_number: item.vehicle_number,
@@ -159,7 +164,7 @@ function buildTicketFromVescom(item: VescomWeighingItem): Omit<
     scale_device: 'Vescom',
     operator_id: null,
     operator_name: 'Импорт Vescom',
-    status: 'completed',
+    status,
     notes: item.vescom_id != null ? `Импортировано из Vescom (ID: ${item.vescom_id})` : 'Импортировано из Vescom',
     completed_at: completedAt,
   };

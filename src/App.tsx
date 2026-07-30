@@ -22,6 +22,7 @@ function MainApp() {
   const [tab, setTab] = useState<Tab>('weighing');
   const [journalKey, setJournalKey] = useState(0);
   const [settingsKey, setSettingsKey] = useState(0);
+  const [editingTicket, setEditingTicket] = useState<WeighingTicket | null>(null);
 
   const [exiting, setExiting] = useState(false);
 
@@ -49,8 +50,18 @@ function MainApp() {
 
   const appSettings = useMemo(() => SettingsStorage.getAppSettings(), [settingsKey]);
 
-  const handleSaved = useCallback((ticket: WeighingTicket) => {
+  const handleSaved = useCallback((_ticket: WeighingTicket) => {
     setJournalKey((k) => k + 1);
+    setEditingTicket(null);
+  }, []);
+
+  const handleResumeTicket = useCallback((ticket: WeighingTicket) => {
+    setEditingTicket(ticket);
+    setTab('weighing');
+  }, []);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingTicket(null);
   }, []);
 
   useEffect(() => {
@@ -154,8 +165,16 @@ function MainApp() {
       </header>
 
       <main className="mx-auto max-w-7xl px-4 sm:px-6 py-6">
-        {tab === 'weighing' && <WeighingForm onSaved={handleSaved} />}
-        {tab === 'journal' && <WeighingJournal refreshKey={journalKey} />}
+        {tab === 'weighing' && (
+          <WeighingForm
+            onSaved={handleSaved}
+            editingTicket={editingTicket}
+            onCancelEdit={handleCancelEdit}
+          />
+        )}
+        {tab === 'journal' && (
+          <WeighingJournal refreshKey={journalKey} onResume={handleResumeTicket} />
+        )}
         {tab === 'reports' && <ReportsView />}
         {tab === 'dictionaries' && <DictionariesView />}
         {tab === 'vescom' && appSettings.vescom_enabled && (
