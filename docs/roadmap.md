@@ -28,7 +28,7 @@
 | Область | Есть | Где |
 |--------|------|-----|
 | Журнал / талон | `WeighingTicket`, SQLite | `storage.ts`, `sqlite_store.py` |
-| Источник веса | `manual` \| `instrument` | талон, форма |
+| Источник веса | `manual` \| `instrument` \| `dictionary` \| `default` | талон, форма, журнал, отчёты |
 | Терминалы | 4 Web Serial-профиля, один `ScaleConnection` | `scales.ts`, `ScalePanel` |
 | Справочники | авто, водители, грузы, контрагенты | импорт Vescom/Metra/WA |
 | Подстановка по номеру | только марка и стандартная тара | `WeighingForm.tsx` |
@@ -36,7 +36,7 @@
 | Печать, РЭО, отчёты | акт, талон, CSV | `PrintAct`, `reo.ts` |
 | Режимы Vescom (этап 1) | `weighing_mode`, настройки порога/интервала/тары, `version`, зачаток audit | `weighing-mode.ts`, `storage.ts` |
 
-**Нет:** площадка primary/spare; pluggable-адаптеры; камеры и фото; ANPR; полная автоподстановка; годовая ротация БД; расширенный `WeightSource` (`dictionary`/`default`); полный аудит.
+**Нет:** площадка primary/spare; pluggable-адаптеры; камеры и фото; ANPR; полная автоподстановка; годовая ротация БД; полный аудит.
 
 ---
 
