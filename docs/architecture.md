@@ -29,6 +29,7 @@ Flask API  ──►  config.ini          (настройки)
 | `config_ini.py` | Чтение/запись секций INI |
 | `vescom.py` | Firebird: взвешивания и справочники |
 | `metra.py` | Paradox `TWeights.db` и словари |
+| `wa.py` | Firebird/SQL база WA («Весы Авто»), путь `C:\Program Files (x86)\WA` |
 | `dictionary_import.py` | Слияние справочников с нормализацией |
 | `text_encoding.py` | Декодирование, ФИО, госномера |
 | `reo_client.py` | multipart POST в РЭО |
@@ -45,13 +46,13 @@ Flask API  ──►  config.ini          (настройки)
 | `lib/scales.ts` | Web Serial: парсеры весов |
 | `lib/vehicle-plate.ts` | Нормализация госномеров |
 | `lib/import-keys.ts` | Ключ дедупликации импорта |
-| `components/*ImportView.tsx` | Импорт Vescom / Metra |
+| `components/*ImportView.tsx` | Импорт Vescom / Metra / WA |
 | `components/PrintAct.tsx` | Макеты «акт» и «талон» |
 | `components/SettingsView.tsx` | Организация, РЭО, импорт, UI |
 
 ## Нормализация справочников
 
-При импорте Vescom/Metra (`dictionary_import.merge_dictionaries`):
+При импорте Vescom/Metra/WA (`dictionary_import.merge_dictionaries`):
 
 - **Госномера** — латиница→кириллица, без пробелов/дефисов; если нет региона — добавляется `56`; дедуп по `normalize_vehicle_key`.
 - **Водители** — разбор нескольких ФИО из одной строки, формат ФИО.

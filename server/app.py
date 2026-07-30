@@ -42,6 +42,12 @@ from persistence import (
     write_database,
 )
 from vescom import connect_vescom, fetch_vescom_dictionaries, fetch_vescom_weighings
+from wa import (
+    fetch_wa_dictionary_names,
+    fetch_wa_items,
+    resolve_wa_db_path,
+    test_wa_connection,
+)
 from reo_client import (
     build_reo_test_payload,
     format_reo_error,
@@ -490,6 +496,82 @@ def metra_import_dictionaries():
     except Exception as exc:
         logger.exception('Metra dictionary import failed')
         return error_response(f'Ошибка импорта справочников Metra: {exc}')
+
+
+@app.post('/api/wa/test')
+def wa_test():
+    data = request.get_json(silent=True) or {}
+    db_path = (data.get('db_path') or '').strip()
+    user = (data.get('user') or 'SYSDBA').strip()
+    password = data.get('password') or 'masterkey'
+
+    if not db_path:
+        return error_response('Не указан путь к базе WA')
+
+    try:
+        resolved = resolve_wa_db_path(db_path)
+        logger.info('WA test connection to %s', resolved)
+        count = test_wa_connection(db_path, user, password)
+        logger.info('WA test successful (%s records)', count)
+        return jsonify({
+            'success': True,
+            'message': f'Подключение к базе WA успешно ({count} записей)',
+            'count': count,
+            'resolved_path': resolved,
+        })
+    except Exception as exc:
+        logger.exception('WA test failed')
+        return error_response(f'Ошибка подключения к WA: {exc}')
+
+
+@app.get('/api/wa/weighing_data')
+def wa_weighing_data():
+    date_str = (request.args.get('date') or datetime.now().strftime('%Y-%m-%d')).strip()
+    db_path = (request.args.get('db_path') or '').strip()
+    user = (request.args.get('user') or 'SYSDBA').strip()
+    password = request.args.get('password') or 'masterkey'
+
+    if not db_path:
+        return error_response('Не указан путь к базе WA')
+
+    try:
+        datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError:
+        return error_response('Некорректная дата')
+
+    try:
+        items = fetch_wa_items(db_path, date_str, user, password)
+        logger.info('WA fetch completed: %s records for %s', len(items), date_str)
+        return jsonify({'success': True, 'items': items})
+    except Exception as exc:
+        logger.exception('WA fetch failed')
+        return error_response(f'Ошибка чтения WA: {exc}')
+
+
+@app.post('/api/wa/import_dictionaries')
+def wa_import_dictionaries():
+    data = request.get_json(silent=True) or {}
+    db_path = (data.get('db_path') or '').strip()
+    user = (data.get('user') or 'SYSDBA').strip()
+    password = data.get('password') or 'masterkey'
+
+    if not db_path:
+        return error_response('Не указан путь к базе WA')
+
+    try:
+        dictionaries = fetch_wa_dictionary_names(db_path, user, password)
+        added = merge_dictionaries(dictionaries)
+        logger.info('WA dictionaries imported: %s new entries', sum(added.values()))
+        return jsonify({
+            'success': True,
+            'message': format_import_message('WA', dictionaries, added),
+            'fetched': {key: len(values) for key, values in dictionaries.items()},
+            'added': added,
+            'data': read_database(),
+        })
+    except Exception as exc:
+        logger.exception('WA dictionary import failed')
+        return error_response(f'Ошибка импорта справочников WA: {exc}')
 
 
 @app.route('/', defaults={'path': ''})

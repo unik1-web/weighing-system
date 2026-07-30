@@ -98,6 +98,24 @@ export interface MetraWeighingItem {
   invoice: string;
 }
 
+export interface WaWeighingItem {
+  wa_id?: string | number | null;
+  datetimebrutto: string;
+  datetimetara: string;
+  vehicle_number: string;
+  vehicle_brand: string;
+  trailer_number: string;
+  driver_name: string;
+  cargo_name: string;
+  shipper_name: string;
+  receiver_name: string;
+  carrier_name: string;
+  gross_weight: number | null;
+  tare_weight: number | null;
+  net_weight: number | null;
+  operator_name: string;
+}
+
 export async function exitApplication(): Promise<void> {
   const { flushDatabaseSync, flushStorageSync } = await import('./storage-sync');
   flushStorageSync();
@@ -116,6 +134,11 @@ export function vescomImportKey(item: VescomWeighingItem): string {
 
 export function metraImportKey(item: MetraWeighingItem): string {
   return `${item.rec_no}|${item.datetimebrutto}|${item.datetimetara}|${item.vehicle_number.trim()}`;
+}
+
+export function waImportKey(item: WaWeighingItem): string {
+  const idPart = item.wa_id != null ? String(item.wa_id) : '0';
+  return `${idPart}|${item.datetimebrutto}|${item.datetimetara}|${item.vehicle_number.trim()}`;
 }
 
 export { ticketImportKey };

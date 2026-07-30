@@ -10,7 +10,7 @@ import {
   type NavTabMode,
   type PrintLayout,
 } from '@/lib/storage';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale, Download, Upload, FolderOpen, Trash2, LayoutPanelTop } from 'lucide-react';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale, Download, Upload, FolderOpen, Trash2, LayoutPanelTop, Server } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
 import {
@@ -42,12 +42,15 @@ export function SettingsView({ onSaved }: Props) {
   const [metraTestMessage, setMetraTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [metraTesting, setMetraTesting] = useState(false);
   const [metraImportingDict, setMetraImportingDict] = useState(false);
+  const [waTestMessage, setWaTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [waTesting, setWaTesting] = useState(false);
+  const [waImportingDict, setWaImportingDict] = useState(false);
   const [storagePaths, setStoragePaths] = useState<StoragePaths | null>(null);
   const [backupMessage, setBackupMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [dictClearMessage, setDictClearMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [dictClearBusy, setDictClearBusy] = useState(false);
-  const [pathPicker, setPathPicker] = useState<'vescom' | 'metra' | null>(null);
+  const [pathPicker, setPathPicker] = useState<'vescom' | 'metra' | 'wa' | null>(null);
 
   useEffect(() => {
     setSettings(SettingsStorage.getAppSettings());
@@ -272,6 +275,57 @@ export function SettingsView({ onSaved }: Props) {
       });
     } finally {
       setMetraImportingDict(false);
+    }
+  };
+
+  const handleTestWa = async () => {
+    setWaTestMessage(null);
+    if (!settings.wa_db_path.trim()) {
+      setWaTestMessage({ type: 'error', text: 'Укажите путь к базе WA' });
+      return;
+    }
+
+    setWaTesting(true);
+    try {
+      const response = await apiPost<{ success: true; message: string; count?: number }>('/api/wa/test', {
+        db_path: settings.wa_db_path.trim(),
+        user: settings.wa_db_user.trim() || 'SYSDBA',
+        password: settings.wa_db_password || 'masterkey',
+      });
+      setWaTestMessage({ type: 'success', text: response.message ?? 'Подключение к WA успешно' });
+    } catch (err: unknown) {
+      setWaTestMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Ошибка подключения к WA',
+      });
+    } finally {
+      setWaTesting(false);
+    }
+  };
+
+  const handleImportWaDictionaries = async () => {
+    setWaTestMessage(null);
+    if (!settings.wa_db_path.trim()) {
+      setWaTestMessage({ type: 'error', text: 'Укажите путь к базе WA' });
+      return;
+    }
+
+    setWaImportingDict(true);
+    try {
+      const result = await importExternalDictionaries('wa', {
+        db_path: settings.wa_db_path.trim(),
+        user: settings.wa_db_user.trim() || 'SYSDBA',
+        password: settings.wa_db_password || 'masterkey',
+      });
+      reloadCargoOptions();
+      setWaTestMessage({ type: 'success', text: result.message });
+    } catch (err: unknown) {
+      setWaTestMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Ошибка импорта справочников WA',
+      });
+    } finally {
+      setWaImportingDict(false);
     }
   };
 
@@ -674,6 +728,92 @@ export function SettingsView({ onSaved }: Props) {
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+          <Server size={18} className="text-teal-600" />
+          <h3 className="text-sm font-semibold text-slate-800">База WA («Весы Авто»)</h3>
+        </div>
+
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.wa_enabled}
+            onChange={(e) => updateField('wa_enabled', e.target.checked)}
+            className="rounded border-slate-300"
+          />
+          <span className="text-sm text-slate-700">Включить импорт из WA</span>
+        </label>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <label className={labelClass}>Каталог или файл базы WA</label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={settings.wa_db_path}
+                onChange={(e) => updateField('wa_db_path', e.target.value)}
+                placeholder="C:\\Program Files (x86)\\WA"
+                className={inputClass}
+              />
+              <button
+                type="button"
+                onClick={() => setPathPicker('wa')}
+                className="shrink-0 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                Обзор...
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Обычно <code>C:\Program Files (x86)\WA</code>. Ищется файл <code>VESYEVENT.GDB</code> / <code>*.fdb</code> в каталоге или в подпапке <code>DataBase</code>.
+            </p>
+          </div>
+          <div>
+            <label className={labelClass}>Пользователь Firebird</label>
+            <input
+              type="text"
+              value={settings.wa_db_user}
+              onChange={(e) => updateField('wa_db_user', e.target.value)}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Пароль Firebird</label>
+            <input
+              type="password"
+              value={settings.wa_db_password}
+              onChange={(e) => updateField('wa_db_password', e.target.value)}
+              className={inputClass}
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void handleTestWa()}
+            disabled={waTesting || waImportingDict}
+            className="rounded-lg border border-teal-300 bg-teal-50 px-4 py-2 text-sm font-semibold text-teal-700 transition hover:bg-teal-100 disabled:opacity-50"
+          >
+            {waTesting ? 'Проверка...' : 'Проверка WA'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleImportWaDictionaries()}
+            disabled={waTesting || waImportingDict}
+            className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+          >
+            {waImportingDict ? 'Импорт...' : 'Импорт справочников'}
+          </button>
+          {waTestMessage && (
+            <span className={`flex items-center gap-1.5 text-sm ${waTestMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
+              {waTestMessage.type === 'error' && <AlertCircle size={16} />}
+              {waTestMessage.type === 'success' && <CheckCircle2 size={16} />}
+              {waTestMessage.text}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <FolderOpen size={18} className="text-slate-600" />
           <h3 className="text-sm font-semibold text-slate-800">Данные и резервное копирование</h3>
         </div>
@@ -751,6 +891,18 @@ export function SettingsView({ onSaved }: Props) {
         onClose={() => setPathPicker(null)}
         onSelect={(path) => {
           updateField('metra_db_path', path);
+          setPathPicker(null);
+        }}
+      />
+
+      <PathBrowserModal
+        open={pathPicker === 'wa'}
+        mode="directory"
+        title="Выбор каталога базы WA"
+        initialPath={settings.wa_db_path}
+        onClose={() => setPathPicker(null)}
+        onSelect={(path) => {
+          updateField('wa_db_path', path);
           setPathPicker(null);
         }}
       />
