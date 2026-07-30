@@ -370,7 +370,8 @@ export const TicketStorage = {
       return null;
     }
 
-    const { version: _ignoredVersion, ...safeUpdates } = updates;
+    const safeUpdates = { ...updates };
+    delete safeUpdates.version;
     const wasCompleted = current.status === 'completed';
     const merged = normalizeTicket({
       ...current,
