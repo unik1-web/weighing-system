@@ -126,6 +126,8 @@ site_runtime (active_scale_set, switch reason/by/at, camera_mode, anpr_mode)
 
 **Готово, когда:** оба сценария без обходных путей; open-тикет находится и закрывается из формы и журнала.
 
+Развёртывание/миграция: `docs/weighing-modes-deploy.md`.
+
 ---
 
 ### Этап 2. Источник веса и ручной ввод

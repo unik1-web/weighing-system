@@ -21,3 +21,12 @@ def temp_app_root(tmp_path, monkeypatch):
     monkeypatch.setattr(sqlite_store, 'get_app_root', lambda: str(root))
     monkeypatch.setattr(persistence, 'get_app_root', lambda: str(root))
     return root
+
+
+@pytest.fixture
+def api_client(temp_app_root):
+    """Flask test client bound to the isolated temp app root."""
+    import app as flask_app
+
+    flask_app.app.config['TESTING'] = True
+    return flask_app.app.test_client()

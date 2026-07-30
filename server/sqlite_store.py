@@ -12,6 +12,7 @@ STORAGE_KEYS = {
     'users': 'app_users',
     'profiles': 'app_users_profiles',
     'tickets': 'app_weighing_tickets',
+    'ticket_audit': 'app_ticket_audit',
     'session': 'app_current_user',
     'vehicles': 'app_vehicles',
     'drivers': 'app_drivers',
@@ -37,6 +38,11 @@ TICKET_COLUMNS = [
     'gross_source', 'tare_source', 'gross_raw', 'tare_raw', 'gross_datetime', 'tare_datetime',
     'scale_device', 'operator_id', 'operator_name', 'status', 'reo_status', 'reo_sent_at',
     'notes', 'created_at', 'completed_at',
+    'weighing_mode', 'version',
+]
+
+AUDIT_COLUMNS = [
+    'id', 'ticket_id', 'action', 'at', 'operator_name', 'operator_id',
 ]
 
 
@@ -72,6 +78,50 @@ def connect():
         connection.commit()
     finally:
         connection.close()
+
+
+def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
+    """Ensure weighing_tickets columns, ticket_audit table, and one-shot open→dual backfill."""
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS ticket_audit (
+            id TEXT PRIMARY KEY,
+            ticket_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            at TEXT NOT NULL,
+            operator_name TEXT NOT NULL DEFAULT '',
+            operator_id TEXT
+        )
+        '''
+    )
+    connection.execute(
+        'CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket ON ticket_audit(ticket_id)'
+    )
+
+    existing = {
+        row['name']
+        for row in connection.execute('PRAGMA table_info(weighing_tickets)').fetchall()
+    }
+    if not existing:
+        return
+
+    column_weighing_mode_added = False
+    if 'weighing_mode' not in existing:
+        connection.execute(
+            "ALTER TABLE weighing_tickets ADD COLUMN weighing_mode TEXT NOT NULL DEFAULT 'single'"
+        )
+        column_weighing_mode_added = True
+
+    if 'version' not in existing:
+        connection.execute(
+            'ALTER TABLE weighing_tickets ADD COLUMN version INTEGER NOT NULL DEFAULT 1'
+        )
+
+    if column_weighing_mode_added:
+        # One-shot backfill: only right after ADD COLUMN weighing_mode.
+        connection.execute(
+            "UPDATE weighing_tickets SET weighing_mode = 'dual' WHERE status = 'open'"
+        )
 
 
 def init_schema(connection: sqlite3.Connection) -> None:
@@ -124,7 +174,9 @@ def init_schema(connection: sqlite3.Connection) -> None:
             reo_sent_at TEXT,
             notes TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
-            completed_at TEXT
+            completed_at TEXT,
+            weighing_mode TEXT NOT NULL DEFAULT 'single',
+            version INTEGER NOT NULL DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS dictionary_entries (
@@ -143,8 +195,21 @@ def init_schema(connection: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY CHECK (id = 1),
             payload TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS ticket_audit (
+            id TEXT PRIMARY KEY,
+            ticket_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            at TEXT NOT NULL,
+            operator_name TEXT NOT NULL DEFAULT '',
+            operator_id TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket
+            ON ticket_audit(ticket_id);
         '''
     )
+    ensure_ticket_schema(connection)
 
 
 def _table_count(connection: sqlite3.Connection, table: str) -> int:
@@ -225,6 +290,13 @@ def _load_tickets(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return tickets
 
 
+def _load_ticket_audit(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'SELECT {", ".join(AUDIT_COLUMNS)} FROM ticket_audit ORDER BY at ASC'
+    ).fetchall()
+    return [{column: row[column] for column in AUDIT_COLUMNS} for row in rows]
+
+
 def _load_dictionary(connection: sqlite3.Connection, category: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
@@ -276,6 +348,10 @@ def read_database() -> dict[str, str]:
         tickets = _load_tickets(connection)
         if tickets:
             result[STORAGE_KEYS['tickets']] = json.dumps(tickets, ensure_ascii=False)
+
+        audit_events = _load_ticket_audit(connection)
+        if audit_events:
+            result[STORAGE_KEYS['ticket_audit']] = json.dumps(audit_events, ensure_ascii=False)
 
         session = _load_session(connection)
         if session:
@@ -333,13 +409,41 @@ def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None
     for ticket in tickets:
         if not isinstance(ticket, dict):
             continue
-        values = [ticket.get(column) for column in TICKET_COLUMNS]
+        values = []
+        for column in TICKET_COLUMNS:
+            if column == 'weighing_mode':
+                values.append(ticket.get(column) if ticket.get(column) is not None else 'single')
+            elif column == 'version':
+                values.append(ticket.get(column) if ticket.get(column) is not None else 1)
+            else:
+                values.append(ticket.get(column))
         connection.execute(
             f'''
             INSERT INTO weighing_tickets ({", ".join(TICKET_COLUMNS)})
             VALUES ({", ".join(['?'] * len(TICKET_COLUMNS))})
             ''',
             values,
+        )
+
+
+def _replace_ticket_audit(connection: sqlite3.Connection, events: list[Any]) -> None:
+    connection.execute('DELETE FROM ticket_audit')
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        connection.execute(
+            f'''
+            INSERT INTO ticket_audit ({", ".join(AUDIT_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(AUDIT_COLUMNS))})
+            ''',
+            (
+                str(event.get('id', '')),
+                str(event.get('ticket_id', '')),
+                str(event.get('action', '')),
+                str(event.get('at', '')),
+                str(event.get('operator_name', '')),
+                event.get('operator_id'),
+            ),
         )
 
 
@@ -399,6 +503,14 @@ def write_database(data: dict[str, Any]) -> None:
                 tickets = json.loads(str(data[STORAGE_KEYS['tickets']]))
                 if isinstance(tickets, list):
                     _replace_tickets(connection, tickets)
+            except json.JSONDecodeError:
+                pass
+
+        if STORAGE_KEYS['ticket_audit'] in data:
+            try:
+                events = json.loads(str(data[STORAGE_KEYS['ticket_audit']]))
+                if isinstance(events, list):
+                    _replace_ticket_audit(connection, events)
             except json.JSONDecodeError:
                 pass
 

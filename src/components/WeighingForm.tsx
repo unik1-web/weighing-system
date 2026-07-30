@@ -1,6 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
-import { type WeighingTicket, type WeightSource, type TicketStatus } from '@/lib/storage';
-import { TicketStorage } from '@/lib/storage';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import {
+  type WeighingTicket,
+  type WeightSource,
+  TicketStorage,
+  SettingsStorage,
+} from '@/lib/storage';
 import { logger } from '@/lib/logger';
 import { useDictionary } from '@/hooks/useDictionary';
 import { useAuth } from '@/hooks/useAuth';
@@ -8,15 +12,42 @@ import { ScalePanel } from '@/components/ScalePanel';
 import { formatVehiclePlate } from '@/lib/vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from '@/lib/text-format';
 import { SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
+import {
+  type WeighingMode,
+  type WeightPhase,
+  filterIncompleteDual,
+  suggestPhase,
+  shouldAutofillTare,
+  resolveCaptureSlot,
+  slotEditability,
+  classifyOpenWeightState,
+  emptySlotForOne,
+  parseWeightInput,
+  validateSingleComplete,
+  validateDualFirstPass,
+  validateDualComplete,
+  netWeight as calcNetWeight,
+  totalAmount as calcTotalAmount,
+  firstWeightDatetime,
+  isMaxTimeExceeded,
+} from '@/lib/weighing-mode';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
 
 interface Props {
   onSaved: (ticket: WeighingTicket) => void;
+  completionTicketId?: string | null;
+  onCompletionHandled?: () => void;
 }
 
-type WeighingPhase = 'gross' | 'tare';
+function weightPresentLabel(ticket: WeighingTicket): string {
+  const state = classifyOpenWeightState(ticket);
+  if (state === 'zero') return 'нет';
+  if (state === 'two') return 'оба';
+  if (ticket.gross_weight != null && ticket.gross_weight > 0) return 'брутто';
+  return 'тара';
+}
 
-export function WeighingForm({ onSaved }: Props) {
+export function WeighingForm({ onSaved, completionTicketId = null, onCompletionHandled }: Props) {
   const { displayName } = useAuth();
   const vehicles = useDictionary('vehicles');
   const drivers = useDictionary('drivers');
@@ -25,7 +56,14 @@ export function WeighingForm({ onSaved }: Props) {
   const receivers = useDictionary('receivers');
   const carriers = useDictionary('carriers');
 
-  const [phase, setPhase] = useState<WeighingPhase>('gross');
+  const [appSettings, setAppSettings] = useState(() => SettingsStorage.getAppSettings());
+  const [formMode, setFormMode] = useState<WeighingMode>(() => appSettings.weighing_mode_default);
+  const [phaseOverride, setPhaseOverride] = useState(false);
+  const [overridePhase, setOverridePhase] = useState<WeightPhase>('gross');
+  const [activeField, setActiveField] = useState<WeightPhase>('gross');
+  const [completingTicket, setCompletingTicket] = useState<WeighingTicket | null>(null);
+  const [incompleteRefresh, setIncompleteRefresh] = useState(0);
+
   const [deviceId, setDeviceId] = useState<ScaleDeviceId>('microsim-m0601');
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [vehicleBrand, setVehicleBrand] = useState('');
@@ -50,16 +88,71 @@ export function WeighingForm({ onSaved }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [lastTicket, setLastTicket] = useState<WeighingTicket | null>(null);
+  const [unstableWarning, setUnstableWarning] = useState<string | null>(null);
+  const [intervalWarnedForId, setIntervalWarnedForId] = useState<string | null>(null);
 
-  const netWeight = grossWeight != null && tareWeight != null
-    ? Math.max(0, grossWeight - tareWeight)
-    : null;
-  const totalAmount = netWeight != null && price
-    ? (netWeight / 1000) * parseFloat(price)
-    : null;
+  const isCompleting = completingTicket != null;
+  // For completion, editability is based on the loaded ticket's original weights for locked slots,
+  // but also current form state for zero-weight legacy.
+  const editability = useMemo(() => {
+    if (!completingTicket) {
+      return { grossEditable: true, tareEditable: true };
+    }
+    const originalState = classifyOpenWeightState(completingTicket);
+    if (originalState === 'one') {
+      return slotEditability(originalState, completingTicket);
+    }
+    if (originalState === 'two') {
+      return { grossEditable: false, tareEditable: false };
+    }
+    return { grossEditable: true, tareEditable: true };
+  }, [completingTicket]);
+
+  const suggestedPhase = useMemo(() => {
+    if (formMode !== 'dual' || phaseOverride) return null;
+    const sample =
+      activeField === 'gross'
+        ? (grossWeight ?? 0)
+        : (tareWeight ?? 0);
+    return suggestPhase(sample, appSettings.tara_threshold);
+  }, [formMode, phaseOverride, activeField, grossWeight, tareWeight, appSettings.tara_threshold]);
+
+  const highlightPhase: WeightPhase = phaseOverride
+    ? overridePhase
+    : formMode === 'dual' && suggestedPhase
+      ? suggestedPhase
+      : activeField;
+
+  const netWeightValue =
+    grossWeight != null && tareWeight != null ? calcNetWeight(grossWeight, tareWeight) : null;
+  const totalAmountValue =
+    netWeightValue != null && price ? calcTotalAmount(netWeightValue, parseFloat(price) || 0) : null;
+
+  const incompleteTickets = useMemo(() => {
+    void incompleteRefresh;
+    return filterIncompleteDual(TicketStorage.getAll());
+  }, [incompleteRefresh, success, lastTicket]);
+
+  const showIntervalBanner = useMemo(() => {
+    if (!completingTicket) return false;
+    const firstIso = firstWeightDatetime(completingTicket);
+    return isMaxTimeExceeded(firstIso, new Date().toISOString(), appSettings.max_time_between);
+  }, [completingTicket, appSettings.max_time_between]);
+
+  useEffect(() => {
+    if (showIntervalBanner && completingTicket && intervalWarnedForId !== completingTicket.id) {
+      logger.warn('weighing', 'Превышен max_time_between', {
+        ticket_id: completingTicket.id,
+        max_time_between: appSettings.max_time_between,
+      });
+      setIntervalWarnedForId(completingTicket.id);
+    }
+  }, [showIntervalBanner, completingTicket, intervalWarnedForId, appSettings.max_time_between]);
 
   const resetFormFields = useCallback(() => {
-    setPhase('gross');
+    setActiveField('gross');
+    setPhaseOverride(false);
+    setOverridePhase('gross');
     setVehicleNumber('');
     setVehicleBrand('');
     setTrailerNumber('');
@@ -80,13 +173,87 @@ export function WeighingForm({ onSaved }: Props) {
     setTareDatetime(null);
     setNotes('');
     setError(null);
+    setUnstableWarning(null);
   }, []);
+
+  const exitCompletion = useCallback(() => {
+    setCompletingTicket(null);
+    setIntervalWarnedForId(null);
+    onCompletionHandled?.();
+  }, [onCompletionHandled]);
 
   const reset = useCallback(() => {
     resetFormFields();
     setSuccess(null);
     setLastTicket(null);
-  }, [resetFormFields]);
+    if (isCompleting) {
+      exitCompletion();
+      const settings = SettingsStorage.getAppSettings();
+      setAppSettings(settings);
+      setFormMode(settings.weighing_mode_default);
+    }
+  }, [resetFormFields, isCompleting, exitCompletion]);
+
+  const loadTicketForCompletion = useCallback(
+    (ticketId: string) => {
+      const ticket = TicketStorage.getById(ticketId);
+      if (!ticket) {
+        setError('Тикет не найден. Обновите список.');
+        exitCompletion();
+        return;
+      }
+      if (ticket.status === 'completed') {
+        setError('Тикет уже завершён.');
+        exitCompletion();
+        setIncompleteRefresh((n) => n + 1);
+        return;
+      }
+
+      setCompletingTicket(ticket);
+      setFormMode('dual');
+      setSuccess(null);
+      setError(null);
+      setVehicleNumber(ticket.vehicle_number);
+      setVehicleBrand(ticket.vehicle_brand);
+      setTrailerNumber(ticket.trailer_number);
+      setDriverName(ticket.driver_name);
+      setCargoName(ticket.cargo_name);
+      setShipperName(ticket.shipper_name);
+      setReceiverName(ticket.receiver_name);
+      setCarrierName(ticket.carrier_name);
+      setPrice(ticket.price ? String(ticket.price) : '');
+      setVatRate(String(ticket.vat_rate ?? 20));
+      setGrossWeight(ticket.gross_weight);
+      setTareWeight(ticket.tare_weight);
+      setGrossSource(ticket.gross_source);
+      setTareSource(ticket.tare_source);
+      setGrossRaw(ticket.gross_raw);
+      setTareRaw(ticket.tare_raw);
+      setGrossDatetime(ticket.gross_datetime);
+      setTareDatetime(ticket.tare_datetime);
+      setNotes(ticket.notes);
+
+      const state = classifyOpenWeightState(ticket);
+      if (state === 'one') {
+        // Force phase onto the empty slot so threshold cannot target the locked one.
+        const empty = emptySlotForOne(ticket) ?? 'gross';
+        setPhaseOverride(true);
+        setOverridePhase(empty);
+        setActiveField(empty);
+      } else {
+        setPhaseOverride(false);
+        setOverridePhase('gross');
+        setActiveField('gross');
+      }
+    },
+    [exitCompletion],
+  );
+
+  useEffect(() => {
+    if (completionTicketId) {
+      loadTicketForCompletion(completionTicketId);
+    }
+  }, [completionTicketId, loadTicketForCompletion]);
 
   useEffect(() => {
     if (cargoName) {
@@ -98,19 +265,47 @@ export function WeighingForm({ onSaved }: Props) {
   }, [cargoName, cargos.entries, price]);
 
   useEffect(() => {
-    if (vehicleNumber) {
-      const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
-      if (vehicle) {
-        if (vehicle.vehicle_brand && !vehicleBrand) setVehicleBrand(vehicle.vehicle_brand);
-        if (vehicle.default_tare_weight != null && tareWeight == null) {
-          setTareWeight(vehicle.default_tare_weight);
-          setTareSource('manual');
-        }
-      }
+    if (!vehicleNumber) return;
+    const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
+    if (vehicle?.vehicle_brand && !vehicleBrand) {
+      setVehicleBrand(vehicle.vehicle_brand);
     }
-  }, [vehicleNumber, vehicles.entries, tareWeight, vehicleBrand]);
+  }, [vehicleNumber, vehicles.entries, vehicleBrand]);
+
+  useEffect(() => {
+    if (!shouldAutofillTare({ mode: formMode, completing: isCompleting })) return;
+    if (!vehicleNumber) return;
+    if (tareWeight != null) return;
+
+    const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
+    if (vehicle?.default_tare_weight != null) {
+      setTareWeight(vehicle.default_tare_weight);
+      setTareSource('manual');
+      return;
+    }
+    if (appSettings.tara_default > 0) {
+      setTareWeight(appSettings.tara_default);
+      setTareSource('manual');
+    }
+  }, [
+    vehicleNumber,
+    vehicles.entries,
+    tareWeight,
+    formMode,
+    isCompleting,
+    appSettings.tara_default,
+  ]);
+
+  const handleModeChange = (mode: WeighingMode) => {
+    if (isCompleting) return;
+    setFormMode(mode);
+    setPhaseOverride(false);
+    setCompletingTicket(null);
+    setError(null);
+  };
 
   const captureGross = (w: number, raw: string) => {
+    if (!editability.grossEditable) return;
     setGrossWeight(w);
     setGrossSource('instrument');
     setGrossRaw(raw);
@@ -118,34 +313,195 @@ export function WeighingForm({ onSaved }: Props) {
   };
 
   const captureTare = (w: number, raw: string) => {
+    if (!editability.tareEditable) return;
     setTareWeight(w);
     setTareSource('instrument');
     setTareRaw(raw);
     setTareDatetime(new Date().toISOString());
   };
 
-  const handleSave = async (status: TicketStatus) => {
+  const handleInstrumentCapture = (weight: number, raw: string) => {
+    if (formMode === 'single') {
+      if (activeField === 'gross') captureGross(weight, raw);
+      else captureTare(weight, raw);
+      return;
+    }
+
+    const slot = resolveCaptureSlot({
+      phaseOverride,
+      overridePhase,
+      weight,
+      threshold: appSettings.tara_threshold,
+      editability,
+    });
+    if (slot == null) {
+      setError('Нельзя перезаписать вес первого прохода.');
+      return;
+    }
+    if (slot === 'gross') captureGross(weight, raw);
+    else captureTare(weight, raw);
+  };
+
+  const requiredFilled =
+    !!vehicleNumber && !!driverName && !!cargoName && !!shipperName && !!receiverName && !!carrierName;
+
+  const handleSaveSingle = async () => {
     setError(null);
     setSuccess(null);
-
-    if (!vehicleNumber || !driverName || !cargoName || !shipperName || !receiverName || !carrierName) {
+    if (!requiredFilled) {
       setError('Заполните все обязательные поля.');
       return;
     }
-    if (grossWeight == null) {
-      setError('Введите брутто вес.');
-      return;
-    }
-    if (status === 'completed' && tareWeight == null) {
-      setError('Для завершения взвешивания введите тару.');
+    const validation = validateSingleComplete({ gross: grossWeight, tare: tareWeight });
+    if (validation) {
+      setError(validation);
       return;
     }
 
     setSaving(true);
     const now = new Date().toISOString();
-    const normalizedVehicleNumber = formatVehiclePlate(vehicleNumber);
-    const payload: Omit<WeighingTicket, 'id' | 'ticket_number' | 'created_at' | 'reo_status' | 'reo_sent_at'> = {
-      vehicle_number: normalizedVehicleNumber,
+    const net = calcNetWeight(grossWeight!, tareWeight!);
+    const amount = calcTotalAmount(net, parseFloat(price) || 0);
+    try {
+      const ticket = TicketStorage.create({
+        vehicle_number: formatVehiclePlate(vehicleNumber),
+        vehicle_brand: formatVehicleBrand(vehicleBrand),
+        trailer_number: trailerNumber,
+        driver_name: formatPersonName(driverName),
+        cargo_name: cargoName,
+        shipper_name: shipperName,
+        receiver_name: receiverName,
+        carrier_name: carrierName,
+        price: parseFloat(price) || 0,
+        vat_rate: parseFloat(vatRate) || 0,
+        gross_weight: grossWeight,
+        tare_weight: tareWeight,
+        net_weight: net,
+        total_amount: amount,
+        gross_source: grossSource,
+        tare_source: tareSource,
+        gross_raw: grossRaw,
+        tare_raw: tareRaw,
+        gross_datetime: grossDatetime,
+        tare_datetime: tareDatetime,
+        scale_device: SCALE_DEVICES[deviceId].name,
+        operator_id: null,
+        operator_name: displayName,
+        status: 'completed',
+        completed_at: now,
+        notes,
+        weighing_mode: 'single',
+        version: 1,
+      });
+      logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
+        id: ticket.id,
+        mode: 'single',
+        status: ticket.status,
+      });
+      setSaving(false);
+      setLastTicket(ticket);
+      setSuccess('Взвешивание завершено и сохранено.');
+      onSaved(ticket);
+      resetFormFields();
+      setIncompleteRefresh((n) => n + 1);
+    } catch (err: unknown) {
+      setSaving(false);
+      const message = err instanceof Error ? err.message : 'Ошибка сохранения';
+      logger.error('weighing', message);
+      setError(message);
+    }
+  };
+
+  const handleSaveDualFirst = async () => {
+    setError(null);
+    setSuccess(null);
+    if (!requiredFilled) {
+      setError('Заполните все обязательные поля.');
+      return;
+    }
+    const validation = validateDualFirstPass({ gross: grossWeight, tare: tareWeight });
+    if (validation) {
+      setError(validation);
+      return;
+    }
+
+    const hasGross = grossWeight != null && grossWeight > 0;
+    setSaving(true);
+    try {
+      const ticket = TicketStorage.create({
+        vehicle_number: formatVehiclePlate(vehicleNumber),
+        vehicle_brand: formatVehicleBrand(vehicleBrand),
+        trailer_number: trailerNumber,
+        driver_name: formatPersonName(driverName),
+        cargo_name: cargoName,
+        shipper_name: shipperName,
+        receiver_name: receiverName,
+        carrier_name: carrierName,
+        price: parseFloat(price) || 0,
+        vat_rate: parseFloat(vatRate) || 0,
+        gross_weight: hasGross ? grossWeight : null,
+        tare_weight: hasGross ? null : tareWeight,
+        net_weight: null,
+        total_amount: null,
+        gross_source: hasGross ? grossSource : 'manual',
+        tare_source: hasGross ? 'manual' : tareSource,
+        gross_raw: hasGross ? grossRaw : null,
+        tare_raw: hasGross ? null : tareRaw,
+        gross_datetime: hasGross ? grossDatetime : null,
+        tare_datetime: hasGross ? null : tareDatetime,
+        scale_device: SCALE_DEVICES[deviceId].name,
+        operator_id: null,
+        operator_name: displayName,
+        status: 'open',
+        completed_at: null,
+        notes,
+        weighing_mode: 'dual',
+        version: 1,
+      });
+      logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
+        id: ticket.id,
+        mode: 'dual',
+        status: ticket.status,
+      });
+      setSaving(false);
+      setLastTicket(ticket);
+      setSuccess('Первый проход сохранён. Тикет в незавершённых.');
+      onSaved(ticket);
+      resetFormFields();
+      setIncompleteRefresh((n) => n + 1);
+    } catch (err: unknown) {
+      setSaving(false);
+      const message = err instanceof Error ? err.message : 'Ошибка сохранения';
+      logger.error('weighing', message);
+      setError(message);
+    }
+  };
+
+  const handleComplete = async () => {
+    if (!completingTicket) return;
+    setError(null);
+    setSuccess(null);
+    if (!requiredFilled) {
+      setError('Заполните все обязательные поля.');
+      return;
+    }
+    const originalState = classifyOpenWeightState(completingTicket);
+    const validation = validateDualComplete({
+      state: originalState,
+      gross: grossWeight,
+      tare: tareWeight,
+    });
+    if (validation) {
+      setError(validation);
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const net = calcNetWeight(grossWeight!, tareWeight!);
+    const amount = calcTotalAmount(net, parseFloat(price) || 0);
+
+    const updates: Partial<WeighingTicket> = {
+      vehicle_number: formatVehiclePlate(vehicleNumber),
       vehicle_brand: formatVehicleBrand(vehicleBrand),
       trailer_number: trailerNumber,
       driver_name: formatPersonName(driverName),
@@ -155,39 +511,70 @@ export function WeighingForm({ onSaved }: Props) {
       carrier_name: carrierName,
       price: parseFloat(price) || 0,
       vat_rate: parseFloat(vatRate) || 0,
-      gross_weight: grossWeight,
-      tare_weight: tareWeight,
-      net_weight: netWeight,
-      total_amount: totalAmount,
-      gross_source: grossSource,
-      tare_source: tareSource,
-      gross_raw: grossRaw,
-      tare_raw: tareRaw,
-      gross_datetime: grossDatetime,
-      tare_datetime: tareDatetime,
-      scale_device: SCALE_DEVICES[deviceId].name,
-      operator_id: null,
-      operator_name: displayName,
-      status,
-      completed_at: status === 'completed' ? now : null,
       notes,
+      status: 'completed',
+      completed_at: now,
+      net_weight: net,
+      total_amount: amount,
     };
 
+    // Only write weight meta for slots that were editable (new on this step)
+    if (editability.grossEditable) {
+      updates.gross_weight = grossWeight;
+      updates.gross_source = grossSource;
+      updates.gross_raw = grossRaw;
+      updates.gross_datetime = grossDatetime;
+    } else {
+      updates.gross_weight = completingTicket.gross_weight;
+    }
+    if (editability.tareEditable) {
+      updates.tare_weight = tareWeight;
+      updates.tare_source = tareSource;
+      updates.tare_raw = tareRaw;
+      updates.tare_datetime = tareDatetime;
+    } else {
+      updates.tare_weight = completingTicket.tare_weight;
+    }
+
+    // Update scale_device only when this step captured from instrument into an editable slot
+    const instrumentOnStep =
+      (editability.grossEditable && grossSource === 'instrument') ||
+      (editability.tareEditable && tareSource === 'instrument');
+    if (instrumentOnStep) {
+      updates.scale_device = SCALE_DEVICES[deviceId].name;
+    }
+
+    setSaving(true);
     try {
-      const ticket = TicketStorage.create(payload);
-      logger.info('weighing', `Сохранена запись №${ticket.ticket_number}`, {
-        status,
-        vehicle_number: ticket.vehicle_number,
-        cargo_name: ticket.cargo_name,
+      const ticket = TicketStorage.update(completingTicket.id, updates, {
+        expectedVersion: completingTicket.version ?? 1,
+      });
+      if (!ticket) {
+        setSaving(false);
+        setError('Тикет изменён или удалён. Обновите список и повторите.');
+        setIncompleteRefresh((n) => n + 1);
+        return;
+      }
+      logger.info('weighing', `Завершён тикет №${ticket.ticket_number}`, {
+        id: ticket.id,
+        mode: ticket.weighing_mode,
+        status: ticket.status,
       });
       setSaving(false);
       setLastTicket(ticket);
-      setSuccess(status === 'completed' ? 'Взвешивание завершено и сохранено.' : 'Запись сохранена как незавершённая.');
+      setSuccess('Взвешивание завершено и сохранено.');
       onSaved(ticket);
       resetFormFields();
-    } catch (err: any) {
+      exitCompletion();
+      const settings = SettingsStorage.getAppSettings();
+      setAppSettings(settings);
+      setFormMode(settings.weighing_mode_default);
+      setIncompleteRefresh((n) => n + 1);
+    } catch (err: unknown) {
       setSaving(false);
-      setError(err.message);
+      const message = err instanceof Error ? err.message : 'Ошибка сохранения';
+      logger.error('weighing', message);
+      setError(message);
     }
   };
 
@@ -196,23 +583,69 @@ export function WeighingForm({ onSaved }: Props) {
     window.dispatchEvent(new CustomEvent('print-ticket', { detail: lastTicket }));
   };
 
-  const inputClass = 'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition';
+  const captureLabel =
+    formMode === 'dual' && !phaseOverride && suggestedPhase
+      ? suggestedPhase === 'gross'
+        ? 'Зафиксировать брутто'
+        : 'Зафиксировать тару'
+      : highlightPhase === 'gross'
+        ? 'Зафиксировать брутто'
+        : 'Зафиксировать тару';
+
+  const inputClass =
+    'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition';
   const labelClass = 'block text-xs font-medium text-slate-600 mb-1';
+  const showIncompletePanel = formMode === 'dual' || isCompleting;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] min-w-0">
       <div className="space-y-5 min-w-0">
-        {/* Ticket info */}
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div className="flex items-center gap-2">
               <ClipboardList size={20} className="text-blue-600" />
               <h2 className="text-base font-semibold text-slate-800">Данные взвешивания</h2>
             </div>
-            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-              Весовщик: {displayName}
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
+                <button
+                  type="button"
+                  disabled={isCompleting}
+                  onClick={() => handleModeChange('single')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                    formMode === 'single' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600'
+                  } disabled:opacity-60`}
+                >
+                  Одиночное
+                </button>
+                <button
+                  type="button"
+                  disabled={isCompleting}
+                  onClick={() => handleModeChange('dual')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                    formMode === 'dual' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600'
+                  } disabled:opacity-60`}
+                >
+                  Двойное
+                </button>
+              </div>
+              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                Весовщик: {displayName}
+              </span>
+            </div>
           </div>
+
+          {isCompleting && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Дозавершение талона №{completingTicket.ticket_number ?? '—'} ({completingTicket.vehicle_number})
+            </div>
+          )}
+
+          {showIntervalBanner && (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Интервал между проходами превышает допустимый ({appSettings.max_time_between} ч). Сохранение не блокируется.
+            </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
@@ -283,35 +716,107 @@ export function WeighingForm({ onSaved }: Props) {
           </div>
         </div>
 
-        {/* Weight entry */}
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center gap-2 mb-4">
-            <FileText size={20} className="text-blue-600" />
-            <h2 className="text-base font-semibold text-slate-800">Показания весов</h2>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+            <div className="flex items-center gap-2">
+              <FileText size={20} className="text-blue-600" />
+              <h2 className="text-base font-semibold text-slate-800">Показания весов</h2>
+            </div>
+            {formMode === 'dual' && (
+              <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
+                <button
+                  type="button"
+                  disabled={!editability.grossEditable}
+                  onClick={() => {
+                    if (!editability.grossEditable) return;
+                    setPhaseOverride(true);
+                    setOverridePhase('gross');
+                    setActiveField('gross');
+                  }}
+                  className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
+                    highlightPhase === 'gross' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  Брутто
+                </button>
+                <button
+                  type="button"
+                  disabled={!editability.tareEditable}
+                  onClick={() => {
+                    if (!editability.tareEditable) return;
+                    setPhaseOverride(true);
+                    setOverridePhase('tare');
+                    setActiveField('tare');
+                  }}
+                  className={`rounded-md px-3 py-1 text-xs font-semibold transition ${
+                    highlightPhase === 'tare' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  Тара
+                </button>
+              </div>
+            )}
           </div>
 
+          {formMode === 'dual' && !phaseOverride && suggestedPhase && (
+            <p className="mb-3 text-xs text-slate-500">
+              Подсказка по порогу: {suggestedPhase === 'tare' ? 'тара' : 'брутто'}
+              {phaseOverride ? '' : ' (можно переопределить кнопками Брутто/Тара)'}
+            </p>
+          )}
+
           <div className="grid gap-4 sm:grid-cols-3">
-            <div className={`rounded-xl border-2 p-4 transition ${phase === 'gross' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
+            <div className={`rounded-xl border-2 p-4 transition ${highlightPhase === 'gross' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">БРУТТО</span>
                 {grossSource === 'instrument' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">ПРИБОР</span>}
               </div>
-              <input type="number" value={grossWeight ?? ''} onChange={(e) => { setGrossWeight(e.target.value ? parseFloat(e.target.value) : null); setGrossSource('manual'); setGrossRaw(null); setGrossDatetime(new Date().toISOString()); }} onFocus={() => setPhase('gross')} placeholder="0" className="w-full bg-transparent text-2xl font-bold tabular-nums text-slate-800 outline-none" />
+              <input
+                type="number"
+                value={grossWeight ?? ''}
+                disabled={!editability.grossEditable}
+                onChange={(e) => {
+                  setGrossWeight(parseWeightInput(e.target.value));
+                  setGrossSource('manual');
+                  setGrossRaw(null);
+                  setGrossDatetime(new Date().toISOString());
+                }}
+                onFocus={() => {
+                  if (editability.grossEditable) setActiveField('gross');
+                }}
+                placeholder="0"
+                className="w-full bg-transparent text-2xl font-bold tabular-nums text-slate-800 outline-none disabled:opacity-60"
+              />
               <span className="text-xs text-slate-400">кг</span>
             </div>
-            <div className={`rounded-xl border-2 p-4 transition ${phase === 'tare' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
+            <div className={`rounded-xl border-2 p-4 transition ${highlightPhase === 'tare' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">ТАРА</span>
                 {tareSource === 'instrument' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">ПРИБОР</span>}
               </div>
-              <input type="number" value={tareWeight ?? ''} onChange={(e) => { setTareWeight(e.target.value ? parseFloat(e.target.value) : null); setTareSource('manual'); setTareRaw(null); setTareDatetime(new Date().toISOString()); }} onFocus={() => setPhase('tare')} placeholder="0" className="w-full bg-transparent text-2xl font-bold tabular-nums text-slate-800 outline-none" />
+              <input
+                type="number"
+                value={tareWeight ?? ''}
+                disabled={!editability.tareEditable}
+                onChange={(e) => {
+                  setTareWeight(parseWeightInput(e.target.value));
+                  setTareSource('manual');
+                  setTareRaw(null);
+                  setTareDatetime(new Date().toISOString());
+                }}
+                onFocus={() => {
+                  if (editability.tareEditable) setActiveField('tare');
+                }}
+                placeholder="0"
+                className="w-full bg-transparent text-2xl font-bold tabular-nums text-slate-800 outline-none disabled:opacity-60"
+              />
               <span className="text-xs text-slate-400">кг</span>
             </div>
             <div className="rounded-xl border-2 border-slate-200 bg-slate-50 p-4">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">НЕТТО</span>
               </div>
-              <div className="text-2xl font-bold tabular-nums text-slate-800">{netWeight != null ? netWeight.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) : '—'}</div>
+              <div className="text-2xl font-bold tabular-nums text-slate-800">{netWeightValue != null ? netWeightValue.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) : '—'}</div>
               <span className="text-xs text-slate-400">кг</span>
             </div>
           </div>
@@ -319,18 +824,69 @@ export function WeighingForm({ onSaved }: Props) {
           <div className="mt-4 flex items-center justify-between rounded-xl bg-gradient-to-r from-blue-600 to-blue-700 px-5 py-4 text-white">
             <div>
               <div className="text-xs font-medium text-blue-100">Итого к оплате</div>
-              <div className="text-2xl font-bold tabular-nums">{totalAmount != null ? `${totalAmount.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽` : '—'}</div>
+              <div className="text-2xl font-bold tabular-nums">{totalAmountValue != null ? `${totalAmountValue.toLocaleString('ru-RU', { maximumFractionDigits: 2 })} ₽` : '—'}</div>
             </div>
             <div className="text-right text-xs text-blue-100">
-              <div>Нетто: {netWeight != null ? `${(netWeight / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 3 })} т` : '—'}</div>
+              <div>Нетто: {netWeightValue != null ? `${(netWeightValue / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 3 })} т` : '—'}</div>
               <div>Цена: {price ? `${parseFloat(price).toLocaleString('ru-RU')} ₽/т` : '—'}</div>
             </div>
           </div>
         </div>
 
+        {showIncompletePanel && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h3 className="text-sm font-semibold text-slate-800 mb-3">Незавершённые</h3>
+            {incompleteTickets.length === 0 ? (
+              <p className="text-sm text-slate-500">Нет незавершённых рейсов двойного режима.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-slate-500 border-b border-slate-100">
+                      <th className="py-2 pr-3 font-medium">Талон</th>
+                      <th className="py-2 pr-3 font-medium">Госномер</th>
+                      <th className="py-2 pr-3 font-medium">Первый вес</th>
+                      <th className="py-2 pr-3 font-medium">Есть</th>
+                      <th className="py-2 pr-3 font-medium">Оператор</th>
+                      <th className="py-2 font-medium" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {incompleteTickets.map((t) => (
+                      <tr key={t.id} className="border-b border-slate-50">
+                        <td className="py-2 pr-3 tabular-nums">№{t.ticket_number ?? '—'}</td>
+                        <td className="py-2 pr-3">{t.vehicle_number}</td>
+                        <td className="py-2 pr-3 whitespace-nowrap text-slate-600">
+                          {new Date(firstWeightDatetime(t)).toLocaleString('ru-RU')}
+                        </td>
+                        <td className="py-2 pr-3">{weightPresentLabel(t)}</td>
+                        <td className="py-2 pr-3">{t.operator_name}</td>
+                        <td className="py-2">
+                          <button
+                            type="button"
+                            onClick={() => loadTicketForCompletion(t.id)}
+                            className="rounded-lg bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                          >
+                            Выбрать
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
         {error && (
           <div className="flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
             <AlertCircle size={18} className="mt-0.5 shrink-0" /> {error}
+          </div>
+        )}
+        {unstableWarning && (
+          <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
+            <AlertCircle size={18} className="mt-0.5 shrink-0" /> {unstableWarning}
           </div>
         )}
         {success && (
@@ -340,13 +896,32 @@ export function WeighingForm({ onSaved }: Props) {
         )}
 
         <div className="flex flex-wrap gap-3">
-          <button onClick={() => handleSave('completed')} disabled={saving} className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50">
-            <Save size={18} /> {saving ? 'Сохранение...' : 'Сохранить и завершить'}
-          </button>
-          <button onClick={() => handleSave('open')} disabled={saving} className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50">
-            <FileText size={18} /> Сохранить как незавершённое
-          </button>
-          {lastTicket && (
+          {isCompleting ? (
+            <button
+              onClick={handleComplete}
+              disabled={saving}
+              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50"
+            >
+              <Save size={18} /> {saving ? 'Сохранение...' : 'Завершить'}
+            </button>
+          ) : formMode === 'single' ? (
+            <button
+              onClick={handleSaveSingle}
+              disabled={saving}
+              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50"
+            >
+              <Save size={18} /> {saving ? 'Сохранение...' : 'Сохранить и завершить'}
+            </button>
+          ) : (
+            <button
+              onClick={handleSaveDualFirst}
+              disabled={saving}
+              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50"
+            >
+              <Save size={18} /> {saving ? 'Сохранение...' : 'Сохранить первый проход'}
+            </button>
+          )}
+          {lastTicket && lastTicket.status === 'completed' && (
             <button onClick={handlePrint} className="flex items-center gap-2 rounded-xl border border-blue-300 bg-blue-50 px-6 py-3 text-sm font-semibold text-blue-700 transition hover:bg-blue-100">
               <Printer size={18} /> Печать акта
             </button>
@@ -358,14 +933,34 @@ export function WeighingForm({ onSaved }: Props) {
       </div>
 
       <div className="space-y-4 min-w-0">
-        <ScalePanel onCapture={phase === 'gross' ? captureGross : captureTare} label={phase === 'gross' ? 'Зафиксировать брутто' : 'Зафиксировать тару'} capturedWeight={phase === 'gross' ? grossWeight : tareWeight} deviceId={deviceId} onDeviceChange={setDeviceId} />
+        <ScalePanel
+          onCapture={handleInstrumentCapture}
+          label={captureLabel}
+          capturedWeight={highlightPhase === 'gross' ? grossWeight : tareWeight}
+          deviceId={deviceId}
+          onDeviceChange={setDeviceId}
+          stableMode={appSettings.stable_mode}
+          onUnstableCapture={() => {
+            setUnstableWarning('Зафиксирован нестабильный вес.');
+            window.setTimeout(() => setUnstableWarning(null), 4000);
+          }}
+        />
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="text-sm font-semibold text-slate-800 mb-3">Порядок работы</h3>
           <ol className="space-y-2 text-sm text-slate-600">
-            <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">1</span> Заполните данные об автомобиле и грузе</li>
-            <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">2</span> Выберите прибор и подключите COM-порт</li>
-            <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">3</span> Зафиксируйте брутто и тару</li>
-            <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">4</span> Сохраните талон и распечатайте акт</li>
+            {formMode === 'single' ? (
+              <>
+                <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">1</span> Заполните данные об автомобиле и грузе</li>
+                <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">2</span> Зафиксируйте брутто; тара подставится из справочника при наличии</li>
+                <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">3</span> Нажмите «Сохранить и завершить»</li>
+              </>
+            ) : (
+              <>
+                <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">1</span> Заполните реквизиты и зафиксируйте один вес первого прохода</li>
+                <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">2</span> Сохраните первый проход</li>
+                <li className="flex gap-2"><span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">3</span> Выберите рейс в «Незавершённые» и завершите вторым весом</li>
+              </>
+            )}
           </ol>
         </div>
       </div>

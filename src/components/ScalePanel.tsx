@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useScale } from '@/hooks/useScale';
 import { SCALE_DEVICE_LIST, type ScaleDeviceId } from '@/lib/scales';
+import { isCaptureAllowed } from '@/lib/weighing-mode';
 import { Usb, Power, Activity, AlertCircle, ChevronDown } from 'lucide-react';
 
 interface Props {
@@ -9,11 +10,22 @@ interface Props {
   capturedWeight: number | null;
   deviceId: ScaleDeviceId;
   onDeviceChange: (id: ScaleDeviceId) => void;
+  stableMode?: boolean;
+  onUnstableCapture?: () => void;
 }
 
-export function ScalePanel({ onCapture, label, capturedWeight, deviceId, onDeviceChange }: Props) {
+export function ScalePanel({
+  onCapture,
+  label,
+  capturedWeight,
+  deviceId,
+  onDeviceChange,
+  stableMode = false,
+  onUnstableCapture,
+}: Props) {
   const { reading, connected, error, connect, disconnect } = useScale();
   const [supported] = useState(() => typeof navigator !== 'undefined' && 'serial' in navigator);
+  const canCapture = !!reading && isCaptureAllowed(reading.stable, stableMode);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-slate-100 p-5 shadow-sm">
@@ -103,8 +115,14 @@ export function ScalePanel({ onCapture, label, capturedWeight, deviceId, onDevic
           </button>
         )}
         <button
-          onClick={() => reading && onCapture(reading.weight, reading.raw)}
-          disabled={!reading || !reading.stable}
+          onClick={() => {
+            if (!reading) return;
+            if (!reading.stable && stableMode) {
+              onUnstableCapture?.();
+            }
+            onCapture(reading.weight, reading.raw);
+          }}
+          disabled={!canCapture}
           className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Зафиксировать вес
