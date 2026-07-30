@@ -217,13 +217,13 @@ git submodule update --remote agents
 
 Нужен [Cursor CLI](https://cursor.com/install): `agent login`, модели — `agent models`.
 
-Постановку задачи положите в `docs/tasks/`. Артефакты пайплайна пишутся в `docs/implementation/` (не коммитятся).
+Постановку задачи положите в `docs/tasks/` (очередь этапов: [docs/tasks/README.md](docs/tasks/README.md)). Артефакты пайплайна пишутся в `docs/implementation/` (не коммитятся).
 
 Пример запуска в Cursor (Agent mode):
 
 ```
 Используя подход по оркестрации мультиагентной разработки (agents/01_orchestrator.md),
-выполни доработку docs/tasks/01-weighing-modes.md.
+выполни доработку docs/tasks/02-weight-source.md.
 
 Описание проекта: docs/project-for-agents.md
 Дополнительный контекст: docs/architecture.md, docs/api.md, README.md
