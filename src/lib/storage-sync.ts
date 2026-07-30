@@ -263,7 +263,7 @@ export async function importStorageBackup(file: File): Promise<void> {
 }
 
 export async function importExternalDictionaries(
-  source: 'vescom' | 'metra',
+  source: 'vescom' | 'metra' | 'wa',
   payload: Record<string, string>,
 ): Promise<{ message: string; added: Record<string, number> }> {
   const response = await fetch(`/api/${source}/import_dictionaries`, {

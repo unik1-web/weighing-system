@@ -42,6 +42,9 @@ export function SettingsView({ onSaved }: Props) {
   const [metraTestMessage, setMetraTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [metraTesting, setMetraTesting] = useState(false);
   const [metraImportingDict, setMetraImportingDict] = useState(false);
+  const [waTestMessage, setWaTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [waTesting, setWaTesting] = useState(false);
+  const [waImportingDict, setWaImportingDict] = useState(false);
   const [storagePaths, setStoragePaths] = useState<StoragePaths | null>(null);
   const [backupMessage, setBackupMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -272,6 +275,61 @@ export function SettingsView({ onSaved }: Props) {
       });
     } finally {
       setMetraImportingDict(false);
+    }
+  };
+
+  const handleTestWa = async () => {
+    setWaTestMessage(null);
+    if (!settings.wa_user.trim()) {
+      setWaTestMessage({ type: 'error', text: 'Укажите пользователя MySQL' });
+      return;
+    }
+
+    setWaTesting(true);
+    try {
+      const response = await apiPost<{ success: true; message: string; count?: number }>('/api/wa/test', {
+        host: settings.wa_host.trim() || '127.0.0.1',
+        port: String(settings.wa_port || 3306),
+        database: settings.wa_database.trim() || 'wa',
+        user: settings.wa_user.trim(),
+        password: settings.wa_password || '',
+      });
+      setWaTestMessage({ type: 'success', text: response.message ?? 'Подключение к WA успешно' });
+    } catch (err: unknown) {
+      setWaTestMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Ошибка подключения к WA',
+      });
+    } finally {
+      setWaTesting(false);
+    }
+  };
+
+  const handleImportWaDictionaries = async () => {
+    setWaTestMessage(null);
+    if (!settings.wa_user.trim()) {
+      setWaTestMessage({ type: 'error', text: 'Укажите пользователя MySQL' });
+      return;
+    }
+
+    setWaImportingDict(true);
+    try {
+      const result = await importExternalDictionaries('wa', {
+        host: settings.wa_host.trim() || '127.0.0.1',
+        port: String(settings.wa_port || 3306),
+        database: settings.wa_database.trim() || 'wa',
+        user: settings.wa_user.trim(),
+        password: settings.wa_password || '',
+      });
+      reloadCargoOptions();
+      setWaTestMessage({ type: 'success', text: result.message });
+    } catch (err: unknown) {
+      setWaTestMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Ошибка импорта справочников WA',
+      });
+    } finally {
+      setWaImportingDict(false);
     }
   };
 
@@ -667,6 +725,104 @@ export function SettingsView({ onSaved }: Props) {
               {metraTestMessage.type === 'error' && <AlertCircle size={16} />}
               {metraTestMessage.type === 'success' && <CheckCircle2 size={16} />}
               {metraTestMessage.text}
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+          <Database size={18} className="text-sky-600" />
+          <h3 className="text-sm font-semibold text-slate-800">База WA (MySQL)</h3>
+        </div>
+
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.wa_enabled}
+            onChange={(e) => updateField('wa_enabled', e.target.checked)}
+            className="rounded border-slate-300"
+          />
+          <span className="text-sm text-slate-700">Включить импорт из WA</span>
+        </label>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className={labelClass}>Хост MySQL</label>
+            <input
+              type="text"
+              value={settings.wa_host}
+              onChange={(e) => updateField('wa_host', e.target.value)}
+              placeholder="127.0.0.1"
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Порт</label>
+            <input
+              type="number"
+              value={settings.wa_port}
+              onChange={(e) => updateField('wa_port', Number.parseInt(e.target.value, 10) || 3306)}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>База данных</label>
+            <input
+              type="text"
+              value={settings.wa_database}
+              onChange={(e) => updateField('wa_database', e.target.value)}
+              placeholder="wa"
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>Пользователь</label>
+            <input
+              type="text"
+              value={settings.wa_user}
+              onChange={(e) => updateField('wa_user', e.target.value)}
+              placeholder="root"
+              className={inputClass}
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <label className={labelClass}>Пароль</label>
+            <input
+              type="password"
+              value={settings.wa_password}
+              onChange={(e) => updateField('wa_password', e.target.value)}
+              className={inputClass}
+            />
+          </div>
+        </div>
+        <p className="text-xs text-slate-500">
+          Данные программы WA хранятся в MySQL (каталог данных:{' '}
+          <code>C:\ProgramData\MySQL\MySQL Server 8.0\Data\wa</code>). Подключение выполняется через сеть MySQL, а не напрямую к файлам.
+        </p>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => void handleTestWa()}
+            disabled={waTesting || waImportingDict}
+            className="rounded-lg border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700 transition hover:bg-sky-100 disabled:opacity-50"
+          >
+            {waTesting ? 'Проверка...' : 'Проверка WA'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleImportWaDictionaries()}
+            disabled={waTesting || waImportingDict}
+            className="rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+          >
+            {waImportingDict ? 'Импорт...' : 'Импорт справочников'}
+          </button>
+          {waTestMessage && (
+            <span className={`flex items-center gap-1.5 text-sm ${waTestMessage.type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
+              {waTestMessage.type === 'error' && <AlertCircle size={16} />}
+              {waTestMessage.type === 'success' && <CheckCircle2 size={16} />}
+              {waTestMessage.text}
             </span>
           )}
         </div>

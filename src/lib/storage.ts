@@ -489,6 +489,12 @@ export interface AppSettings {
   vescom_db_password: string;
   metra_enabled: boolean;
   metra_db_path: string;
+  wa_enabled: boolean;
+  wa_host: string;
+  wa_port: number;
+  wa_database: string;
+  wa_user: string;
+  wa_password: string;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -512,6 +518,12 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   vescom_db_password: 'masterkey',
   metra_enabled: false,
   metra_db_path: '',
+  wa_enabled: false,
+  wa_host: '127.0.0.1',
+  wa_port: 3306,
+  wa_database: 'wa',
+  wa_user: 'root',
+  wa_password: '',
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -559,6 +571,12 @@ export const SettingsStorage = {
       vescom_db_password: stored.vescom_db_password ?? DEFAULT_APP_SETTINGS.vescom_db_password,
       metra_enabled: stored.metra_enabled === 'true',
       metra_db_path: stored.metra_db_path ?? DEFAULT_APP_SETTINGS.metra_db_path,
+      wa_enabled: stored.wa_enabled === 'true',
+      wa_host: stored.wa_host ?? DEFAULT_APP_SETTINGS.wa_host,
+      wa_port: Number.parseInt(stored.wa_port ?? String(DEFAULT_APP_SETTINGS.wa_port), 10) || DEFAULT_APP_SETTINGS.wa_port,
+      wa_database: stored.wa_database ?? DEFAULT_APP_SETTINGS.wa_database,
+      wa_user: stored.wa_user ?? DEFAULT_APP_SETTINGS.wa_user,
+      wa_password: stored.wa_password ?? DEFAULT_APP_SETTINGS.wa_password,
     };
   },
 
@@ -586,6 +604,12 @@ export const SettingsStorage = {
       vescom_db_password: next.vescom_db_password,
       metra_enabled: String(next.metra_enabled),
       metra_db_path: next.metra_db_path,
+      wa_enabled: String(next.wa_enabled),
+      wa_host: next.wa_host,
+      wa_port: String(next.wa_port),
+      wa_database: next.wa_database,
+      wa_user: next.wa_user,
+      wa_password: next.wa_password,
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;

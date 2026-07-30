@@ -42,6 +42,7 @@ from persistence import (
     write_database,
 )
 from vescom import connect_vescom, fetch_vescom_dictionaries, fetch_vescom_weighings
+from wa import fetch_wa_dictionaries, fetch_wa_items, test_wa_connection
 from reo_client import (
     build_reo_test_payload,
     format_reo_error,
@@ -490,6 +491,80 @@ def metra_import_dictionaries():
     except Exception as exc:
         logger.exception('Metra dictionary import failed')
         return error_response(f'Ошибка импорта справочников Metra: {exc}')
+
+
+def _parse_wa_connection(data: dict | None = None, args: dict | None = None) -> tuple[str, int, str, str, str]:
+    source = data if data is not None else (args or {})
+    host = (source.get('host') or '127.0.0.1').strip()
+    port_raw = source.get('port') or '3306'
+    try:
+        port = int(str(port_raw).strip())
+    except ValueError:
+        port = 3306
+    database = (source.get('database') or 'wa').strip()
+    user = (source.get('user') or 'root').strip()
+    password = source.get('password') or ''
+    return host, port, database, user, password
+
+
+@app.post('/api/wa/test')
+def wa_test():
+    data = request.get_json(silent=True) or {}
+    host, port, database, user, password = _parse_wa_connection(data)
+
+    try:
+        logger.info('WA test connection to %s:%s/%s', host, port, database)
+        count = test_wa_connection(host, port, database, user, password)
+        logger.info('WA test successful (%s records)', count)
+        return jsonify({
+            'success': True,
+            'message': f'Подключение к базе WA успешно ({count} записей в autob)',
+            'count': count,
+        })
+    except Exception as exc:
+        logger.exception('WA test failed')
+        return error_response(f'Ошибка подключения к WA: {exc}')
+
+
+@app.get('/api/wa/weighing_data')
+def wa_weighing_data():
+    date_str = (request.args.get('date') or datetime.now().strftime('%Y-%m-%d')).strip()
+    host, port, database, user, password = _parse_wa_connection(args=request.args)
+
+    try:
+        datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError:
+        return error_response('Некорректная дата')
+
+    try:
+        items = fetch_wa_items(host, port, database, user, password, date_str)
+        logger.info('WA fetch completed: %s records for %s', len(items), date_str)
+        return jsonify({'success': True, 'items': items})
+    except Exception as exc:
+        logger.exception('WA fetch failed')
+        return error_response(f'Ошибка чтения WA: {exc}')
+
+
+@app.post('/api/wa/import_dictionaries')
+def wa_import_dictionaries():
+    data = request.get_json(silent=True) or {}
+    host, port, database, user, password = _parse_wa_connection(data)
+
+    try:
+        dictionaries = fetch_wa_dictionaries(host, port, database, user, password)
+        added = merge_dictionaries(dictionaries)
+        fetched_total = sum(len(values) for values in dictionaries.values())
+        logger.info('WA dictionaries imported: fetched=%s added=%s', fetched_total, sum(added.values()))
+        return jsonify({
+            'success': True,
+            'message': format_import_message('WA', dictionaries, added),
+            'fetched': {key: len(values) for key, values in dictionaries.items()},
+            'added': added,
+            'data': read_database(),
+        })
+    except Exception as exc:
+        logger.exception('WA dictionary import failed')
+        return error_response(f'Ошибка импорта справочников WA: {exc}')
 
 
 @app.route('/', defaults={'path': ''})

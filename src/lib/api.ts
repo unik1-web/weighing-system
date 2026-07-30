@@ -114,6 +114,30 @@ export function vescomImportKey(item: VescomWeighingItem): string {
   return `${idPart}|${item.datetimebrutto}|${item.datetimetara}|${item.vehicle_number.trim()}`;
 }
 
+export interface WaWeighingItem {
+  wa_uid: string;
+  datetimebrutto: string;
+  datetimetara: string;
+  vehicle_number: string;
+  vehicle_brand: string;
+  driver_name: string;
+  cargo_name: string;
+  shipper_name: string;
+  receiver_name: string;
+  carrier_name: string;
+  gross_weight: number | null;
+  tare_weight: number | null;
+  net_weight: number | null;
+  operator_name: string;
+  invoice: string;
+  actnum: number | null;
+  notes: string;
+}
+
+export function waImportKey(item: WaWeighingItem): string {
+  return `${item.wa_uid}|${item.datetimebrutto}|${item.datetimetara}|${item.vehicle_number.trim()}`;
+}
+
 export function metraImportKey(item: MetraWeighingItem): string {
   return `${item.rec_no}|${item.datetimebrutto}|${item.datetimetara}|${item.vehicle_number.trim()}`;
 }

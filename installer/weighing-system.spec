@@ -32,6 +32,8 @@ hiddenimports = [
     'config_ini',
     'dictionary_import',
     'metra',
+    'pymysql',
+    'wa',
     'persistence',
     'reo_client',
     'sqlite_store',
