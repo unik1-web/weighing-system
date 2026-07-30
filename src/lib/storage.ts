@@ -3,10 +3,10 @@ import { scheduleConfigSync, scheduleDatabaseSync, flushDatabaseSync, DICTIONARI
 import { formatVehiclePlate } from './vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from './text-format';
 import { ticketImportKey } from './import-keys';
-import { normalizeWeighingMode, type WeighingMode } from './weighing-mode';
+import { normalizeWeighingMode, normalizeWeightSource, type WeighingMode } from './weighing-mode';
 import { logger } from './logger';
 
-export type WeightSource = 'manual' | 'instrument';
+export type WeightSource = 'manual' | 'instrument' | 'dictionary' | 'default';
 export type TicketStatus = 'open' | 'completed';
 export type ReoStatus = 'pending' | 'sent';
 export type { WeighingMode };
@@ -248,6 +248,8 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     ...ticket,
     reo_status: ticket.reo_status ?? 'pending',
     reo_sent_at: ticket.reo_sent_at ?? null,
+    gross_source: normalizeWeightSource(ticket.gross_source as string),
+    tare_source: normalizeWeightSource(ticket.tare_source as string),
   };
   if (ticket.weighing_mode === undefined) {
     next.weighing_mode = normalizeWeighingMode(ticket);

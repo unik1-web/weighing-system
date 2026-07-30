@@ -9,8 +9,8 @@
 | # | Файл | Этап roadmap | Зависимости | Примечание |
 |---|------|--------------|-------------|------------|
 | 01 | [01-weighing-modes.md](01-weighing-modes.md) | 1. Режимы single/dual | — | Реализовано (см. `docs/weighing-modes-deploy.md`) |
-| 02 | [02-weight-source.md](02-weight-source.md) | 2. Источник веса | 01 | Следующий приоритет |
-| 03 | [03-vehicle-resolve.md](03-vehicle-resolve.md) | 3. Автоподстановка + водители | 01–02 | Базовая сборка без камер |
+| 02 | [02-weight-source.md](02-weight-source.md) | 2. Источник веса | 01 | Реализовано |
+| 03 | [03-vehicle-resolve.md](03-vehicle-resolve.md) | 3. Автоподстановка + водители | 01–02 | Следующий приоритет |
 | 04 | [04-site-primary-spare.md](04-site-primary-spare.md) | 4. Площадка primary/spare | 01–03 | Параллельно с 05 после старта |
 | 05 | [05-scale-adapters.md](05-scale-adapters.md) | 5. Адаптеры терминалов | 04 | Параллельно с 04/06 |
 | 06 | [06-yearly-db-archive.md](06-yearly-db-archive.md) | 6. Годовая БД / архив | 01–03 | Можно параллельно с 04–05 |

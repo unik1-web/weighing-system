@@ -40,7 +40,7 @@ Flask API  ──►  config.ini          (настройки)
 | Путь | Назначение |
 |------|------------|
 | `lib/storage.ts` | Модели, localStorage, настройки; тикет: `weighing_mode`, `version`; audit `app_ticket_audit` |
-| `lib/weighing-mode.ts` | Pure-логика режимов single/dual (фаза, валидация, CAS-хелперы) |
+| `lib/weighing-mode.ts` | Pure-логика режимов single/dual и источника веса (`WeightSource`, автотара, фильтр, сводка) |
 | `lib/storage-sync.ts` | Синхронизация с API |
 | `lib/api.ts` | Обёртки fetch к `/api/*` |
 | `lib/reo.ts` | Сборка JSON РЭО, валидация |

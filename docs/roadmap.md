@@ -302,7 +302,9 @@ site_runtime (active_scale_set, switch reason/by/at, camera_mode, anpr_mode)
 
 **Этап 1** (режимы single/dual) — выполнен; см. [weighing-modes-deploy.md](weighing-modes-deploy.md).
 
-**Следующий:** этап 2 — источник веса и ручной ввод ([docs/tasks/02-weight-source.md](tasks/02-weight-source.md)). Постановки всех этапов для оркестратора: [docs/tasks/](tasks/).
+**Этап 2** (источник веса) — выполнен.
+
+**Следующий:** этап 3 — автоподстановка по номеру и водители ([docs/tasks/03-vehicle-resolve.md](tasks/03-vehicle-resolve.md)). Постановки: [docs/tasks/](tasks/).
 
 ---
 

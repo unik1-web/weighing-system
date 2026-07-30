@@ -19,6 +19,7 @@ import {
   suggestPhase,
   shouldAutofillTare,
   resolveCaptureSlot,
+  resolveTareAutofill,
   slotEditability,
   classifyOpenWeightState,
   emptySlotForOne,
@@ -30,6 +31,7 @@ import {
   totalAmount as calcTotalAmount,
   firstWeightDatetime,
   isMaxTimeExceeded,
+  WEIGHT_SOURCE_LABELS,
 } from '@/lib/weighing-mode';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
 
@@ -79,6 +81,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [tareWeight, setTareWeight] = useState<number | null>(null);
   const [grossSource, setGrossSource] = useState<WeightSource>('manual');
   const [tareSource, setTareSource] = useState<WeightSource>('manual');
+  const [tareAutofillLocked, setTareAutofillLocked] = useState(false);
   const [grossRaw, setGrossRaw] = useState<string | null>(null);
   const [tareRaw, setTareRaw] = useState<string | null>(null);
   const [grossDatetime, setGrossDatetime] = useState<string | null>(null);
@@ -167,6 +170,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setTareWeight(null);
     setGrossSource('manual');
     setTareSource('manual');
+    setTareAutofillLocked(false);
     setGrossRaw(null);
     setTareRaw(null);
     setGrossDatetime(null);
@@ -227,6 +231,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setTareWeight(ticket.tare_weight);
       setGrossSource(ticket.gross_source);
       setTareSource(ticket.tare_source);
+      setTareAutofillLocked(true);
       setGrossRaw(ticket.gross_raw);
       setTareRaw(ticket.tare_raw);
       setGrossDatetime(ticket.gross_datetime);
@@ -273,20 +278,19 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   }, [vehicleNumber, vehicles.entries, vehicleBrand]);
 
   useEffect(() => {
-    if (!shouldAutofillTare({ mode: formMode, completing: isCompleting })) return;
-    if (!vehicleNumber) return;
-    if (tareWeight != null) return;
-
+    const allowed = shouldAutofillTare({ mode: formMode, completing: isCompleting });
     const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
-    if (vehicle?.default_tare_weight != null) {
-      setTareWeight(vehicle.default_tare_weight);
-      setTareSource('manual');
-      return;
-    }
-    if (appSettings.tara_default > 0) {
-      setTareWeight(appSettings.tara_default);
-      setTareSource('manual');
-    }
+    const result = resolveTareAutofill({
+      allowed,
+      locked: tareAutofillLocked,
+      vehicleNumber,
+      tareWeight,
+      defaultTareWeight: vehicle?.default_tare_weight ?? null,
+      taraDefault: appSettings.tara_default,
+    });
+    if (!result) return;
+    setTareWeight(result.tareWeight);
+    setTareSource(result.tareSource);
   }, [
     vehicleNumber,
     vehicles.entries,
@@ -294,6 +298,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     formMode,
     isCompleting,
     appSettings.tara_default,
+    tareAutofillLocked,
   ]);
 
   const handleModeChange = (mode: WeighingMode) => {
@@ -650,7 +655,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className={labelClass}>Номер автомобиля *</label>
-              <input list="vehicles-list" value={vehicleNumber} onChange={(e) => setVehicleNumber(e.target.value)} placeholder="А123ВС77" className={inputClass} />
+              <input list="vehicles-list" value={vehicleNumber} onChange={(e) => { setVehicleNumber(e.target.value); setTareAutofillLocked(false); }} placeholder="А123ВС77" className={inputClass} />
               <datalist id="vehicles-list">
                 {vehicles.entries.map((v) => <option key={v.id} value={v.vehicle_number} />)}
               </datalist>
@@ -769,7 +774,11 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <div className={`rounded-xl border-2 p-4 transition ${highlightPhase === 'gross' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">БРУТТО</span>
-                {grossSource === 'instrument' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">ПРИБОР</span>}
+                {grossSource && (
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                    {WEIGHT_SOURCE_LABELS[grossSource]}
+                  </span>
+                )}
               </div>
               <input
                 type="number"
@@ -792,7 +801,11 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <div className={`rounded-xl border-2 p-4 transition ${highlightPhase === 'tare' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">ТАРА</span>
-                {tareSource === 'instrument' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">ПРИБОР</span>}
+                {tareSource && (
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                    {WEIGHT_SOURCE_LABELS[tareSource]}
+                  </span>
+                )}
               </div>
               <input
                 type="number"
@@ -801,6 +814,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
                 onChange={(e) => {
                   setTareWeight(parseWeightInput(e.target.value));
                   setTareSource('manual');
+                  setTareAutofillLocked(true);
                   setTareRaw(null);
                   setTareDatetime(new Date().toISOString());
                 }}

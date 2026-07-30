@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage } from '@/lib/storage';
+import { type WeighingTicket, type WeightSource, TicketStorage, REO_STATUS_LABELS, SettingsStorage } from '@/lib/storage';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import { logger } from '@/lib/logger';
+import { ticketMatchesWeightSource, WEIGHT_SOURCE_LABELS, WEIGHT_SOURCES } from '@/lib/weighing-mode';
 import { printTicket } from './PrintAct';
 import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson } from 'lucide-react';
 
@@ -18,6 +19,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'completed'>('all');
   const [reoFilter, setReoFilter] = useState<'all' | 'pending' | 'sent'>('all');
+  const [sourceFilter, setSourceFilter] = useState<WeightSource | 'all'>('all');
   const [sendingBulk, setSendingBulk] = useState(false);
 
   const load = useCallback(async () => {
@@ -49,6 +51,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const reoComplianceWarnings = reoComplianceIssues.filter((issue) => issue.level === 'warning');
 
   const filtered = tickets.filter((t) => {
+    if (!ticketMatchesWeightSource(t, sourceFilter)) return false;
     if (!search) return true;
     const s = search.toLowerCase();
     return t.vehicle_number?.toLowerCase().includes(s) || t.driver_name?.toLowerCase().includes(s) || t.cargo_name?.toLowerCase().includes(s) || t.shipper_name?.toLowerCase().includes(s) || t.receiver_name?.toLowerCase().includes(s) || t.carrier_name?.toLowerCase().includes(s) || t.operator_name?.toLowerCase().includes(s) || String(t.ticket_number ?? '').includes(s);
@@ -164,6 +167,23 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
         <div className="flex rounded-lg border border-slate-300 overflow-hidden">
           {(['all', 'completed', 'open'] as const).map((s) => (
             <button key={s} onClick={() => setStatusFilter(s)} className={`px-4 py-2 text-sm font-medium transition ${statusFilter === s ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>{s === 'all' ? 'Все' : s === 'completed' ? 'Завершённые' : 'Открытые'}</button>
+          ))}
+        </div>
+        <div className="flex rounded-lg border border-slate-300 overflow-hidden">
+          <button
+            onClick={() => setSourceFilter('all')}
+            className={`px-4 py-2 text-sm font-medium transition ${sourceFilter === 'all' ? 'bg-teal-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+          >
+            Источник: все
+          </button>
+          {WEIGHT_SOURCES.map((s) => (
+            <button
+              key={s}
+              onClick={() => setSourceFilter(s)}
+              className={`px-4 py-2 text-sm font-medium transition ${sourceFilter === s ? 'bg-teal-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+            >
+              {WEIGHT_SOURCE_LABELS[s]}
+            </button>
           ))}
         </div>
         {reoEnabled && (

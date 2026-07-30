@@ -223,7 +223,7 @@ git submodule update --remote agents
 
 ```
 Используя подход по оркестрации мультиагентной разработки (agents/01_orchestrator.md),
-выполни доработку docs/tasks/02-weight-source.md.
+выполни доработку docs/tasks/03-vehicle-resolve.md.
 
 Описание проекта: docs/project-for-agents.md
 Дополнительный контекст: docs/architecture.md, docs/api.md, README.md
