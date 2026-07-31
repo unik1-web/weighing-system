@@ -175,7 +175,7 @@ describe('site-scales flow (no-mock storage)', () => {
     expect(SettingsStorage.getAppSettings().scale_device_id).toBe('newton');
     expect(ScaleSwitchJournalStorage.getAll()).toHaveLength(2);
 
-    // 6. dual: open fixes set; complete does not overwrite
+    // 6. dual: open on primary; completion uses current active runtime set
     const open = createTicketFromFormFlow({
       status: 'open',
       completed_at: null,
@@ -194,17 +194,21 @@ describe('site-scales flow (no-mock storage)', () => {
       checklist_confirmed: true,
     });
     // Form-like dual complete: omit non-empty scale fields
+    const runtimeFieldsAfterSwitch = ticketScaleFieldsFromRuntime();
     const completed = TicketStorage.update(open.id, {
       status: 'completed',
       completed_at: new Date().toISOString(),
       tare_weight: 8500,
       net_weight: 11500,
       total_amount: 1150,
-      // intentionally NOT passing site_id/scale_id/scale_role
+      site_id: runtimeFieldsAfterSwitch?.site_id ?? null,
+      scale_id: runtimeFieldsAfterSwitch?.scale_id ?? null,
+      scale_role: runtimeFieldsAfterSwitch?.scale_role ?? null,
     });
     expect(completed?.site_id).toBe(DEFAULT_SITE_ID);
-    expect(completed?.scale_id).toBe(openScaleId);
-    expect(completed?.scale_role).toBe('primary');
+    expect(completed?.scale_id).not.toBe(openScaleId);
+    expect(completed?.scale_id).toBe(ScaleStorage.getByRole(DEFAULT_SITE_ID, 'spare')!.id);
+    expect(completed?.scale_role).toBe('spare');
 
     // 7. hard-fail path
     SiteRuntimeStorage.clear();
@@ -307,5 +311,30 @@ describe('site-scales flow (no-mock storage)', () => {
       checklist_confirmed: true,
     });
     expect(SettingsStorage.getAppSettings().scale_device_id).toBe('cas');
+  });
+
+  it('TC-UNIT: legacy adapter_id web_serial is normalized to built-in adapter_id', () => {
+    const now = new Date().toISOString();
+    localStorage.setItem(
+      'app_scales',
+      JSON.stringify([
+        {
+          id: 'scale-legacy',
+          site_id: DEFAULT_SITE_ID,
+          role: 'primary',
+          adapter_id: 'web_serial',
+          connection: {
+            transport: 'web_serial',
+            device_id: 'newton',
+          },
+          name: 'Основные',
+          created_at: now,
+        },
+      ]),
+    );
+    const scales = ScaleStorage.getAll();
+    expect(scales).toHaveLength(1);
+    expect(scales[0].adapter_id).toBe('newton');
+    expect(scales[0].connection.device_id).toBe('newton');
   });
 });

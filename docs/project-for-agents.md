@@ -32,9 +32,11 @@ Flask (server/app.py)  ──►  config.ini
 
 ## Ключевые модули
 
-**Backend (`server/`):** `app.py`, `persistence.py`, `sqlite_store.py`, `config_ini.py`, `vescom.py`, `metra.py`, `wa.py`, `dictionary_import.py`, `reo_client.py`, `browse.py`.
+**Backend (`server/`):** `app.py`, `scale_api.py`, `scale_api_guard.py`, `scale_runtime.py`, `scale_transports/serial_backend.py`, `persistence.py`, `sqlite_store.py`, `config_ini.py`, `vescom.py`, `metra.py`, `wa.py`, `dictionary_import.py`, `reo_client.py`, `browse.py`, `scale_registry.py`, `scale_registry_contract.py`.
 
-**Frontend (`src/`):** `lib/storage.ts`, `lib/storage-sync.ts`, `lib/api.ts`, `lib/reo.ts`, `lib/scales.ts`, `components/*ImportView.tsx`, `components/PrintAct.tsx`, `components/SettingsView.tsx`.
+**Frontend (`src/`):** `lib/storage.ts`, `lib/storage-sync.ts`, `lib/api.ts`, `lib/reo.ts`, `lib/scales.ts`, `lib/scale-runtime-client.ts`, `lib/scale-adapters/*`, `hooks/useScale.ts`, `components/ScalePanel.tsx`, `components/WeighingForm.tsx`, `components/SiteScalesSettingsSection.tsx`, `components/ScaleConnectionFields.tsx`, `components/SettingsView.tsx`, `components/*ImportView.tsx`, `components/PrintAct.tsx`.
+
+**Runtime smoke (`scripts/`):** `smoke_scale_api.py` (production-like smoke `/api/scales/*`), `run_05_resume.sh` (служебный скрипт пайплайна).
 
 ## Ограничения и правила
 
@@ -51,6 +53,7 @@ Flask (server/app.py)  ──►  config.ini
 |------|------------|
 | `agents/` | Промпты ролей (submodule [rdudov/agents](https://github.com/rdudov/agents)) |
 | `docs/project-for-agents.md` | Этот файл — описание проекта |
+| `docs/scale-adapters-deploy.md` | Runbook обновления/rollback stage 5 для scale-adapters |
 | `docs/tasks/` | Постановки задач (вход оркестратора) |
 | `docs/implementation/` | ТЗ, архитектура, план, статус пайплайна (не коммитить) |
 

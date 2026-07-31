@@ -6,7 +6,8 @@
 .DESCRIPTION
   1. Builds frontend (npm run build)
   2. Packages Python backend + frontend with PyInstaller
-  3. Creates setup EXE with Inno Setup (if installed)
+  3. Prepares smoke checklist for unattended EXE verification
+  4. Creates setup EXE with Inno Setup (if installed)
 
 .PARAMETER SkipFrontend
   Skip npm run build when dist/ is already prepared.
@@ -25,6 +26,45 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
+$SmokeDir = Join-Path $Root 'dist\WeighingSystem\smoke'
+$SpecPath = Join-Path $Root 'installer\weighing-system.spec'
+$RequirementsPath = Join-Path $Root 'server\requirements.txt'
+
+function Assert-RequiredPackagingTokens {
+    param(
+        [string]$SpecPath,
+        [string]$RequirementsPath
+    )
+
+    if (-not (Test-Path $SpecPath)) {
+        throw "PyInstaller spec not found: $SpecPath"
+    }
+    if (-not (Test-Path $RequirementsPath)) {
+        throw "Runtime requirements not found: $RequirementsPath"
+    }
+
+    $requirementsText = Get-Content -Path $RequirementsPath -Raw
+    if ($requirementsText -notmatch '(?m)^pyserial([<>=!~].*)?$') {
+        throw 'pyserial is missing in server/requirements.txt'
+    }
+
+    $specText = Get-Content -Path $SpecPath -Raw
+    $requiredTokens = @(
+        "'scale_api'",
+        "'scale_api_guard'",
+        "'scale_runtime'",
+        "'scale_registry'",
+        "'scale_registry_contract'",
+        "'scale_integrity'",
+        "'scale_transports.serial_backend'",
+        "'serial'"
+    )
+    foreach ($token in $requiredTokens) {
+        if ($specText -notmatch [regex]::Escape($token)) {
+            throw "PyInstaller spec missing required hidden import token: $token"
+        }
+    }
+}
 
 function Find-InnoSetup {
     $candidates = @(
@@ -38,6 +78,8 @@ function Find-InnoSetup {
 }
 
 Write-Host "==> Project root: $Root"
+Write-Host "==> Validating runtime dependencies for packaging..."
+Assert-RequiredPackagingTokens -SpecPath $SpecPath -RequirementsPath $RequirementsPath
 
 $pythonVersion = (py -3.11 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null)
 if (-not $pythonVersion) {
@@ -77,6 +119,22 @@ if (-not (Test-Path $exePath)) {
 
 Write-Host "==> Standalone app ready: $exePath"
 Write-Host "    Copy dist\WeighingSystem\ to any PC and run WeighingSystem.exe"
+
+Write-Host "==> Preparing smoke instructions..."
+New-Item -ItemType Directory -Path $SmokeDir -Force | Out-Null
+$smokeGuidePath = Join-Path $SmokeDir 'README-smoke.txt'
+$smokeGuide = @"
+Scale adapters smoke (non-interactive checklist)
+
+1) Start dist\WeighingSystem\WeighingSystem.exe
+2) Open http://127.0.0.1:5001 in browser
+3) Run runtime smoke:
+   py -3.11 scripts\smoke_scale_api.py --base-url http://127.0.0.1:5001 --origin http://127.0.0.1:5001 --expected-site-id default-site --expected-scale-id scale-primary --expected-scale-role primary
+4) Validate connect -> status -> read -> disconnect for serial_backend path
+5) Save evidence in docs\implementation\reports\scale-adapters-smoke.md and scale-adapters-exe-checklist.md
+"@
+$smokeGuide | Set-Content -Path $smokeGuidePath -Encoding UTF8
+Write-Host "==> Smoke guide ready: $smokeGuidePath"
 
 if ($SkipInstaller) {
     exit 0

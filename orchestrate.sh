@@ -93,7 +93,10 @@ run_agent() {
   local stamp log_file prompt_file
   stamp="$(date +%Y%m%d_%H%M%S)"
   local role_slug
-  role_slug="$(echo "$role_name" | tr -c 'A-Za-z0-9_-' '_' )"
+  # ASCII slug: кириллица иначе превращается в '____'
+  role_slug="$(printf '%s' "$role_name" | iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null || printf '%s' "$role_name")"
+  role_slug="$(printf '%s' "$role_slug" | tr '[:upper:]' '[:lower:]' | tr -cs 'A-Za-z0-9' '_' | sed 's/^_//;s/_$//')"
+  [[ -n "$role_slug" ]] || role_slug="agent"
   log_file="${LOG_DIR}/${stamp}_${role_slug}.log"
   prompt_file="${LOG_DIR}/${stamp}_${role_slug}.prompt.md"
   printf '%s' "$prompt" >"$prompt_file"
@@ -120,6 +123,31 @@ json_field_true() {
   local file="$1" field="$2"
   [[ -f "$file" ]] || return 1
   grep -E "\"$field\"[[:space:]]*:[[:space:]]*true" "$file" >/dev/null 2>&1
+}
+
+# Critical review: JSON в файле/логе ИЛИ markdown-статус БЛОКИРУЕТ / has_critical_issues
+review_has_critical() {
+  local review_file="$1"
+  shift
+  local logs=("$@")
+  if [[ -f "$review_file" ]]; then
+    json_field_true "$review_file" "has_critical_issues" && return 0
+    grep -Eiq 'has_critical_issues[[:space:]]*[:=][[:space:]]*true' "$review_file" && return 0
+    grep -Eq '^\*\*Статус:\*\*[[:space:]]*БЛОКИРУЕТ' "$review_file" && return 0
+    grep -Eq '^БЛОКИРОВАТЬ[[:space:]]*$' "$review_file" && return 0
+  fi
+  local f
+  for f in "${logs[@]}"; do
+    [[ -f "$f" ]] || continue
+    json_field_true "$f" "has_critical_issues" && return 0
+  done
+  return 1
+}
+
+latest_log() {
+  # Ищем свежий лог по подстроке в имени (латиница/ASCII slug)
+  local pattern="$1"
+  ls -1t "$LOG_DIR"/*"${pattern}"*.log 2>/dev/null | head -1 || true
 }
 
 has_blocking_questions() {
@@ -300,9 +328,9 @@ EOF
 - Файл с ТЗ: ${ARTIFACTS_DIR}/technical_specification.md
 - Исходная постановка: ${task}
 - Описание проекта: ${PROJECT_DESC}"
-        last_log="$(ls -1t "$LOG_DIR"/*Ревьюер_ТЗ*.log 2>/dev/null | head -1 || true)"
+        last_log="$(latest_log review)"
         local review_file="${ARTIFACTS_DIR}/tz_review.md"
-        if [[ -f "$review_file" ]] && json_field_true "$review_file" "has_critical_issues"; then
+        if review_has_critical "$review_file" "$last_log"; then
           if [[ "$loop" -lt "$MAX_TZ_LOOPS" ]]; then
             log "WARN: Критичные замечания ТЗ — доработка (цикл $loop)"
             continue
@@ -344,7 +372,8 @@ EOF
 - Архитектура: ${ARTIFACTS_DIR}/architecture.md
 - ТЗ: ${ARTIFACTS_DIR}/technical_specification.md
 - Описание проекта: ${PROJECT_DESC}"
-        if [[ -f "${ARTIFACTS_DIR}/architecture_review.md" ]] && json_field_true "${ARTIFACTS_DIR}/architecture_review.md" "has_critical_issues"; then
+        last_log="$(latest_log review)"
+        if review_has_critical "${ARTIFACTS_DIR}/architecture_review.md" "$last_log"; then
           if [[ "$loop" -lt "$MAX_ARCH_LOOPS" ]]; then
             log "WARN: Критичные замечания архитектуры — доработка"
             continue
@@ -387,7 +416,8 @@ EOF
 - Задачи: ${ARTIFACTS_DIR}/tasks/
 - ТЗ: ${ARTIFACTS_DIR}/technical_specification.md
 - Архитектура: ${ARTIFACTS_DIR}/architecture.md"
-        if [[ -f "${ARTIFACTS_DIR}/plan_review.md" ]] && json_field_true "${ARTIFACTS_DIR}/plan_review.md" "has_critical_issues"; then
+        last_log="$(latest_log review)"
+        if review_has_critical "${ARTIFACTS_DIR}/plan_review.md" "$last_log"; then
           if [[ "$loop" -lt "$MAX_PLAN_LOOPS" ]]; then
             log "WARN: Критичные замечания плана — доработка"
             continue
@@ -443,10 +473,11 @@ EOF
 - Архитектура: ${ARTIFACTS_DIR}/architecture.md
 - План: ${ARTIFACTS_DIR}/plan.md
 - Проверь изменения относительно постановки ${task}"
-      if [[ -f "${ARTIFACTS_DIR}/code_review.md" ]] && json_field_true "${ARTIFACTS_DIR}/code_review.md" "has_critical_issues"; then
+      last_log="$(latest_log review)"
+      if review_has_critical "${ARTIFACTS_DIR}/code_review.md" "$last_log"; then
         if [[ "$loop" -lt "$MAX_CODE_LOOPS" ]]; then
           log "WARN: Критичные замечания кода — repair"
-          run_agent "Разработчик (repair)" "$MODEL_CODEX" "${PROMPTS_DIR}/08a_agent_implementation_repair.md" \
+          run_agent "developer-repair" "$MODEL_CODEX" "${PROMPTS_DIR}/08a_agent_implementation_repair.md" \
             "$common_inputs
 - Замечания: ${ARTIFACTS_DIR}/code_review.md
 - ТЗ: ${ARTIFACTS_DIR}/technical_specification.md
@@ -472,6 +503,7 @@ EOF
 }
 
 # --- main ---
+mkdir -p "$LOG_DIR" "$ARTIFACTS_DIR"
 [[ "$DRY_RUN" -eq 1 ]] || require_agent
 [[ -d "$PROMPTS_DIR" ]] || die "Нет каталога промптов: $PROMPTS_DIR (git submodule update --init --recursive)"
 

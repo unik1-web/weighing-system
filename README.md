@@ -37,6 +37,7 @@
 | Python | **3.11 или 3.12** (на 3.13 `fdb` может не работать) |
 | Firebird client | для Vescom |
 | pypxlib | для Metra (`pip install pypxlib`) |
+| pyserial | backend transport `serial_backend` |
 
 ## Установка
 
@@ -59,6 +60,26 @@ npm start
 
 Откроется `http://127.0.0.1:5001` — один процесс Flask раздаёт интерфейс и API.  
 Отключить автозапуск браузера: `OPEN_BROWSER=0`.
+
+Краткий порядок проверки после обновления:
+1. Сделать резервную копию пары `config.ini` + `BD/weighing.db`
+2. Запустить приложение (`npm start`) и дождаться автоматической миграции stage 5
+3. Проверить, что `primary/spare` читаются из настроек площадки
+4. Проверить ручной ввод и сохранение причины (`manual_weight_reason`) в сценариях fallback
+
+Порядок smoke-проверки runtime API (`serial_backend`):
+
+```bash
+npm start
+python scripts/smoke_scale_api.py \
+  --base-url http://127.0.0.1:5001 \
+  --origin http://127.0.0.1:5001 \
+  --expected-site-id default-site \
+  --expected-scale-id scale-primary \
+  --expected-scale-role primary
+```
+
+Проверка `serial_backend` обязательна отдельно от Chromium Web Serial browser-пути.
 
 ### Разработка
 
@@ -117,6 +138,13 @@ npm run build:win:exe
 3. Запустить **WeighingSystem.exe** — откроется браузер на `http://127.0.0.1:5001`
 
 Данные хранятся рядом с программой: `config.ini`, каталог `BD/`, логи `logs/`.
+
+Smoke-порядок для упакованной версии:
+
+1. Запустить `dist/WeighingSystem/WeighingSystem.exe`
+2. Открыть `http://127.0.0.1:5001`
+3. Проверить сценарий `serial_backend` (`connect -> status -> read -> disconnect`) через `scripts/smoke_scale_api.py` или checklist из `docs/implementation/reports/scale-adapters-exe-checklist.md`
+4. Отдельно зафиксировать, что это backend-path (не Web Serial)
 
 > Для Vescom нужен Firebird client на компьютере (как и при обычном запуске).  
 > Сборка exe выполняется через **Python 3.11**: `py -3.11 -m pip install pypxlib` (нужен для Metra).

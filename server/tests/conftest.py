@@ -27,6 +27,19 @@ def temp_app_root(tmp_path, monkeypatch):
 def api_client(temp_app_root):
     """Flask test client bound to the isolated temp app root."""
     import app as flask_app
+    import scale_api
+
+    class DefaultFakeTransport:
+        def open(self, _connection):
+            return None
+
+        def read_line(self, _timeout_ms):
+            return 'ST,GS,+00045.0kg\r\n'
+
+        def close(self):
+            return None
 
     flask_app.app.config['TESTING'] = True
+    scale_api.reset_scale_runtime_state()
+    scale_api.set_scale_transport_factory(DefaultFakeTransport)
     return flask_app.app.test_client()

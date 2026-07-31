@@ -39,6 +39,7 @@ def _ticket(**overrides):
         'gross_datetime': '2026-07-01T10:00:00',
         'tare_datetime': '2026-07-01T10:00:00',
         'scale_device': 'Микросим М0601',
+        'manual_weight_reason': None,
         'operator_id': None,
         'operator_name': 'Оператор',
         'status': 'completed',
@@ -74,8 +75,20 @@ def _site_bundle():
                 'id': 's-primary',
                 'site_id': 'default-site',
                 'role': 'primary',
-                'adapter_id': 'web_serial',
-                'connection': {'device_id': 'newton'},
+                'adapter_id': 'cas',
+                'connection': {
+                    'transport': 'serial_backend',
+                    'device_id': 'cas',
+                    'serial': {
+                        'port': 'COM3',
+                        'baud_rate': 9600,
+                    },
+                    'parser': {
+                        'kind': 'regex',
+                        'pattern': '^ST\\s+(\\d+)$',
+                        'weight_group': 1,
+                    },
+                },
                 'name': 'Основные',
                 'created_at': '2026-07-31T00:00:00.000Z',
             },
@@ -137,7 +150,7 @@ def test_api_database_roundtrip_site_entities(api_client):
     body = get.get_json()
     assert body['success'] is True
     scales = json.loads(body['data']['app_scales'])
-    assert scales[0]['connection']['device_id'] == 'newton'
+    assert scales[0]['connection']['device_id'] == 'cas'
     assert scales[1]['connection']['device_id'] is None
     runtime = json.loads(body['data']['app_site_runtime'])
     assert runtime[0]['anpr_mode'] == 'disabled_by_configuration'
@@ -218,3 +231,74 @@ def test_api_database_legacy_ticket_without_site_fields(api_client):
     assert loaded[0]['id'] == 'legacy-site'
     assert loaded[0].get('site_id') is None
     assert loaded[0].get('scale_id') is None
+
+
+def test_api_database_roundtrip_preserves_manual_reason_and_connection_json(api_client):
+    """TC-E2E-02: app_scales.connection_json и manual_weight_reason round-trip."""
+    ticket = _ticket(manual_weight_reason='заглушка')
+    bundle = _site_bundle()
+    payload = {
+        **{key: json.dumps(value, ensure_ascii=False) for key, value in bundle.items()},
+        'app_weighing_tickets': json.dumps([ticket], ensure_ascii=False),
+    }
+    post = api_client.post('/api/database', json={'data': payload})
+    assert post.status_code == 200
+
+    data = api_client.get('/api/database').get_json()['data']
+    scales = json.loads(data['app_scales'])
+    tickets = json.loads(data['app_weighing_tickets'])
+    assert scales[0]['connection']['transport'] == 'serial_backend'
+    assert scales[0]['connection']['parser']['kind'] == 'regex'
+    assert tickets[0]['manual_weight_reason'] == 'заглушка'
+
+
+def test_api_database_rejects_invalid_generic_regex_without_partial_commit(api_client):
+    """TC-UNIT: /api/database returns 422 invalid_connection_config for bad regex."""
+    bundle = _site_bundle()
+    bad_scales = bundle['app_scales']
+    bad_scales[0]['adapter_id'] = 'generic-regex'
+    bad_scales[0]['connection']['device_id'] = None
+    bad_scales[0]['connection']['parser']['pattern'] = r'^(?<state>ST|US)\s+(\d+)$'
+    bad_scales[0]['connection']['parser']['test_frame'] = 'ST 100'
+
+    response = api_client.post(
+        '/api/database',
+        json={
+            'data': {
+                'app_sites': json.dumps(bundle['app_sites'], ensure_ascii=False),
+                'app_scales': json.dumps(bad_scales, ensure_ascii=False),
+            }
+        },
+    )
+    assert response.status_code == 422
+    payload = response.get_json()
+    assert payload['success'] is False
+    assert payload['code'] == 'invalid_connection_config'
+
+    # No partial commit.
+    data = api_client.get('/api/database').get_json()['data']
+    assert json.loads(data.get('app_scales', '[]')) == []
+
+
+def test_api_database_writes_generic_regex_pending_runtime(api_client):
+    """TC-E2E-02: valid regex without test_frame is saved as pending_runtime."""
+    bundle = _site_bundle()
+    scales = bundle['app_scales']
+    scales[0]['adapter_id'] = 'generic-regex'
+    scales[0]['connection']['device_id'] = None
+    scales[0]['connection']['parser']['pattern'] = r'^(ST|US)\s+(\d+)$'
+    scales[0]['connection']['parser']['weight_group'] = 2
+    scales[0]['connection']['parser']['stability_group'] = 1
+    scales[0]['connection']['parser']['unit_group'] = None
+    scales[0]['connection']['parser'].pop('test_frame', None)
+
+    response = api_client.post(
+        '/api/database',
+        json={'data': {'app_scales': json.dumps(scales, ensure_ascii=False)}},
+    )
+    assert response.status_code == 200
+    data = api_client.get('/api/database').get_json()['data']
+    stored_scales = json.loads(data['app_scales'])
+    parser = stored_scales[0]['connection']['parser']
+    assert parser['validation_status'] == 'pending_runtime'
+    assert parser['validation_error_code'] is None

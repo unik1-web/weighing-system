@@ -77,6 +77,7 @@ describe('SettingsStorage weighing defaults', () => {
     expect(settings.tara_threshold).toBe(15000);
     expect(settings.max_time_between).toBe(24);
     expect(settings.tara_default).toBe(0);
+    expect(settings.manual_weight_reason_policy).toBe('optional');
   });
 
   it('parses stable_mode and round-trips new keys', () => {
@@ -86,6 +87,7 @@ describe('SettingsStorage weighing defaults', () => {
       tara_threshold: 12000,
       max_time_between: 12,
       tara_default: 2500,
+      manual_weight_reason_policy: 'required',
     });
     const settings = SettingsStorage.getAppSettings();
     expect(settings.weighing_mode_default).toBe('dual');
@@ -93,6 +95,7 @@ describe('SettingsStorage weighing defaults', () => {
     expect(settings.tara_threshold).toBe(12000);
     expect(settings.max_time_between).toBe(12);
     expect(settings.tara_default).toBe(2500);
+    expect(settings.manual_weight_reason_policy).toBe('required');
   });
 });
 

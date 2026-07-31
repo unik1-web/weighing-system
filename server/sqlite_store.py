@@ -8,6 +8,7 @@ from typing import Any
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILENAME = 'weighing.db'
+SCHEMA_VERSION_STAGE_5 = 5
 
 logger = logging.getLogger('weighing-system-api')
 
@@ -44,7 +45,7 @@ TICKET_COLUMNS = [
     'driver_name', 'cargo_name', 'shipper_name', 'receiver_name', 'carrier_name',
     'price', 'vat_rate', 'gross_weight', 'tare_weight', 'net_weight', 'total_amount',
     'gross_source', 'tare_source', 'gross_raw', 'tare_raw', 'gross_datetime', 'tare_datetime',
-    'scale_device', 'operator_id', 'operator_name', 'status', 'reo_status', 'reo_sent_at',
+    'scale_device', 'manual_weight_reason', 'operator_id', 'operator_name', 'status', 'reo_status', 'reo_sent_at',
     'notes', 'created_at', 'completed_at',
     'weighing_mode', 'version',
     'plate_source', 'site_id', 'scale_id', 'scale_role', 'photo_entry_path', 'photo_exit_path',
@@ -270,6 +271,11 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
                     f'ALTER TABLE weighing_tickets ADD COLUMN {column} TEXT'
                 )
 
+        if 'manual_weight_reason' not in existing:
+            connection.execute(
+                'ALTER TABLE weighing_tickets ADD COLUMN manual_weight_reason TEXT NULL'
+            )
+
         if column_weighing_mode_added:
             # One-shot backfill: only right after ADD COLUMN weighing_mode.
             connection.execute(
@@ -278,6 +284,45 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     except Exception:
         logger.exception('Failed to ensure ticket schema')
         raise
+
+
+def _get_user_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute('PRAGMA user_version').fetchone()
+    if row is None:
+        return 0
+    value = row[0] if not isinstance(row, sqlite3.Row) else row[0]
+    return int(value or 0)
+
+
+def _get_table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        str(row['name'])
+        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+
+
+def migrate_schema_stage_5(connection: sqlite3.Connection) -> None:
+    """Apply add-only stage-5 migration and validate post-conditions."""
+    ensure_ticket_schema(connection)
+
+    ticket_columns = _get_table_columns(connection, 'weighing_tickets')
+    if 'manual_weight_reason' not in ticket_columns:
+        connection.execute(
+            'ALTER TABLE weighing_tickets ADD COLUMN manual_weight_reason TEXT NULL'
+        )
+        ticket_columns = _get_table_columns(connection, 'weighing_tickets')
+
+    current_version = _get_user_version(connection)
+    if current_version < SCHEMA_VERSION_STAGE_5:
+        connection.execute(f'PRAGMA user_version = {SCHEMA_VERSION_STAGE_5}')
+
+    post_version = _get_user_version(connection)
+    if post_version < SCHEMA_VERSION_STAGE_5:
+        raise RuntimeError('Stage-5 migration failed: PRAGMA user_version is not 5')
+    if 'manual_weight_reason' not in ticket_columns:
+        raise RuntimeError(
+            'Stage-5 migration failed: manual_weight_reason column is missing'
+        )
 
 
 def init_schema(connection: sqlite3.Connection) -> None:
@@ -323,6 +368,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             gross_datetime TEXT,
             tare_datetime TEXT,
             scale_device TEXT NOT NULL DEFAULT '',
+            manual_weight_reason TEXT,
             operator_id TEXT,
             operator_name TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'open',
@@ -432,7 +478,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             ON scale_switch_journal(site_id, switched_at);
         '''
     )
-    ensure_ticket_schema(connection)
+    migrate_schema_stage_5(connection)
 
 
 def _table_count(connection: sqlite3.Connection, table: str) -> int:
@@ -678,6 +724,19 @@ def read_database() -> dict[str, str]:
                 result[storage_key] = json.dumps(items, ensure_ascii=False)
 
     return result
+
+
+def read_runtime_snapshot() -> dict[str, Any]:
+    """Read runtime-critical storage blobs as one SQLite snapshot."""
+    migrate_json_database_if_needed()
+    with connect() as connection:
+        init_schema(connection)
+        return {
+            'sites': _load_sites(connection),
+            'scales': _load_scales(connection),
+            'site_runtime': _load_site_runtime(connection),
+            'current_user': _load_session(connection),
+        }
 
 
 def _replace_users(connection: sqlite3.Connection, users: list[Any]) -> None:

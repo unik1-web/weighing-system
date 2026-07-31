@@ -24,6 +24,12 @@ import { logger } from './logger';
 export const DEFAULT_SITE_ID = 'default-site';
 export const WEB_SERIAL_ADAPTER_ID = 'web_serial';
 export const SITE_RUNTIME_CHANGED_EVENT = 'site-runtime-changed';
+const BUILTIN_ADAPTER_IDS = new Set<ScaleDeviceId>([
+  'microsim-m0601',
+  'newton',
+  'cas',
+  'midl-mi-vda',
+]);
 
 export const SWITCH_REASONS: readonly SwitchReason[] = [
   'repair',
@@ -76,17 +82,77 @@ export function normalizeScaleSet(raw: unknown): ScaleSet | null {
 
 export function parseScaleConnection(raw: unknown): ScaleConnectionJson {
   if (!raw || typeof raw !== 'object') {
-    return { device_id: null };
+    return { transport: 'web_serial', device_id: null };
   }
-  const deviceRaw = (raw as { device_id?: unknown }).device_id;
-  if (deviceRaw === null || deviceRaw === undefined || deviceRaw === '') {
-    return { device_id: null };
+  const source = raw as {
+    transport?: unknown;
+    device_id?: unknown;
+    serial?: unknown;
+    tcp?: unknown;
+    parser?: unknown;
+  };
+  const transport =
+    source.transport === 'serial_backend' || source.transport === 'tcp_client'
+      ? source.transport
+      : 'web_serial';
+  const deviceRaw = source.device_id;
+  const result: ScaleConnectionJson = {
+    transport,
+    device_id:
+      deviceRaw === null || deviceRaw === undefined || deviceRaw === ''
+        ? null
+        : normalizeScaleDeviceId(String(deviceRaw)),
+  };
+  if (source.serial && typeof source.serial === 'object') {
+    result.serial = source.serial as ScaleConnectionJson['serial'];
   }
-  return { device_id: normalizeScaleDeviceId(String(deviceRaw)) };
+  if (source.tcp && typeof source.tcp === 'object') {
+    result.tcp = source.tcp as ScaleConnectionJson['tcp'];
+  }
+  if (source.parser && typeof source.parser === 'object') {
+    result.parser = source.parser as ScaleConnectionJson['parser'];
+  }
+  return result;
 }
 
 export function buildScaleConnection(deviceId: ScaleDeviceId | null): ScaleConnectionJson {
-  return { device_id: deviceId };
+  return { transport: 'web_serial', device_id: deviceId };
+}
+
+function isBuiltinAdapterId(value: string): value is ScaleDeviceId {
+  return BUILTIN_ADAPTER_IDS.has(value as ScaleDeviceId);
+}
+
+function normalizeAdapterId(adapterId: string, connection: ScaleConnectionJson): string {
+  if (isBuiltinAdapterId(adapterId)) return adapterId;
+  if (adapterId === WEB_SERIAL_ADAPTER_ID && connection.device_id) return connection.device_id;
+  return adapterId || WEB_SERIAL_ADAPTER_ID;
+}
+
+function normalizeScaleForStorage(scale: Scale): Scale {
+  const normalizedConnection = parseScaleConnection(scale.connection);
+  const normalizedAdapterId = normalizeAdapterId(scale.adapter_id, normalizedConnection);
+  if (isBuiltinAdapterId(normalizedAdapterId)) {
+    normalizedConnection.device_id = normalizedAdapterId;
+  }
+  return {
+    ...scale,
+    adapter_id: normalizedAdapterId,
+    connection: normalizedConnection,
+  };
+}
+
+function hasValidPrimaryConfiguration(scale: Scale | null): scale is Scale {
+  if (!scale) return false;
+  const normalized = normalizeScaleForStorage(scale);
+  if (!isBuiltinAdapterId(normalized.adapter_id)) {
+    return false;
+  }
+  return normalized.connection.device_id === normalized.adapter_id;
+}
+
+function normalizeScaleConnectionDraft(connection: ScaleConnectionJson): ScaleConnectionJson {
+  return parseScaleConnection(connection);
 }
 
 export type EnsureSiteResult = {
@@ -99,25 +165,12 @@ export type EnsureSiteResult = {
  */
 export function ensureDefaultSiteAndScales(settings: AppSettings): EnsureSiteResult {
   try {
+    const now = new Date().toISOString();
+    const deviceId = normalizeScaleDeviceId(settings.scale_device_id);
     const site = SiteStorage.getById(DEFAULT_SITE_ID);
     const primary = ScaleStorage.getByRole(DEFAULT_SITE_ID, 'primary');
     const spare = ScaleStorage.getByRole(DEFAULT_SITE_ID, 'spare');
     const runtime = SiteRuntimeStorage.get(DEFAULT_SITE_ID);
-
-    if (site && primary && spare && runtime) {
-      const active = ScaleStorage.getByRole(DEFAULT_SITE_ID, runtime.active_scale_set);
-      if (active) {
-        alignDeviceMirror(active.connection);
-      }
-      logger.info('site', 'Миграция площадки пропущена (уже есть)', {
-        status: 'skipped',
-        site_id: DEFAULT_SITE_ID,
-      });
-      return { status: 'skipped', siteId: DEFAULT_SITE_ID };
-    }
-
-    const now = new Date().toISOString();
-    const deviceId = normalizeScaleDeviceId(settings.scale_device_id);
 
     if (!site) {
       SiteStorage.upsert({
@@ -127,16 +180,30 @@ export function ensureDefaultSiteAndScales(settings: AppSettings): EnsureSiteRes
       });
     }
 
-    if (!primary) {
+    const normalizedPrimary = primary ? normalizeScaleForStorage(primary) : null;
+    const validPrimary = hasValidPrimaryConfiguration(normalizedPrimary);
+
+    if (!normalizedPrimary) {
       ScaleStorage.upsert({
         id: crypto.randomUUID(),
         site_id: DEFAULT_SITE_ID,
         role: 'primary',
-        adapter_id: WEB_SERIAL_ADAPTER_ID,
+        adapter_id: deviceId,
         connection: buildScaleConnection(deviceId),
         name: 'Основные',
         created_at: now,
       });
+    } else if (!validPrimary) {
+      ScaleStorage.upsert({
+        ...normalizedPrimary,
+        adapter_id: deviceId,
+        connection: buildScaleConnection(deviceId),
+      });
+    } else if (
+      normalizedPrimary.adapter_id !== primary!.adapter_id ||
+      JSON.stringify(normalizedPrimary.connection) !== JSON.stringify(primary!.connection)
+    ) {
+      ScaleStorage.upsert(normalizedPrimary);
     }
 
     if (!spare) {
@@ -149,6 +216,14 @@ export function ensureDefaultSiteAndScales(settings: AppSettings): EnsureSiteRes
         name: 'Резервные',
         created_at: now,
       });
+    } else {
+      const normalizedSpare = normalizeScaleForStorage(spare);
+      if (
+        normalizedSpare.adapter_id !== spare.adapter_id ||
+        JSON.stringify(normalizedSpare.connection) !== JSON.stringify(spare.connection)
+      ) {
+        ScaleStorage.upsert(normalizedSpare);
+      }
     }
 
     if (!runtime) {
@@ -166,17 +241,22 @@ export function ensureDefaultSiteAndScales(settings: AppSettings): EnsureSiteRes
       });
     }
 
-    const activePrimary = ScaleStorage.getByRole(DEFAULT_SITE_ID, 'primary');
-    if (activePrimary) {
-      alignDeviceMirror(activePrimary.connection);
+    const finalRuntime = SiteRuntimeStorage.get(DEFAULT_SITE_ID);
+    const activeScale = finalRuntime
+      ? ScaleStorage.getByRole(DEFAULT_SITE_ID, finalRuntime.active_scale_set)
+      : null;
+    if (activeScale) {
+      alignDeviceMirror(activeScale.connection);
     }
 
+    const wasComplete = !!site && !!primary && !!spare && !!runtime;
+    const status: EnsureSiteResult['status'] = wasComplete ? 'skipped' : 'created';
     logger.info('site', 'Миграция площадки выполнена', {
-      status: 'created',
+      status,
       site_id: DEFAULT_SITE_ID,
-      primary_device: activePrimary?.connection.device_id ?? deviceId,
+      primary_device: activeScale?.connection.device_id ?? deviceId,
     });
-    return { status: 'created', siteId: DEFAULT_SITE_ID };
+    return { status, siteId: DEFAULT_SITE_ID };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error('site', `Ошибка миграции площадки: ${message}`, err);
@@ -349,18 +429,52 @@ export function updateScaleConnectionDevice(
   const scale = scales.find((row) => row.id === scaleId);
   if (!scale) return null;
 
-  const connection =
-    deviceId === null
-      ? buildScaleConnection(null)
-      : buildScaleConnection(normalizeScaleDeviceId(deviceId));
+  const normalizedDevice =
+    deviceId === null ? null : normalizeScaleDeviceId(deviceId);
+  const nextAdapterId = normalizedDevice ?? scale.adapter_id;
+  const connection: ScaleConnectionJson = {
+    ...normalizeScaleConnectionDraft(scale.connection),
+    device_id: normalizedDevice,
+  };
+  if (isBuiltinAdapterId(nextAdapterId)) {
+    connection.device_id = nextAdapterId;
+  }
 
   const updated = ScaleStorage.upsert({
     ...scale,
+    adapter_id: nextAdapterId,
     connection,
   });
 
   if (syncMirror && connection.device_id) {
     alignDeviceMirror(connection);
+  }
+  return updated;
+}
+
+export function updateScaleConfiguration(
+  scaleId: string,
+  input: {
+    adapter_id: string;
+    connection: ScaleConnectionJson;
+  },
+  syncMirror: boolean,
+): Scale | null {
+  const scales = ScaleStorage.getAll();
+  const scale = scales.find((row) => row.id === scaleId);
+  if (!scale) return null;
+  const normalizedConnection = normalizeScaleConnectionDraft(input.connection);
+  const normalizedAdapterId = normalizeAdapterId(input.adapter_id, normalizedConnection);
+  if (isBuiltinAdapterId(normalizedAdapterId)) {
+    normalizedConnection.device_id = normalizedAdapterId;
+  }
+  const updated = ScaleStorage.upsert({
+    ...scale,
+    adapter_id: normalizedAdapterId,
+    connection: normalizedConnection,
+  });
+  if (syncMirror && normalizedConnection.device_id) {
+    alignDeviceMirror(normalizedConnection);
   }
   return updated;
 }

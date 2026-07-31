@@ -1,0 +1,187 @@
+name: Scale Adapters Gate
+
+on:
+  pull_request:
+    paths:
+      - "docs/api.md"
+      - "docs/reports/scale-adapters/**"
+      - "server/**"
+      - "src/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "Makefile"
+      - ".github/workflows/scale-adapters.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "docs/api.md"
+      - "docs/reports/scale-adapters/**"
+      - "server/**"
+      - "src/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "Makefile"
+      - ".github/workflows/scale-adapters.yml"
+  workflow_dispatch:
+
+jobs:
+  docs-api-gate:
+    name: docs-api-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure docs/api.md contains /api/scales/*
+        run: |
+          rg -n "/api/scales/" docs/api.md
+
+  frontend-tests:
+    name: frontend-tests
+    runs-on: ubuntu-latest
+    needs: docs-api-gate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run full frontend test suite
+        run: npm test
+
+      - name: Run scale runtime test subset
+        run: npm run test:scale-runtime
+
+      - name: Run scale parity test subset
+        run: npm run test:scale-parity
+
+  backend-tests:
+    name: backend-tests
+    runs-on: ubuntu-latest
+    needs: docs-api-gate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: python3 -m pip install -r server/requirements.txt
+
+      - name: Run full backend test suite
+        run: python3 -m pytest server/tests -q
+
+      - name: Run scale contract/security subsets
+        run: python3 -m pytest server/tests/test_scale_api_contract.py server/tests/test_scale_api_security.py server/tests/test_scale_api_guard.py server/tests/test_scale_runtime_switch.py server/tests/test_scale_runtime_registry.py server/tests/test_scale_adapter_parity.py server/tests/test_scale_registry_contract.py server/tests/test_scale_registry_generic_regex.py server/tests/test_scale_integrity.py server/tests/test_serial_backend_transport.py -q
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    needs:
+      - frontend-tests
+      - backend-tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+  windows-package:
+    name: windows-package
+    runs-on: windows-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install -r server/requirements.txt -r server/requirements-build.txt
+
+      - name: Build Windows executable
+        run: npm run build:win:exe
+
+  evidence-gate:
+    name: evidence-gate
+    runs-on: ubuntu-latest
+    needs:
+      - build
+      - windows-package
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate evidence files and acceptance report
+        run: |
+          set -euo pipefail
+          smoke_report="docs/reports/scale-adapters/scale-adapters-smoke.md"
+          exe_checklist="docs/reports/scale-adapters/scale-adapters-exe-checklist.md"
+          acceptance_report="docs/reports/scale-adapters/scale-adapters-acceptance.md"
+
+          test -s "$smoke_report" || (echo "Missing evidence: $smoke_report" && exit 1)
+          test -s "$exe_checklist" || (echo "Missing evidence: $exe_checklist" && exit 1)
+          test -s "$acceptance_report" || (echo "Missing evidence: $acceptance_report" && exit 1)
+
+          for ec_id in EC-01 EC-02 EC-03 EC-04 EC-05 EC-06 EC-07 EC-08 EC-09; do
+            rg -n "^\|[[:space:]]*${ec_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
+              || (echo "Missing or malformed row for ${ec_id}" && exit 1)
+          done
+
+          if rg -n "^\|[[:space:]]*EC-0[1-9][[:space:]]*\|[[:space:]]*FAIL[[:space:]]*\|" "$acceptance_report"; then
+            echo "Acceptance report contains FAIL status."
+            exit 1
+          fi
+
+      - name: Upload smoke evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-adapters-smoke
+          path: docs/reports/scale-adapters/scale-adapters-smoke.md
+
+      - name: Upload exe checklist evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-adapters-exe-checklist
+          path: docs/reports/scale-adapters/scale-adapters-exe-checklist.md
+
+      - name: Upload acceptance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: scale-adapters-acceptance
+          path: docs/reports/scale-adapters/scale-adapters-acceptance.md

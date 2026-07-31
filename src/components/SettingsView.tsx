@@ -25,7 +25,7 @@ import {
 } from '@/lib/storage-sync';
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
-import { SiteScalesSettingsSection } from '@/components/SiteScalesSettingsSection';
+import { SiteScalesSettingsSection, type DraftErrors } from '@/components/SiteScalesSettingsSection';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 const NAV_TAB_OPTIONS: NavTabMode[] = ['full', 'compact'];
@@ -56,6 +56,10 @@ export function SettingsView({ onSaved }: Props) {
   const [dictClearBusy, setDictClearBusy] = useState(false);
   const [pathPicker, setPathPicker] = useState<'vescom' | 'metra' | 'wa' | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [scaleDraftErrors, setScaleDraftErrors] = useState<DraftErrors>({
+    primary: [],
+    spare: [],
+  });
 
   useEffect(() => {
     setSettings(SettingsStorage.getAppSettings());
@@ -444,7 +448,17 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
-      <SiteScalesSettingsSection />
+      <SiteScalesSettingsSection onDraftErrorsChange={setScaleDraftErrors} />
+      {(scaleDraftErrors.primary.length > 0 || scaleDraftErrors.spare.length > 0) && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {scaleDraftErrors.primary.length > 0 && (
+            <div>Основные: {scaleDraftErrors.primary.join('; ')}</div>
+          )}
+          {scaleDraftErrors.spare.length > 0 && (
+            <div>Резервные: {scaleDraftErrors.spare.join('; ')}</div>
+          )}
+        </div>
+      )}
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
@@ -494,6 +508,22 @@ export function SettingsView({ onSaved }: Props) {
               />
               <span className="text-sm text-slate-700">Разрешить фиксацию при нестабильном весе</span>
             </label>
+          </div>
+          <div className="sm:col-span-2">
+            <label className={labelClass}>Политика причины ручного ввода</label>
+            <select
+              value={settings.manual_weight_reason_policy}
+              onChange={(e) =>
+                updateField(
+                  'manual_weight_reason_policy',
+                  e.target.value === 'required' ? 'required' : 'optional',
+                )
+              }
+              className={inputClass}
+            >
+              <option value="optional">Опционально</option>
+              <option value="required">Обязательно</option>
+            </select>
           </div>
           <div>
             <label className={labelClass}>Порог тары, кг</label>

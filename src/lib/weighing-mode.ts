@@ -82,6 +82,13 @@ export type TareAutofillResult = {
   tareSource: 'dictionary' | 'default';
 };
 
+export interface ManualReasonRuleInput {
+  policy: 'optional' | 'required';
+  slotsOnStep: WeightSlot[];
+  grossSource: WeightSource;
+  tareSource: WeightSource;
+}
+
 /**
  * Resolves single-mode tare autofill from vehicle card or tara_default.
  * Returns null when autofill must not run (dual, locked, filled, no source).
@@ -182,6 +189,32 @@ export const shouldAutoFillTare = shouldAutofillTare;
 
 export function isCaptureAllowed(stable: boolean, stableMode: boolean): boolean {
   return stable || stableMode;
+}
+
+/**
+ * Returns true when any weight saved on the current step has manual source.
+ */
+export function isManualWeightUsedOnCurrentStep(input: Omit<ManualReasonRuleInput, 'policy'>): boolean {
+  const uniqueSlots = Array.from(new Set(input.slotsOnStep));
+  for (const slot of uniqueSlots) {
+    if (slot === 'gross' && input.grossSource === 'manual') {
+      return true;
+    }
+    if (slot === 'tare' && input.tareSource === 'manual') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Checks if manual weight reason is mandatory on the current step.
+ */
+export function isManualWeightReasonRequiredOnCurrentStep(input: ManualReasonRuleInput): boolean {
+  if (input.policy !== 'required') {
+    return false;
+  }
+  return isManualWeightUsedOnCurrentStep(input);
 }
 
 /**

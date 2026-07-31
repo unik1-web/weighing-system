@@ -1,0 +1,71 @@
+{
+  "cases": [
+    {
+      "name": "microsim stable frame",
+      "adapter_id": "microsim-m0601",
+      "connection": {
+        "transport": "web_serial",
+        "device_id": "microsim-m0601"
+      },
+      "raw": "ST,+00123.4kg\r",
+      "expected": {
+        "value": 123.4,
+        "stable": true,
+        "raw": "ST,+00123.4kg",
+        "unit": "kg",
+        "negative": false
+      }
+    },
+    {
+      "name": "newton unstable frame",
+      "adapter_id": "newton",
+      "connection": {
+        "transport": "web_serial",
+        "device_id": "newton"
+      },
+      "raw": "US GS -00120.0 kg\r\n",
+      "expected": {
+        "value": -120.0,
+        "stable": false,
+        "raw": "US GS -00120.0 kg",
+        "unit": "kg",
+        "negative": true
+      }
+    },
+    {
+      "name": "cas stable frame with terminator",
+      "adapter_id": "cas",
+      "connection": {
+        "transport": "web_serial",
+        "device_id": "cas",
+        "serial": {
+          "line_terminator": "\r\n"
+        }
+      },
+      "raw": "ST,GS,+00045.0kg\r\n",
+      "expected": {
+        "value": 45.0,
+        "stable": true,
+        "raw": "ST,GS,+00045.0kg",
+        "unit": "kg",
+        "negative": false
+      }
+    },
+    {
+      "name": "midl frame",
+      "adapter_id": "midl-mi-vda",
+      "connection": {
+        "transport": "web_serial",
+        "device_id": "midl-mi-vda"
+      },
+      "raw": "ST NT +01234 kg\r\n",
+      "expected": {
+        "value": 1234.0,
+        "stable": true,
+        "raw": "ST NT +01234 kg",
+        "unit": "kg",
+        "negative": false
+      }
+    }
+  ]
+}

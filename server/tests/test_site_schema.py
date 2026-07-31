@@ -30,8 +30,8 @@ def test_init_schema_creates_site_tables_and_indexes(temp_app_root):
         assert 'idx_scales_site_id' in indexes
 
 
-def test_ensure_ticket_schema_adds_site_id_scale_id_idempotent(temp_app_root):
-    """TC-UNIT-02: site_id/scale_id added; second call idempotent."""
+def test_ensure_ticket_schema_adds_manual_reason_and_site_columns_idempotent(temp_app_root):
+    """TC-UNIT-01: migration adds manual_weight_reason and is idempotent."""
     with sqlite_store.connect() as connection:
         connection.executescript(
             '''
@@ -75,6 +75,7 @@ def test_ensure_ticket_schema_adds_site_id_scale_id_idempotent(temp_app_root):
             row['name']
             for row in connection.execute('PRAGMA table_info(weighing_tickets)').fetchall()
         }
+        assert 'manual_weight_reason' in cols
         assert 'site_id' in cols
         assert 'scale_id' in cols
         sqlite_store.ensure_ticket_schema(connection)

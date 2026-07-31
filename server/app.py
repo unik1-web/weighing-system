@@ -1,11 +1,12 @@
 import logging
 import json
 import os
+import re
 import sys
 import threading
 import time
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
 import requests
@@ -37,6 +38,7 @@ from persistence import (
     read_combined_storage,
     read_config,
     read_database,
+    register_runtime_invalidator,
     write_combined_storage,
     write_config,
     write_database,
@@ -54,6 +56,8 @@ from reo_client import (
     is_reo_test_successful,
     post_reo_import,
 )
+from scale_api import invalidate_for_database_payload, register_scale_api
+from scale_registry_contract import validate_portable_regex
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, 'frozen', False):
@@ -67,6 +71,10 @@ os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 logger = logging.getLogger('weighing-system-api')
 logger.setLevel(logging.INFO)
+
+_IP_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+_TTY_RE = re.compile(r'/dev/tty[^\s"\'`]+', re.IGNORECASE)
+_COM_RE = re.compile(r'\bCOM\d+\b', re.IGNORECASE)
 
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
@@ -83,14 +91,33 @@ if not logger.handlers:
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
 
+
+def _redact_scale_runtime_value(value):
+    if isinstance(value, str):
+        value = _COM_RE.sub('COM***', value)
+        value = _TTY_RE.sub('/dev/tty***', value)
+        return _IP_RE.sub('***.***.***.***', value)
+    if isinstance(value, list):
+        return [_redact_scale_runtime_value(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _redact_scale_runtime_value(v) for k, v in value.items()}
+    return value
+
+
+def log_scale_runtime_event(event: str, *, level: int = logging.INFO, **context):
+    payload = {'event': event, **_redact_scale_runtime_value(context)}
+    logger.log(level, 'scale_runtime %s', json.dumps(payload, ensure_ascii=False))
+
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r'/api/(?!scales).*': {'origins': '*'}})
 
 
 @app.before_request
 def log_request_start():
     g.request_started_at = time.time()
     logger.info('HTTP %s %s', request.method, request.path)
+    if request.path.startswith('/api/scales'):
+        log_scale_runtime_event('api_request_start', path=request.path, method=request.method)
 
 
 @app.after_request
@@ -98,12 +125,75 @@ def log_request_end(response):
     started_at = getattr(g, 'request_started_at', None)
     duration_ms = round((time.time() - started_at) * 1000, 1) if started_at else '-'
     logger.info('HTTP %s %s -> %s (%s ms)', request.method, request.path, response.status_code, duration_ms)
+    if request.path.startswith('/api/scales'):
+        log_scale_runtime_event(
+            'api_request_end',
+            path=request.path,
+            method=request.method,
+            status=response.status_code,
+            duration_ms=duration_ms,
+        )
     return response
 
 
 def error_response(message: str, status: int = 400):
     logger.warning('API error (%s): %s', status, message)
     return jsonify({'success': False, 'message': message}), status
+
+
+def scale_error_response(code: str, message: str, status: int):
+    logger.warning('Scale API error (%s %s): %s', status, code, message)
+    log_scale_runtime_event(
+        'api_error',
+        level=logging.WARNING,
+        code=code,
+        status=status,
+        message=message,
+        path=request.path if request else None,
+    )
+    return jsonify({'success': False, 'code': code, 'message': message}), status
+
+
+def _validate_generic_regex_in_database_payload(data: dict[str, str]) -> tuple[bool, str | None]:
+    scales_blob = data.get('app_scales')
+    if not isinstance(scales_blob, str):
+        return True, None
+    try:
+        scales_rows = json.loads(scales_blob)
+    except json.JSONDecodeError:
+        return False, 'Некорректный JSON в app_scales'
+    if not isinstance(scales_rows, list):
+        return False, 'app_scales должен быть JSON-массивом'
+
+    for row in scales_rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get('adapter_id') != 'generic-regex':
+            continue
+        connection = row.get('connection') if isinstance(row.get('connection'), dict) else {}
+        parser = connection.get('parser') if isinstance(connection.get('parser'), dict) else {}
+        test_frame = parser.get('test_frame')
+        validation = validate_portable_regex(
+            connection,
+            test_frame if isinstance(test_frame, str) and test_frame.strip() else None,
+        )
+        if not validation.get('valid'):
+            code = validation.get('validation_error_code') or 'invalid_connection_config'
+            message = validation.get('validation_error_message') or 'Некорректная regex-конфигурация'
+            return False, f'{code}: {message}'
+        parser = connection.setdefault('parser', {})
+        parser['validation_status'] = validation.get('validation_status')
+        parser['last_validation_at'] = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        parser['validation_error_code'] = validation.get('validation_error_code')
+        parser['validation_error_message'] = validation.get('validation_error_message')
+        row['connection'] = connection
+
+    data['app_scales'] = json.dumps(scales_rows, ensure_ascii=False)
+    return True, None
+
+
+app.register_blueprint(register_scale_api(scale_error_response))
+register_runtime_invalidator(invalidate_for_database_payload)
 
 
 def frontend_available() -> bool:
@@ -194,6 +284,9 @@ def save_database():
         return error_response('Некорректный формат BD/weighing.db')
 
     try:
+        valid_payload, validation_message = _validate_generic_regex_in_database_payload(data)
+        if not valid_payload:
+            return scale_error_response('invalid_connection_config', validation_message or 'Некорректная конфигурация', 422)
         write_database(data)
         logger.info('Database saved (%s keys)', len(data))
         return jsonify({'success': True})

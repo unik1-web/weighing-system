@@ -6,6 +6,7 @@ const API_BASE = import.meta.env.VITE_API_URL ?? '';
 interface ApiErrorBody {
   message?: string;
   success?: boolean;
+  code?: string;
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -26,6 +27,9 @@ async function parseResponse<T>(response: Response): Promise<T> {
   }
 
   if (!response.ok || data.success === false) {
+    if (data.code && data.message) {
+      throw new Error(`${data.code}: ${data.message}`);
+    }
     throw new Error(data.message ?? `HTTP ${response.status}`);
   }
   return data;
@@ -142,3 +146,78 @@ export function waImportKey(item: WaWeighingItem): string {
 }
 
 export { ticketImportKey };
+
+export interface ScaleApiError {
+  success: false;
+  code: string;
+  message: string;
+}
+
+export interface ScaleApiScaleContext {
+  site_id: string;
+  scale_id: string;
+  scale_role: 'primary' | 'spare';
+  adapter_id: string;
+  transport: string;
+}
+
+export interface ScaleApiReading {
+  value: number;
+  stable: boolean;
+  raw: string | null;
+  captured_at: string;
+}
+
+export interface ScaleConnectResponse {
+  success: true;
+  session_id: string;
+  status: 'connected' | 'reading';
+  scale: ScaleApiScaleContext;
+  reading: ScaleApiReading | null;
+}
+
+export interface ScaleStatusResponse {
+  success: true;
+  session_id: string;
+  status: 'connected' | 'reading' | 'disconnected' | 'error';
+  scale: ScaleApiScaleContext;
+  reading: ScaleApiReading | null;
+}
+
+export interface ScaleReadResponse {
+  success: true;
+  session_id: string;
+  status: 'reading';
+  reading: ScaleApiReading;
+}
+
+export interface ScaleDisconnectResponse {
+  success: true;
+  session_id: string;
+  status: 'disconnected';
+}
+
+export async function scaleConnect(request: {
+  expected_site_id: string;
+  expected_scale_id: string;
+  expected_scale_role: 'primary' | 'spare';
+}): Promise<ScaleConnectResponse> {
+  return apiPost<ScaleConnectResponse>('/api/scales/connect', request);
+}
+
+export async function scaleStatus(sessionId: string): Promise<ScaleStatusResponse> {
+  return apiGet<ScaleStatusResponse>('/api/scales/status', { session_id: sessionId });
+}
+
+export async function scaleRead(request: {
+  session_id: string;
+  timeout_ms: number;
+}): Promise<ScaleReadResponse> {
+  return apiPost<ScaleReadResponse>('/api/scales/read', request);
+}
+
+export async function scaleDisconnect(sessionId: string): Promise<ScaleDisconnectResponse> {
+  return apiPost<ScaleDisconnectResponse>('/api/scales/disconnect', {
+    session_id: sessionId,
+  });
+}

@@ -13,7 +13,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { ScalePanel } from '@/components/ScalePanel';
 import { formatVehiclePlate, normalizeVehicleKey } from '@/lib/vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from '@/lib/text-format';
-import { SCALE_DEVICES, normalizeScaleDeviceId, type ScaleDeviceId } from '@/lib/scales';
+import { SCALE_DEVICES } from '@/lib/scales';
 import {
   type WeighingMode,
   type WeightPhase,
@@ -29,6 +29,8 @@ import {
   validateSingleComplete,
   validateDualFirstPass,
   validateDualComplete,
+  isManualWeightUsedOnCurrentStep,
+  isManualWeightReasonRequiredOnCurrentStep,
   netWeight as calcNetWeight,
   totalAmount as calcTotalAmount,
   firstWeightDatetime,
@@ -44,21 +46,20 @@ import {
 import {
   SITE_RUNTIME_CHANGED_EVENT,
   activeScaleSetIndicatorLabel,
-  alignDeviceMirror,
+  DEFAULT_SITE_ID,
   getActiveScale,
   ticketScaleFieldsFromRuntime,
-  updateActiveScaleDevice,
 } from '@/lib/site';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
 
-function resolveFormDeviceId(): ScaleDeviceId {
-  const active = getActiveScale();
-  const fromActive = active?.connection.device_id;
-  if (fromActive) {
-    alignDeviceMirror(active.connection);
-    return normalizeScaleDeviceId(fromActive);
+function resolveScaleDeviceLabel() {
+  const active = getActiveScale(DEFAULT_SITE_ID);
+  if (!active) return 'Неизвестный терминал';
+  const deviceId = active.connection.device_id;
+  if (deviceId) {
+    return SCALE_DEVICES[deviceId].name;
   }
-  return normalizeScaleDeviceId(SettingsStorage.getAppSettings().scale_device_id);
+  return active.adapter_id;
 }
 
 interface Props {
@@ -92,8 +93,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [completingTicket, setCompletingTicket] = useState<WeighingTicket | null>(null);
   const [incompleteRefresh, setIncompleteRefresh] = useState(0);
 
-  const [deviceId, setDeviceId] = useState<ScaleDeviceId>(() => resolveFormDeviceId());
   const [scaleSetLabel, setScaleSetLabel] = useState(() => activeScaleSetIndicatorLabel());
+  const [activeScale, setActiveScale] = useState(() => getActiveScale(DEFAULT_SITE_ID));
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [vehicleBrand, setVehicleBrand] = useState('');
   const [trailerNumber, setTrailerNumber] = useState('');
@@ -114,12 +115,28 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [grossDatetime, setGrossDatetime] = useState<string | null>(null);
   const [tareDatetime, setTareDatetime] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
+  const [manualWeightReason, setManualWeightReason] = useState('');
+  const [manualWeightReasonTouched, setManualWeightReasonTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [lastTicket, setLastTicket] = useState<WeighingTicket | null>(null);
   const [unstableWarning, setUnstableWarning] = useState<string | null>(null);
   const [intervalWarnedForId, setIntervalWarnedForId] = useState<string | null>(null);
+
+  const buildScaleRuntimeContext = useCallback(
+    (phase: string, code?: string) => ({
+      site_id: activeScale?.site_id ?? null,
+      scale_id: activeScale?.id ?? null,
+      scale_role: activeScale?.role ?? null,
+      adapter_id: activeScale?.adapter_id ?? null,
+      transport: activeScale?.connection.transport ?? null,
+      session_id: null,
+      code: code ?? null,
+      phase,
+    }),
+    [activeScale],
+  );
 
   const isCompleting = completingTicket != null;
   // For completion, editability is based on the loaded ticket's original weights for locked slots,
@@ -183,12 +200,12 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     const refreshSettings = () => {
       const settings = SettingsStorage.getAppSettings();
       setAppSettings(settings);
-      setDeviceId(resolveFormDeviceId());
       setScaleSetLabel(activeScaleSetIndicatorLabel());
+      setActiveScale(getActiveScale(DEFAULT_SITE_ID));
     };
     const onRuntimeChanged = () => {
-      setDeviceId(resolveFormDeviceId());
       setScaleSetLabel(activeScaleSetIndicatorLabel());
+      setActiveScale(getActiveScale(DEFAULT_SITE_ID));
     };
     window.addEventListener('focus', refreshSettings);
     document.addEventListener('visibilitychange', refreshSettings);
@@ -274,12 +291,6 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     }
   };
 
-  const handleDeviceChange = (id: ScaleDeviceId) => {
-    const normalized = normalizeScaleDeviceId(id);
-    setDeviceId(normalized);
-    updateActiveScaleDevice(normalized);
-  };
-
   const resetFormFields = useCallback(() => {
     setActiveField('gross');
     setPhaseOverride(false);
@@ -304,6 +315,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setGrossDatetime(null);
     setTareDatetime(null);
     setNotes('');
+    setManualWeightReason('');
+    setManualWeightReasonTouched(false);
     setError(null);
     setUnstableWarning(null);
   }, [setTareAutofillLockedSafe]);
@@ -365,6 +378,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setGrossDatetime(ticket.gross_datetime);
       setTareDatetime(ticket.tare_datetime);
       setNotes(ticket.notes);
+      setManualWeightReason(ticket.manual_weight_reason ?? '');
+      setManualWeightReasonTouched(false);
 
       const state = classifyOpenWeightState(ticket);
       if (state === 'one') {
@@ -446,6 +461,52 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const requiredFilled =
     !!vehicleNumber && !!driverName && !!cargoName && !!shipperName && !!receiverName && !!carrierName;
 
+  const validateManualReasonForStep = useCallback(
+    (slotsOnStep: Array<'gross' | 'tare'>): boolean => {
+      const reasonRequired = isManualWeightReasonRequiredOnCurrentStep({
+        policy: appSettings.manual_weight_reason_policy,
+        slotsOnStep,
+        grossSource,
+        tareSource,
+      });
+      if (!reasonRequired) {
+        return true;
+      }
+      if (manualWeightReason.trim()) {
+        return true;
+      }
+      setError('Укажите причину ручного ввода веса.');
+      logger.scaleRuntime.warn(
+        'Валидация manual_weight_reason отклонила сохранение',
+        buildScaleRuntimeContext('manual_reason_validation', 'manual_weight_reason_required'),
+        { slots_on_step: slotsOnStep },
+      );
+      return false;
+    },
+    [
+      appSettings.manual_weight_reason_policy,
+      grossSource,
+      tareSource,
+      manualWeightReason,
+      buildScaleRuntimeContext,
+    ],
+  );
+
+  const resolveManualReasonForStep = useCallback(
+    (slotsOnStep: Array<'gross' | 'tare'>): string | null => {
+      const manualOnStep = isManualWeightUsedOnCurrentStep({
+        slotsOnStep,
+        grossSource,
+        tareSource,
+      });
+      if (!manualOnStep) {
+        return null;
+      }
+      return manualWeightReason.trim() || null;
+    },
+    [grossSource, tareSource, manualWeightReason],
+  );
+
   const handleSaveSingle = async () => {
     setError(null);
     setSuccess(null);
@@ -456,6 +517,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     const validation = validateSingleComplete({ gross: grossWeight, tare: tareWeight });
     if (validation) {
       setError(validation);
+      return;
+    }
+    if (!validateManualReasonForStep(['gross', 'tare'])) {
       return;
     }
 
@@ -471,6 +535,11 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     const amount = calcTotalAmount(net, parseFloat(price) || 0);
     const plateKey = normalizeVehicleKey(vehicleNumber);
     try {
+      logger.scaleRuntime.info(
+        'Сохранение тикета с источниками веса',
+        buildScaleRuntimeContext('save_single'),
+        { gross_source: grossSource, tare_source: tareSource },
+      );
       const ticket = TicketStorage.create({
         vehicle_number: formatVehiclePlate(vehicleNumber),
         vehicle_brand: formatVehicleBrand(vehicleBrand),
@@ -492,7 +561,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         tare_raw: tareRaw,
         gross_datetime: grossDatetime,
         tare_datetime: tareDatetime,
-        scale_device: SCALE_DEVICES[deviceId].name,
+        scale_device: resolveScaleDeviceLabel(),
+        manual_weight_reason: resolveManualReasonForStep(['gross', 'tare']),
         operator_id: null,
         operator_name: displayName,
         status: 'completed',
@@ -547,9 +617,18 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     }
 
     const hasGross = grossWeight != null && grossWeight > 0;
+    const slotsOnStep: Array<'gross' | 'tare'> = [hasGross ? 'gross' : 'tare'];
+    if (!validateManualReasonForStep(slotsOnStep)) {
+      return;
+    }
     const plateKey = normalizeVehicleKey(vehicleNumber);
     setSaving(true);
     try {
+      logger.scaleRuntime.info(
+        'Сохранение первого прохода с источниками веса',
+        buildScaleRuntimeContext('save_dual_first'),
+        { gross_source: hasGross ? grossSource : 'manual', tare_source: hasGross ? 'manual' : tareSource },
+      );
       const ticket = TicketStorage.create({
         vehicle_number: formatVehiclePlate(vehicleNumber),
         vehicle_brand: formatVehicleBrand(vehicleBrand),
@@ -571,7 +650,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         tare_raw: hasGross ? null : tareRaw,
         gross_datetime: hasGross ? grossDatetime : null,
         tare_datetime: hasGross ? null : tareDatetime,
-        scale_device: SCALE_DEVICES[deviceId].name,
+        scale_device: resolveScaleDeviceLabel(),
+        manual_weight_reason: resolveManualReasonForStep(slotsOnStep),
         operator_id: null,
         operator_name: displayName,
         status: 'open',
@@ -623,6 +703,16 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setError(validation);
       return;
     }
+    const slotsOnStep: Array<'gross' | 'tare'> = [];
+    if (editability.grossEditable) {
+      slotsOnStep.push('gross');
+    }
+    if (editability.tareEditable) {
+      slotsOnStep.push('tare');
+    }
+    if (!validateManualReasonForStep(slotsOnStep)) {
+      return;
+    }
 
     const now = new Date().toISOString();
     const net = calcNetWeight(grossWeight!, tareWeight!);
@@ -649,21 +739,21 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       photo_entry_path: null,
       photo_exit_path: null,
     };
-
-    // Dual complete: do not overwrite non-empty site/scale fields; best-effort fill if null
-    const existingSiteId = completingTicket.site_id;
-    const existingScaleId = completingTicket.scale_id;
-    const existingScaleRole = completingTicket.scale_role;
-    if (!existingSiteId || !existingScaleId || !existingScaleRole) {
-      const scaleFields = ticketScaleFieldsFromRuntime();
-      if (!scaleFields) {
-        setError('Площадка/комплект весов не инициализированы');
-        return;
-      }
-      if (!existingSiteId) updates.site_id = scaleFields.site_id;
-      if (!existingScaleId) updates.scale_id = scaleFields.scale_id;
-      if (!existingScaleRole) updates.scale_role = scaleFields.scale_role;
+    const manualReasonForStep = resolveManualReasonForStep(slotsOnStep);
+    if (manualReasonForStep !== null) {
+      updates.manual_weight_reason = manualReasonForStep;
+    } else if (manualWeightReasonTouched) {
+      updates.manual_weight_reason = manualWeightReason.trim() || null;
     }
+
+    const scaleFields = ticketScaleFieldsFromRuntime();
+    if (!scaleFields) {
+      setError('Площадка/комплект весов не инициализированы');
+      return;
+    }
+    updates.site_id = scaleFields.site_id;
+    updates.scale_id = scaleFields.scale_id;
+    updates.scale_role = scaleFields.scale_role;
 
     // Only write weight meta for slots that were editable (new on this step)
     if (editability.grossEditable) {
@@ -688,11 +778,16 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       (editability.grossEditable && grossSource === 'instrument') ||
       (editability.tareEditable && tareSource === 'instrument');
     if (instrumentOnStep) {
-      updates.scale_device = SCALE_DEVICES[deviceId].name;
+      updates.scale_device = resolveScaleDeviceLabel();
     }
 
     setSaving(true);
     try {
+      logger.scaleRuntime.info(
+        'Сохранение дозавершения с источниками веса',
+        buildScaleRuntimeContext('save_dual_complete'),
+        { gross_source: grossSource, tare_source: tareSource },
+      );
       const ticket = TicketStorage.update(completingTicket.id, updates, {
         expectedVersion: completingTicket.version ?? 1,
       });
@@ -888,6 +983,20 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <div className="sm:col-span-2">
               <label className={labelClass}>Примечание</label>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Дополнительная информация" className={`${inputClass} resize-none`} />
+            </div>
+            <div className="sm:col-span-2">
+              <label className={labelClass}>
+                Причина ручного ввода веса {appSettings.manual_weight_reason_policy === 'required' ? '*' : '(опционально)'}
+              </label>
+              <input
+                value={manualWeightReason}
+                onChange={(e) => {
+                  setManualWeightReason(e.target.value);
+                  setManualWeightReasonTouched(true);
+                }}
+                placeholder="Например: сбой подключения, ручной контроль"
+                className={inputClass}
+              />
             </div>
           </div>
         </div>
@@ -1122,12 +1231,17 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           onCapture={handleInstrumentCapture}
           label={captureLabel}
           capturedWeight={highlightPhase === 'gross' ? grossWeight : tareWeight}
-          deviceId={deviceId}
-          onDeviceChange={handleDeviceChange}
+          activeScale={activeScale}
           stableMode={appSettings.stable_mode}
           onUnstableCapture={() => {
             setUnstableWarning('Зафиксирован нестабильный вес.');
             window.setTimeout(() => setUnstableWarning(null), 4000);
+          }}
+          onUnstableBlocked={() => {
+            logger.scaleRuntime.warn(
+              'Блокировка фиксации нестабильного веса',
+              buildScaleRuntimeContext('unstable_capture_blocked', 'unstable_weight_blocked'),
+            );
           }}
         />
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

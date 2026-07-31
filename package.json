@@ -15,7 +15,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:server": "python3 -m pytest server/tests -q"
+    "test:server": "python3 -m pytest server/tests -q",
+    "test:scale-runtime": "vitest run src/lib/__tests__/scale-runtime-client.test.ts src/lib/__tests__/weighing-scale-runtime-flow.test.ts src/lib/__tests__/stable-mode-matrix.test.ts src/lib/__tests__/manual-weight-reason.test.ts",
+    "test:scale-parity": "vitest run src/lib/__tests__/scale-adapters-parity.test.ts src/lib/__tests__/scale-adapters-contract.test.ts src/lib/__tests__/scale-adapters-builtins.test.ts src/lib/__tests__/generic-regex-contract.test.ts",
+    "test:scale-server": "python3 -m pytest server/tests/test_scale_api_contract.py server/tests/test_scale_api_security.py server/tests/test_scale_api_guard.py server/tests/test_scale_runtime_switch.py server/tests/test_scale_runtime_registry.py server/tests/test_scale_adapter_parity.py server/tests/test_scale_registry_contract.py server/tests/test_scale_registry_generic_regex.py server/tests/test_scale_integrity.py server/tests/test_serial_backend_transport.py -q"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",

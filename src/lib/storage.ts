@@ -6,6 +6,7 @@ import { ticketImportKey } from './import-keys';
 import { normalizeWeighingMode, normalizeWeightSource, type WeighingMode } from './weighing-mode';
 import { normalizeScaleDeviceId, type ScaleDeviceId } from './scales';
 import { logger } from './logger';
+import type { ParserDraft, ScaleTransport, SerialDraft, TcpDraft } from './scale-adapters/contract';
 
 export type WeightSource = 'manual' | 'instrument' | 'dictionary' | 'default';
 export type TicketStatus = 'open' | 'completed';
@@ -20,7 +21,11 @@ export type SwitchReason = 'repair' | 'cleaning' | 'verification' | 'other';
 export type { WeighingMode, ScaleDeviceId };
 
 export interface ScaleConnectionJson {
+  transport: ScaleTransport;
   device_id: ScaleDeviceId | null;
+  serial?: SerialDraft;
+  tcp?: TcpDraft;
+  parser?: ParserDraft;
 }
 
 export interface Site {
@@ -98,6 +103,7 @@ export interface WeighingTicket {
   gross_datetime: string | null;
   tare_datetime: string | null;
   scale_device: string;
+  manual_weight_reason?: string | null;
   operator_id: string | null;
   operator_name: string;
   status: TicketStatus;
@@ -346,6 +352,7 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     site_id: normalizeNullableString(ticket.site_id),
     scale_id: normalizeNullableString(ticket.scale_id),
     scale_role: normalizeScaleRole(ticket.scale_role),
+    manual_weight_reason: normalizeNullableString(ticket.manual_weight_reason),
     photo_entry_path:
       ticket.photo_entry_path === undefined || ticket.photo_entry_path === null
         ? null
@@ -728,6 +735,7 @@ export interface AppSettings {
   tara_default: number;
   driver_input_mode: DriverInputMode;
   scale_device_id: ScaleDeviceId;
+  manual_weight_reason_policy: 'optional' | 'required';
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -762,6 +770,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   tara_default: 0,
   driver_input_mode: 'vehicle',
   scale_device_id: 'microsim-m0601',
+  manual_weight_reason_policy: 'optional',
 };
 
 export const DRIVER_INPUT_MODE_LABELS: Record<DriverInputMode, string> = {
@@ -835,6 +844,8 @@ export const SettingsStorage = {
       tara_default: parseNumber(stored.tara_default, DEFAULT_APP_SETTINGS.tara_default),
       driver_input_mode: normalizeDriverInputMode(stored.driver_input_mode),
       scale_device_id: normalizeScaleDeviceId(stored.scale_device_id),
+      manual_weight_reason_policy:
+        stored.manual_weight_reason_policy === 'required' ? 'required' : 'optional',
     };
   },
 
@@ -849,6 +860,8 @@ export const SettingsStorage = {
       scale_device_id: normalizeScaleDeviceId(
         updates.scale_device_id ?? current.scale_device_id,
       ),
+      manual_weight_reason_policy:
+        updates.manual_weight_reason_policy === 'required' ? 'required' : 'optional',
     };
     const flat: Record<string, string> = {
       org_name: next.org_name,
@@ -882,6 +895,7 @@ export const SettingsStorage = {
       tara_default: String(next.tara_default),
       driver_input_mode: next.driver_input_mode,
       scale_device_id: next.scale_device_id,
+      manual_weight_reason_policy: next.manual_weight_reason_policy,
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
@@ -1035,6 +1049,12 @@ function normalizeScaleSetValue(raw: unknown): ScaleSet | null {
   if (raw === 'primary' || raw === 'spare') return raw;
   return null;
 }
+const BUILTIN_ADAPTER_IDS = new Set<ScaleDeviceId>([
+  'microsim-m0601',
+  'newton',
+  'cas',
+  'midl-mi-vda',
+]);
 
 function normalizeAnprModeValue(raw: unknown): AnprMode | null {
   if (raw === 'enabled' || raw === 'disabled_by_configuration' || raw === 'failed') {
@@ -1052,13 +1072,57 @@ function normalizeSwitchReasonValue(raw: unknown): SwitchReason | null {
 
 function normalizeScaleConnectionValue(raw: unknown): ScaleConnectionJson {
   if (!raw || typeof raw !== 'object') {
-    return { device_id: null };
+    return { transport: 'web_serial', device_id: null };
   }
-  const deviceRaw = (raw as { device_id?: unknown }).device_id;
-  if (deviceRaw === null || deviceRaw === undefined || deviceRaw === '') {
-    return { device_id: null };
+  const source = raw as {
+    transport?: unknown;
+    device_id?: unknown;
+    serial?: unknown;
+    tcp?: unknown;
+    parser?: unknown;
+  };
+  const transport: ScaleTransport =
+    source.transport === 'serial_backend' || source.transport === 'tcp_client'
+      ? source.transport
+      : 'web_serial';
+  const deviceRaw = source.device_id;
+  const deviceId =
+    deviceRaw === null || deviceRaw === undefined || deviceRaw === ''
+      ? null
+      : normalizeScaleDeviceId(String(deviceRaw));
+  const connection: ScaleConnectionJson = {
+    transport,
+    device_id: deviceId,
+  };
+  if (source.serial && typeof source.serial === 'object') {
+    connection.serial = source.serial as SerialDraft;
   }
-  return { device_id: normalizeScaleDeviceId(String(deviceRaw)) };
+  if (source.tcp && typeof source.tcp === 'object') {
+    connection.tcp = source.tcp as TcpDraft;
+  }
+  if (source.parser && typeof source.parser === 'object') {
+    connection.parser = source.parser as ParserDraft;
+  }
+  return connection;
+}
+
+function normalizeStoredAdapterId(
+  raw: unknown,
+  connection: ScaleConnectionJson,
+): string {
+  if (typeof raw === 'string' && BUILTIN_ADAPTER_IDS.has(raw as ScaleDeviceId)) {
+    return raw;
+  }
+  if (raw === 'generic-regex') {
+    return 'generic-regex';
+  }
+  if (raw === 'web_serial' && connection.device_id) {
+    return connection.device_id;
+  }
+  if (typeof raw === 'string' && raw) {
+    return raw;
+  }
+  return 'web_serial';
 }
 
 function normalizeSite(row: unknown): Site | null {
@@ -1077,12 +1141,17 @@ function normalizeScale(row: unknown): Scale | null {
   const r = row as Record<string, unknown>;
   const role = normalizeScaleSetValue(r.role);
   if (typeof r.id !== 'string' || !r.id || typeof r.site_id !== 'string' || !role) return null;
+  const connection = normalizeScaleConnectionValue(r.connection);
+  const adapterId = normalizeStoredAdapterId(r.adapter_id, connection);
+  if (BUILTIN_ADAPTER_IDS.has(adapterId as ScaleDeviceId)) {
+    connection.device_id = adapterId as ScaleDeviceId;
+  }
   return {
     id: r.id,
     site_id: r.site_id,
     role,
-    adapter_id: typeof r.adapter_id === 'string' ? r.adapter_id : 'web_serial',
-    connection: normalizeScaleConnectionValue(r.connection),
+    adapter_id: adapterId,
+    connection,
     name: typeof r.name === 'string' ? r.name : '',
     created_at: typeof r.created_at === 'string' ? r.created_at : new Date().toISOString(),
   };

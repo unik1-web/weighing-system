@@ -1,0 +1,49 @@
+{
+  "cases": [
+    {
+      "name": "preview-validated",
+      "adapter_id": "generic-regex",
+      "connection": {
+        "transport": "serial_backend",
+        "device_id": null,
+        "parser": {
+          "kind": "regex",
+          "pattern": "^(ST|US)\\s+(-?\\d+[\\.,]?\\d*)\\s*(kg)?$",
+          "flags": "i",
+          "weight_group": 2,
+          "stability_group": 1,
+          "stable_values": ["ST"],
+          "unstable_values": ["US"],
+          "unit_group": 3,
+          "test_frame": "ST 25340 kg"
+        }
+      },
+      "raw": "ST 25340 kg",
+      "expected": {
+        "value": 25340,
+        "stable": true,
+        "raw": "ST 25340 kg"
+      }
+    },
+    {
+      "name": "runtime-mismatch",
+      "adapter_id": "generic-regex",
+      "connection": {
+        "transport": "serial_backend",
+        "device_id": null,
+        "parser": {
+          "kind": "regex",
+          "pattern": "^(ST|US)\\s+(-?\\d+[\\.,]?\\d*)\\s*(kg)?$",
+          "flags": "i",
+          "weight_group": 2,
+          "stability_group": 1,
+          "stable_values": ["ST"],
+          "unstable_values": ["US"],
+          "unit_group": 3
+        }
+      },
+      "raw": "XX invalid frame",
+      "expected": null
+    }
+  ]
+}

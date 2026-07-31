@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
 import {
   applyScaleSetSwitch,
+  DEFAULT_SITE_ID,
   SWITCH_REASON_LABELS,
   SWITCH_REASONS,
 } from '@/lib/site';
-import type { ScaleSet, SwitchReason } from '@/lib/storage';
+import { ScaleStorage, type ScaleConnectionJson, type ScaleSet, type SwitchReason } from '@/lib/storage';
 import { AlertCircle, ArrowLeftRight, CheckCircle2, X } from 'lucide-react';
 
 interface Props {
@@ -19,6 +20,19 @@ interface Props {
 const inputClass =
   'w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500';
 const labelClass = 'mb-1 block text-xs font-medium text-slate-600';
+
+function hasWorkingConfig(connection: ScaleConnectionJson): boolean {
+  if (connection.transport === 'web_serial') {
+    return Boolean(connection.device_id);
+  }
+  if (connection.transport === 'serial_backend') {
+    return Boolean(connection.serial?.port);
+  }
+  if (connection.transport === 'tcp_client') {
+    return Boolean(connection.tcp?.host && connection.tcp?.port);
+  }
+  return false;
+}
 
 export function ScaleSetSwitchWizard({
   open,
@@ -38,6 +52,11 @@ export function ScaleSetSwitchWizard({
   const [finalConfirm, setFinalConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const targetScale = useMemo(
+    () => (targetSet ? ScaleStorage.getByRole(DEFAULT_SITE_ID, targetSet) : null),
+    [targetSet],
+  );
+  const targetManualOnly = targetScale ? !hasWorkingConfig(targetScale.connection) : false;
 
   const reset = () => {
     setStepConfirm(false);
@@ -92,7 +111,11 @@ export function ScaleSetSwitchWizard({
       });
       setSaving(false);
       if (!result.applied) {
-        setError('Переключение не выполнено (комплект уже активен или данные некорректны).');
+        if (result.from_set && result.to_set && result.from_set === result.to_set) {
+          setError('Выбранный комплект уже активен. Переключение не требуется.');
+        } else {
+          setError('Переключение не выполнено: проверьте входные данные.');
+        }
         return;
       }
       reset();
@@ -215,6 +238,12 @@ export function ScaleSetSwitchWizard({
             <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               <AlertCircle size={16} className="mt-0.5 shrink-0" />
               {error}
+            </div>
+          )}
+          {targetManualOnly && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <AlertCircle size={16} className="mt-0.5 shrink-0" />
+              Для выбранного комплекта автосъём недоступен. После переключения будет доступен ручной ввод.
             </div>
           )}
         </div>

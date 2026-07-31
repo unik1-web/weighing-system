@@ -59,6 +59,60 @@ beforeEach(() => {
 });
 
 describe('site domain unit', () => {
+  it('TC-E2E-01: legacy scale_device_id migrates to primary canonical adapter', () => {
+    ensureDefaultSiteAndScales({ ...DEFAULT_APP_SETTINGS, scale_device_id: 'cas' });
+    const primary = ScaleStorage.getByRole(DEFAULT_SITE_ID, 'primary');
+    expect(primary?.adapter_id).toBe('cas');
+    expect(primary?.connection.transport).toBe('web_serial');
+    expect(primary?.connection.device_id).toBe('cas');
+  });
+
+  it('TC-E2E-02: valid primary is source of truth over legacy mirror', () => {
+    const now = new Date().toISOString();
+    SiteStorage.upsert({
+      id: DEFAULT_SITE_ID,
+      name: 'Площадка по умолчанию',
+      created_at: now,
+    });
+    ScaleStorage.upsert({
+      id: 'primary-1',
+      site_id: DEFAULT_SITE_ID,
+      role: 'primary',
+      adapter_id: 'newton',
+      connection: { transport: 'web_serial', device_id: 'newton' },
+      name: 'Основные',
+      created_at: now,
+    });
+    ScaleStorage.upsert({
+      id: 'spare-1',
+      site_id: DEFAULT_SITE_ID,
+      role: 'spare',
+      adapter_id: 'web_serial',
+      connection: { transport: 'web_serial', device_id: null },
+      name: 'Резервные',
+      created_at: now,
+    });
+    SiteRuntimeStorage.upsert({
+      site_id: DEFAULT_SITE_ID,
+      active_scale_set: 'primary',
+      camera_mode: 'primary',
+      anpr_mode: 'enabled',
+      last_switch_reason: null,
+      last_switch_comment: null,
+      last_switch_operator_name: null,
+      last_switch_operator_id: null,
+      last_switch_at: null,
+      updated_at: now,
+    });
+
+    const result = ensureDefaultSiteAndScales({ ...DEFAULT_APP_SETTINGS, scale_device_id: 'cas' });
+    const primary = ScaleStorage.getByRole(DEFAULT_SITE_ID, 'primary');
+    expect(result.status).toBe('skipped');
+    expect(primary?.adapter_id).toBe('newton');
+    expect(primary?.connection.device_id).toBe('newton');
+    expect(SettingsStorage.getAppSettings().scale_device_id).toBe('newton');
+  });
+
   it('TC-UNIT: constants and normalizeSwitchReason', () => {
     expect(DEFAULT_SITE_ID).toBe('default-site');
     expect(WEB_SERIAL_ADAPTER_ID).toBe('web_serial');
@@ -68,10 +122,19 @@ describe('site domain unit', () => {
   });
 
   it('TC-UNIT: parseScaleConnection / buildScaleConnection', () => {
-    expect(parseScaleConnection({ device_id: 'newton' })).toEqual({ device_id: 'newton' });
-    expect(parseScaleConnection({ device_id: null })).toEqual({ device_id: null });
-    expect(parseScaleConnection({ device_id: 'bad' })).toEqual({ device_id: 'microsim-m0601' });
-    expect(buildScaleConnection(null)).toEqual({ device_id: null });
+    expect(parseScaleConnection({ device_id: 'newton' })).toEqual({
+      transport: 'web_serial',
+      device_id: 'newton',
+    });
+    expect(parseScaleConnection({ device_id: null })).toEqual({
+      transport: 'web_serial',
+      device_id: null,
+    });
+    expect(parseScaleConnection({ device_id: 'bad' })).toEqual({
+      transport: 'web_serial',
+      device_id: 'microsim-m0601',
+    });
+    expect(buildScaleConnection(null)).toEqual({ transport: 'web_serial', device_id: null });
   });
 
   it('TC-UNIT: normalizeTicket site_id/scale_id missing → null', () => {
