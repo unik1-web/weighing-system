@@ -13,7 +13,56 @@ export type ReoStatus = 'pending' | 'sent';
 export type DriverInputMode = 'vehicle' | 'all' | 'free';
 export type PlateSource = 'anpr' | 'operator' | 'directory';
 export type ScaleRole = 'primary' | 'spare';
+export type ScaleSet = 'primary' | 'spare';
+export type CameraMode = 'primary' | 'spare';
+export type AnprMode = 'enabled' | 'disabled_by_configuration' | 'failed';
+export type SwitchReason = 'repair' | 'cleaning' | 'verification' | 'other';
 export type { WeighingMode, ScaleDeviceId };
+
+export interface ScaleConnectionJson {
+  device_id: ScaleDeviceId | null;
+}
+
+export interface Site {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface Scale {
+  id: string;
+  site_id: string;
+  role: ScaleSet;
+  adapter_id: string;
+  connection: ScaleConnectionJson;
+  name?: string;
+  created_at: string;
+}
+
+export interface SiteRuntime {
+  site_id: string;
+  active_scale_set: ScaleSet;
+  camera_mode: CameraMode;
+  anpr_mode: AnprMode;
+  last_switch_reason: SwitchReason | null;
+  last_switch_comment: string | null;
+  last_switch_operator_name: string | null;
+  last_switch_operator_id: string | null;
+  last_switch_at: string | null;
+  updated_at: string;
+}
+
+export interface ScaleSwitchJournalEntry {
+  id: string;
+  site_id: string;
+  from_set: ScaleSet;
+  to_set: ScaleSet;
+  reason: SwitchReason;
+  comment: string | null;
+  operator_name: string;
+  operator_id: string | null;
+  switched_at: string;
+}
 
 export function normalizeDriverInputMode(raw: string | null | undefined): DriverInputMode {
   if (raw === 'vehicle' || raw === 'all' || raw === 'free') return raw;
@@ -60,6 +109,8 @@ export interface WeighingTicket {
   weighing_mode?: WeighingMode;
   version?: number;
   plate_source?: PlateSource | null;
+  site_id?: string | null;
+  scale_id?: string | null;
   scale_role?: ScaleRole | null;
   photo_entry_path?: string | null;
   photo_exit_path?: string | null;
@@ -105,6 +156,10 @@ const STORAGE_KEYS = {
   TICKETS: 'app_weighing_tickets',
   TICKET_AUDIT: 'app_ticket_audit',
   VEHICLE_DRIVERS: 'app_vehicle_drivers',
+  SITES: 'app_sites',
+  SCALES: 'app_scales',
+  SITE_RUNTIME: 'app_site_runtime',
+  SCALE_SWITCH_JOURNAL: 'app_scale_switch_journal',
   VEHICLES: 'app_vehicles',
   DRIVERS: 'app_drivers',
   CARGOS: 'app_cargos',
@@ -275,6 +330,11 @@ function normalizeScaleRole(raw: unknown): ScaleRole | null {
   return null;
 }
 
+function normalizeNullableString(raw: unknown): string | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  return String(raw);
+}
+
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
   const next: WeighingTicket = {
     ...ticket,
@@ -283,6 +343,8 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     gross_source: normalizeWeightSource(ticket.gross_source as string),
     tare_source: normalizeWeightSource(ticket.tare_source as string),
     plate_source: normalizePlateSource(ticket.plate_source),
+    site_id: normalizeNullableString(ticket.site_id),
+    scale_id: normalizeNullableString(ticket.scale_id),
     scale_role: normalizeScaleRole(ticket.scale_role),
     photo_entry_path:
       ticket.photo_entry_path === undefined || ticket.photo_entry_path === null
@@ -968,6 +1030,270 @@ export function updateVehiclePreferencesFromTrip(
 
   return DictionaryStorage.update('vehicles', vehicle.id, updates);
 }
+
+function normalizeScaleSetValue(raw: unknown): ScaleSet | null {
+  if (raw === 'primary' || raw === 'spare') return raw;
+  return null;
+}
+
+function normalizeAnprModeValue(raw: unknown): AnprMode | null {
+  if (raw === 'enabled' || raw === 'disabled_by_configuration' || raw === 'failed') {
+    return raw;
+  }
+  return null;
+}
+
+function normalizeSwitchReasonValue(raw: unknown): SwitchReason | null {
+  if (raw === 'repair' || raw === 'cleaning' || raw === 'verification' || raw === 'other') {
+    return raw;
+  }
+  return null;
+}
+
+function normalizeScaleConnectionValue(raw: unknown): ScaleConnectionJson {
+  if (!raw || typeof raw !== 'object') {
+    return { device_id: null };
+  }
+  const deviceRaw = (raw as { device_id?: unknown }).device_id;
+  if (deviceRaw === null || deviceRaw === undefined || deviceRaw === '') {
+    return { device_id: null };
+  }
+  return { device_id: normalizeScaleDeviceId(String(deviceRaw)) };
+}
+
+function normalizeSite(row: unknown): Site | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  if (typeof r.id !== 'string' || !r.id) return null;
+  return {
+    id: r.id,
+    name: typeof r.name === 'string' ? r.name : '',
+    created_at: typeof r.created_at === 'string' ? r.created_at : new Date().toISOString(),
+  };
+}
+
+function normalizeScale(row: unknown): Scale | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const role = normalizeScaleSetValue(r.role);
+  if (typeof r.id !== 'string' || !r.id || typeof r.site_id !== 'string' || !role) return null;
+  return {
+    id: r.id,
+    site_id: r.site_id,
+    role,
+    adapter_id: typeof r.adapter_id === 'string' ? r.adapter_id : 'web_serial',
+    connection: normalizeScaleConnectionValue(r.connection),
+    name: typeof r.name === 'string' ? r.name : '',
+    created_at: typeof r.created_at === 'string' ? r.created_at : new Date().toISOString(),
+  };
+}
+
+function normalizeSiteRuntime(row: unknown): SiteRuntime | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const active = normalizeScaleSetValue(r.active_scale_set);
+  const camera = normalizeScaleSetValue(r.camera_mode);
+  const anpr = normalizeAnprModeValue(r.anpr_mode);
+  if (typeof r.site_id !== 'string' || !r.site_id || !active || !camera || !anpr) return null;
+  return {
+    site_id: r.site_id,
+    active_scale_set: active,
+    camera_mode: camera,
+    anpr_mode: anpr,
+    last_switch_reason: normalizeSwitchReasonValue(r.last_switch_reason),
+    last_switch_comment:
+      r.last_switch_comment === undefined || r.last_switch_comment === null || r.last_switch_comment === ''
+        ? null
+        : String(r.last_switch_comment),
+    last_switch_operator_name:
+      r.last_switch_operator_name === undefined || r.last_switch_operator_name === null
+        ? null
+        : String(r.last_switch_operator_name),
+    last_switch_operator_id:
+      r.last_switch_operator_id === undefined || r.last_switch_operator_id === null || r.last_switch_operator_id === ''
+        ? null
+        : String(r.last_switch_operator_id),
+    last_switch_at:
+      r.last_switch_at === undefined || r.last_switch_at === null || r.last_switch_at === ''
+        ? null
+        : String(r.last_switch_at),
+    updated_at: typeof r.updated_at === 'string' ? r.updated_at : new Date().toISOString(),
+  };
+}
+
+function normalizeJournalEntry(row: unknown): ScaleSwitchJournalEntry | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const fromSet = normalizeScaleSetValue(r.from_set);
+  const toSet = normalizeScaleSetValue(r.to_set);
+  const reason = normalizeSwitchReasonValue(r.reason);
+  if (typeof r.id !== 'string' || !r.id || typeof r.site_id !== 'string' || !fromSet || !toSet || !reason) {
+    return null;
+  }
+  return {
+    id: r.id,
+    site_id: r.site_id,
+    from_set: fromSet,
+    to_set: toSet,
+    reason,
+    comment:
+      r.comment === undefined || r.comment === null || r.comment === ''
+        ? null
+        : String(r.comment),
+    operator_name: typeof r.operator_name === 'string' ? r.operator_name : '',
+    operator_id:
+      r.operator_id === undefined || r.operator_id === null || r.operator_id === ''
+        ? null
+        : String(r.operator_id),
+    switched_at: typeof r.switched_at === 'string' ? r.switched_at : new Date().toISOString(),
+  };
+}
+
+/** Sites (sync: app_sites). */
+export const SiteStorage = {
+  getAll(): Site[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.SITES);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeSite).filter((row): row is Site => row !== null);
+    } catch {
+      return [];
+    }
+  },
+
+  getById(id: string): Site | null {
+    return SiteStorage.getAll().find((row) => row.id === id) ?? null;
+  },
+
+  upsert(site: Site): Site {
+    const rows = SiteStorage.getAll();
+    const index = rows.findIndex((row) => row.id === site.id);
+    if (index === -1) rows.push(site);
+    else rows[index] = site;
+    persist(STORAGE_KEYS.SITES, JSON.stringify(rows));
+    return site;
+  },
+};
+
+/** Scale sets on a site (sync: app_scales). One primary and one spare per site. */
+export const ScaleStorage = {
+  getAll(): Scale[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.SCALES);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeScale).filter((row): row is Scale => row !== null);
+    } catch {
+      return [];
+    }
+  },
+
+  getBySite(siteId: string): Scale[] {
+    return ScaleStorage.getAll().filter((row) => row.site_id === siteId);
+  },
+
+  getByRole(siteId: string, role: ScaleSet): Scale | null {
+    return ScaleStorage.getBySite(siteId).find((row) => row.role === role) ?? null;
+  },
+
+  upsert(scale: Scale): Scale {
+    const rows = ScaleStorage.getAll();
+    const byId = rows.findIndex((row) => row.id === scale.id);
+    if (byId !== -1) {
+      rows[byId] = scale;
+    } else {
+      const byRole = rows.findIndex(
+        (row) => row.site_id === scale.site_id && row.role === scale.role,
+      );
+      if (byRole !== -1) rows[byRole] = scale;
+      else rows.push(scale);
+    }
+    persist(STORAGE_KEYS.SCALES, JSON.stringify(rows));
+    return scale;
+  },
+};
+
+/** Active scale runtime (sync: app_site_runtime). */
+export const SiteRuntimeStorage = {
+  getAll(): SiteRuntime[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.SITE_RUNTIME);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeSiteRuntime).filter((row): row is SiteRuntime => row !== null);
+    } catch {
+      return [];
+    }
+  },
+
+  get(siteId?: string): SiteRuntime | null {
+    const rows = SiteRuntimeStorage.getAll();
+    if (siteId) return rows.find((row) => row.site_id === siteId) ?? null;
+    return rows[0] ?? null;
+  },
+
+  upsert(runtime: SiteRuntime): SiteRuntime {
+    const rows = SiteRuntimeStorage.getAll();
+    const index = rows.findIndex((row) => row.site_id === runtime.site_id);
+    if (index === -1) rows.push(runtime);
+    else rows[index] = runtime;
+    persist(STORAGE_KEYS.SITE_RUNTIME, JSON.stringify(rows));
+    return runtime;
+  },
+
+  /** Test/helper: clear all runtime rows (does not remove sites/scales). */
+  clear(): void {
+    persist(STORAGE_KEYS.SITE_RUNTIME, JSON.stringify([]));
+  },
+};
+
+/** Append-only scale switch journal (sync: app_scale_switch_journal). */
+export const ScaleSwitchJournalStorage = {
+  getAll(siteId?: string): ScaleSwitchJournalEntry[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.SCALE_SWITCH_JOURNAL);
+    let rows: ScaleSwitchJournalEntry[] = [];
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          rows = parsed
+            .map(normalizeJournalEntry)
+            .filter((row): row is ScaleSwitchJournalEntry => row !== null);
+        }
+      } catch {
+        rows = [];
+      }
+    }
+    if (siteId) rows = rows.filter((row) => row.site_id === siteId);
+    return rows.sort(
+      (a, b) => new Date(b.switched_at).getTime() - new Date(a.switched_at).getTime(),
+    );
+  },
+
+  append(entry: ScaleSwitchJournalEntry): ScaleSwitchJournalEntry {
+    const stored = localStorage.getItem(STORAGE_KEYS.SCALE_SWITCH_JOURNAL);
+    let rows: ScaleSwitchJournalEntry[] = [];
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          rows = parsed
+            .map(normalizeJournalEntry)
+            .filter((row): row is ScaleSwitchJournalEntry => row !== null);
+        }
+      } catch {
+        rows = [];
+      }
+    }
+    rows.push(entry);
+    persist(STORAGE_KEYS.SCALE_SWITCH_JOURNAL, JSON.stringify(rows));
+    return entry;
+  },
+};
 
 /**
  * Learning after ticket reaches completed: upsert vehicle_drivers + preferred_*.

@@ -39,7 +39,8 @@ Flask API  ──►  config.ini          (настройки)
 
 | Путь | Назначение |
 |------|------------|
-| `lib/storage.ts` | Модели, localStorage, настройки; тикет: `weighing_mode`, `version`, audit stubs; `VehicleDriversStorage` (`app_vehicle_drivers`); `preferred_*` на ТС |
+| `lib/storage.ts` | Модели, localStorage, настройки; тикет: `weighing_mode`, `version`, `site_id`/`scale_id`/`scale_role`; `VehicleDriversStorage`; Site/Scale/Runtime/Journal фасады |
+| `lib/site.ts` | Площадка: миграция default site/primary/spare, switch, зеркало `scale_device_id`, поля талона |
 | `lib/weighing-mode.ts` | Pure-логика режимов single/dual и источника веса (`WeightSource`, автотара, фильтр, сводка) |
 | `lib/vehicle-resolve.ts` | Pure resolve реквизитов по госномеру, матрица водителя, datalist, `plate_source` |
 | `lib/storage-sync.ts` | Синхронизация с API |
@@ -50,7 +51,9 @@ Flask API  ──►  config.ini          (настройки)
 | `lib/import-keys.ts` | Ключ дедупликации импорта |
 | `components/*ImportView.tsx` | Импорт Vescom / Metra / WA |
 | `components/PrintAct.tsx` | Макеты «акт» и «талон» |
-| `components/SettingsView.tsx` | Организация, РЭО, импорт, UI, режимы взвешивания, режим ввода водителя |
+| `components/SettingsView.tsx` | Организация, РЭО, импорт, UI, режимы, площадка/комплекты (wizard переключения) |
+| `components/SiteScalesSettingsSection.tsx` | Секция площадки, journal, вход в переключение |
+| `components/ScaleSetSwitchWizard.tsx` | Wizard spare / диалог primary |
 | `components/WeighingJournal.tsx` | Журнал, карточка тикета (модалка), CSV с источниками веса и устройством |
 
 ## Нормализация справочников
@@ -94,6 +97,15 @@ Flask API  ──►  config.ini          (настройки)
 - Настройки: `driver_input_mode`, `scale_device_id`.
 - Audit stubs тикета: `plate_source`, `scale_role`, `photo_entry_path`, `photo_exit_path` (nullable).
 - Предпочтения ТС в payload карточки: `preferred_driver_name`, `preferred_cargo_name`, `preferred_shipper_name`.
+
+## Площадка: основные / резервные весы (этап 4)
+
+- Сущности: `sites`, `scales` (primary/spare, `adapter_id=web_serial`, `connection.device_id`), `site_runtime`, `scale_switch_journal`.
+- Sync-ключи: `app_sites`, `app_scales`, `app_site_runtime`, `app_scale_switch_journal`.
+- Миграция клиента: `ensureDefaultSiteAndScales` — default site, primary из `scale_device_id`, spare-stub, runtime на primary.
+- Переключение только из настроек (wizard); на форме — индикация «Весы: основные/резервные».
+- Новые талоны из формы пишут `site_id` / `scale_id` / `scale_role`; dual complete не затирает; без runtime — hard-fail.
+- `AppSettings.scale_device_id` — зеркало device активного комплекта; SoT — `scales.connection`.
 
 ## Весы (Web Serial)
 

@@ -25,6 +25,7 @@ import {
 } from '@/lib/storage-sync';
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
+import { SiteScalesSettingsSection } from '@/components/SiteScalesSettingsSection';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 const NAV_TAB_OPTIONS: NavTabMode[] = ['full', 'compact'];
@@ -442,6 +443,8 @@ export function SettingsView({ onSaved }: Props) {
           </div>
         </div>
       </div>
+
+      <SiteScalesSettingsSection />
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">

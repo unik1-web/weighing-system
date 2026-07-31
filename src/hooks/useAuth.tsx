@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import { UserStorage, SessionStorage, ProfileStorage, initializeStorage, normalizeVehicleDictionaryPlates, type Session as LocalSession } from '@/lib/storage';
+import { UserStorage, SessionStorage, ProfileStorage, SettingsStorage, initializeStorage, normalizeVehicleDictionaryPlates, type Session as LocalSession } from '@/lib/storage';
 import { loadStorageFromServer, DICTIONARIES_UPDATED_EVENT } from '@/lib/storage-sync';
+import { ensureDefaultSiteAndScales } from '@/lib/site';
 import { logger } from '@/lib/logger';
 
 export type UserRole = 'user' | 'admin';
@@ -44,6 +45,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       initializeStorage();
+
+      try {
+        ensureDefaultSiteAndScales(SettingsStorage.getAppSettings());
+      } catch (err) {
+        logger.error('site', 'Не удалось инициализировать площадку при старте', err);
+      }
 
       const storedSession = SessionStorage.getSession();
       if (storedSession) {

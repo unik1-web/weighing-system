@@ -11,8 +11,8 @@
 | 01 | [01-weighing-modes.md](01-weighing-modes.md) | 1. Режимы single/dual | — | Реализовано (см. `docs/weighing-modes-deploy.md`) |
 | 02 | [02-weight-source.md](02-weight-source.md) | 2. Источник веса | 01 | Реализовано |
 | 03 | [03-vehicle-resolve.md](03-vehicle-resolve.md) | 3. Автоподстановка + водители | 01–02 | Реализовано |
-| 04 | [04-site-primary-spare.md](04-site-primary-spare.md) | 4. Площадка primary/spare | 01–03 | Следующий приоритет |
-| 05 | [05-scale-adapters.md](05-scale-adapters.md) | 5. Адаптеры терминалов | 04 | Параллельно с 04/06 |
+| 04 | [04-site-primary-spare.md](04-site-primary-spare.md) | 4. Площадка primary/spare | 01–03 | Реализовано |
+| 05 | [05-scale-adapters.md](05-scale-adapters.md) | 5. Адаптеры терминалов | 04 | Следующий приоритет (параллельно с 06) |
 | 06 | [06-yearly-db-archive.md](06-yearly-db-archive.md) | 6. Годовая БД / архив | 01–03 | Можно параллельно с 04–05 |
 | 07 | [07-photo-capture.md](07-photo-capture.md) | 7. Фотофиксация | 04 (+05) | Полная сборка |
 | 08 | [08-anpr.md](08-anpr.md) | 8. ANPR | 07 + `anpr_mode` из 04 | Порог релиза ≥ 50% |

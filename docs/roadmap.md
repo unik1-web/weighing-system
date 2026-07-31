@@ -36,7 +36,7 @@
 | Печать, РЭО, отчёты | акт, талон, CSV | `PrintAct`, `reo.ts` |
 | Режимы Vescom (этап 1) | `weighing_mode`, настройки порога/интервала/тары, `version`, зачаток audit | `weighing-mode.ts`, `storage.ts` |
 
-**Нет:** площадка primary/spare; pluggable-адаптеры; камеры и фото; ANPR; полная автоподстановка; годовая ротация БД; полный аудит.
+**Нет:** pluggable-адаптеры; камеры и фото; ANPR; годовая ротация БД; полный аудит.
 
 ---
 
@@ -306,7 +306,9 @@ site_runtime (active_scale_set, switch reason/by/at, camera_mode, anpr_mode)
 
 **Этап 3** (автоподстановка + водители) — выполнен.
 
-**Следующий:** этап 4 — площадка primary/spare ([docs/tasks/04-site-primary-spare.md](tasks/04-site-primary-spare.md)). Постановки: [docs/tasks/](tasks/).
+**Этап 4** (площадка primary/spare) — выполнен.
+
+**Следующий:** этап 5 — адаптеры терминалов ([docs/tasks/05-scale-adapters.md](tasks/05-scale-adapters.md)); параллельно возможен этап 6 ([06-yearly-db-archive.md](tasks/06-yearly-db-archive.md)). Постановки: [docs/tasks/](tasks/).
 
 ---
 

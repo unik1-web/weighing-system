@@ -41,7 +41,25 @@ import {
   resolvePlateSource,
   resolveTripFields,
 } from '@/lib/vehicle-resolve';
+import {
+  SITE_RUNTIME_CHANGED_EVENT,
+  activeScaleSetIndicatorLabel,
+  alignDeviceMirror,
+  getActiveScale,
+  ticketScaleFieldsFromRuntime,
+  updateActiveScaleDevice,
+} from '@/lib/site';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
+
+function resolveFormDeviceId(): ScaleDeviceId {
+  const active = getActiveScale();
+  const fromActive = active?.connection.device_id;
+  if (fromActive) {
+    alignDeviceMirror(active.connection);
+    return normalizeScaleDeviceId(fromActive);
+  }
+  return normalizeScaleDeviceId(SettingsStorage.getAppSettings().scale_device_id);
+}
 
 interface Props {
   onSaved: (ticket: WeighingTicket) => void;
@@ -74,9 +92,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [completingTicket, setCompletingTicket] = useState<WeighingTicket | null>(null);
   const [incompleteRefresh, setIncompleteRefresh] = useState(0);
 
-  const [deviceId, setDeviceId] = useState<ScaleDeviceId>(() =>
-    normalizeScaleDeviceId(SettingsStorage.getAppSettings().scale_device_id),
-  );
+  const [deviceId, setDeviceId] = useState<ScaleDeviceId>(() => resolveFormDeviceId());
+  const [scaleSetLabel, setScaleSetLabel] = useState(() => activeScaleSetIndicatorLabel());
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [vehicleBrand, setVehicleBrand] = useState('');
   const [trailerNumber, setTrailerNumber] = useState('');
@@ -166,13 +183,20 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     const refreshSettings = () => {
       const settings = SettingsStorage.getAppSettings();
       setAppSettings(settings);
-      setDeviceId(normalizeScaleDeviceId(settings.scale_device_id));
+      setDeviceId(resolveFormDeviceId());
+      setScaleSetLabel(activeScaleSetIndicatorLabel());
+    };
+    const onRuntimeChanged = () => {
+      setDeviceId(resolveFormDeviceId());
+      setScaleSetLabel(activeScaleSetIndicatorLabel());
     };
     window.addEventListener('focus', refreshSettings);
     document.addEventListener('visibilitychange', refreshSettings);
+    window.addEventListener(SITE_RUNTIME_CHANGED_EVENT, onRuntimeChanged);
     return () => {
       window.removeEventListener('focus', refreshSettings);
       document.removeEventListener('visibilitychange', refreshSettings);
+      window.removeEventListener(SITE_RUNTIME_CHANGED_EVENT, onRuntimeChanged);
     };
   }, []);
 
@@ -251,8 +275,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   };
 
   const handleDeviceChange = (id: ScaleDeviceId) => {
-    setDeviceId(id);
-    SettingsStorage.updateAppSettings({ scale_device_id: id });
+    const normalized = normalizeScaleDeviceId(id);
+    setDeviceId(normalized);
+    updateActiveScaleDevice(normalized);
   };
 
   const resetFormFields = useCallback(() => {
@@ -434,6 +459,12 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       return;
     }
 
+    const scaleFields = ticketScaleFieldsFromRuntime();
+    if (!scaleFields) {
+      setError('Площадка/комплект весов не инициализированы');
+      return;
+    }
+
     setSaving(true);
     const now = new Date().toISOString();
     const net = calcNetWeight(grossWeight!, tareWeight!);
@@ -470,7 +501,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         weighing_mode: 'single',
         version: 1,
         plate_source: resolvePlateSource(plateKey, vehicles.entries),
-        scale_role: null,
+        site_id: scaleFields.site_id,
+        scale_id: scaleFields.scale_id,
+        scale_role: scaleFields.scale_role,
         photo_entry_path: null,
         photo_exit_path: null,
       });
@@ -504,6 +537,12 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     const validation = validateDualFirstPass({ gross: grossWeight, tare: tareWeight });
     if (validation) {
       setError(validation);
+      return;
+    }
+
+    const scaleFields = ticketScaleFieldsFromRuntime();
+    if (!scaleFields) {
+      setError('Площадка/комплект весов не инициализированы');
       return;
     }
 
@@ -541,7 +580,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         weighing_mode: 'dual',
         version: 1,
         plate_source: resolvePlateSource(plateKey, vehicles.entries),
-        scale_role: null,
+        site_id: scaleFields.site_id,
+        scale_id: scaleFields.scale_id,
+        scale_role: scaleFields.scale_role,
         photo_entry_path: null,
         photo_exit_path: null,
       });
@@ -605,10 +646,24 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       net_weight: net,
       total_amount: amount,
       plate_source: resolvePlateSource(plateKey, vehicles.entries),
-      scale_role: null,
       photo_entry_path: null,
       photo_exit_path: null,
     };
+
+    // Dual complete: do not overwrite non-empty site/scale fields; best-effort fill if null
+    const existingSiteId = completingTicket.site_id;
+    const existingScaleId = completingTicket.scale_id;
+    const existingScaleRole = completingTicket.scale_role;
+    if (!existingSiteId || !existingScaleId || !existingScaleRole) {
+      const scaleFields = ticketScaleFieldsFromRuntime();
+      if (!scaleFields) {
+        setError('Площадка/комплект весов не инициализированы');
+        return;
+      }
+      if (!existingSiteId) updates.site_id = scaleFields.site_id;
+      if (!existingScaleId) updates.scale_id = scaleFields.scale_id;
+      if (!existingScaleRole) updates.scale_role = scaleFields.scale_role;
+    }
 
     // Only write weight meta for slots that were editable (new on this step)
     if (editability.grossEditable) {
@@ -730,6 +785,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
                   Двойное
                 </button>
               </div>
+              <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800">
+                {scaleSetLabel}
+              </span>
               <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
                 Весовщик: {displayName}
               </span>

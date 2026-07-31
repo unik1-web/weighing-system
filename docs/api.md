@@ -23,7 +23,7 @@
 
 Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` \| `all` \| `free`), `scale_device_id`.
 
-В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version` и nullable audit-заготовки `plate_source`, `scale_role`, `photo_entry_path`, `photo_exit_path`; audit — `app_ticket_audit`; история водителей — `app_vehicle_drivers` (частичный POST без ключа `app_ticket_audit` / `app_vehicle_drivers` соответствующие таблицы не очищает).
+В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version` и nullable поля `plate_source`, `site_id`, `scale_id`, `scale_role`, `photo_entry_path`, `photo_exit_path`; audit — `app_ticket_audit`; история водителей — `app_vehicle_drivers`; площадка — `app_sites`, `app_scales`, `app_site_runtime`, `app_scale_switch_journal` (частичный POST без соответствующего ключа таблицу не очищает). `scale_device_id` в config — зеркало device активного комплекта.
 | `GET` | `/api/storage` | — | Объединённое чтение config + database |
 | `POST` | `/api/storage` | `{ "data": { "app_...": "..." } }` | Сохранить; принимаются только строковые `app_*` |
 | `GET` | `/api/storage/export` | — | Резервная копия INI (`format: "ini"`, `content`, `backup`) |
