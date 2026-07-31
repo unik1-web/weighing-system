@@ -42,6 +42,10 @@ export function ScalePanel({
     onUnstableBlocked?.();
   }, [unstableBlocked, reading, onUnstableBlocked]);
 
+  useEffect(() => {
+    onReadingChange?.(reading ? reading.weight : null);
+  }, [reading, onReadingChange]);
+
   return (
     <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-slate-100 p-5 shadow-sm">
       <div className="flex items-center justify-between mb-4">

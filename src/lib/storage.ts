@@ -388,8 +388,9 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
           ? inferredYear
           : undefined,
   };
-  if (ticket.weighing_mode === undefined) {
-    next.weighing_mode = normalizeWeighingMode(ticket);
+  const mode = normalizeWeighingMode(ticket);
+  if (ticket.weighing_mode !== mode) {
+    next.weighing_mode = mode;
   }
   if (ticket.version === undefined) {
     next.version = 1;

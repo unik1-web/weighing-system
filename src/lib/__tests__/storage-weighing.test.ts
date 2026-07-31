@@ -157,6 +157,33 @@ describe('TicketStorage normalize / create / CAS', () => {
     expect(ticket?.version).toBe(1);
   });
 
+  it('repairs open+single and persists dual so sync cannot drop incompletes', () => {
+    const corrupted = {
+      ...baseTicket({
+        status: 'open',
+        weighing_mode: 'single',
+        tare_weight: null,
+        net_weight: null,
+        total_amount: null,
+        completed_at: null,
+      }),
+      id: 'corrupt-open',
+      ticket_number: 3,
+      created_at: '2026-01-01T00:00:00',
+      reo_status: 'pending' as const,
+      reo_sent_at: null,
+    };
+    localStorage.setItem('app_weighing_tickets', JSON.stringify([corrupted]));
+    const ticket = TicketStorage.getById('corrupt-open');
+    expect(ticket?.weighing_mode).toBe('dual');
+    const stored = JSON.parse(localStorage.getItem('app_weighing_tickets')!) as Array<{
+      id: string;
+      weighing_mode: string;
+    }>;
+    expect(stored.find((t) => t.id === 'corrupt-open')?.weighing_mode).toBe('dual');
+    expect(TicketStorage.getAll().filter((t) => t.status === 'open')).toHaveLength(1);
+  });
+
   it('update CAS: success increments version; mismatch returns null', () => {
     const ticket = TicketStorage.create(baseTicket({ weighing_mode: 'dual', status: 'open', tare_weight: null, net_weight: null, total_amount: null, completed_at: null }));
     expect(ticket.version).toBe(1);

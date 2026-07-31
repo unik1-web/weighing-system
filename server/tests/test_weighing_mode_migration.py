@@ -218,3 +218,62 @@ def test_get_omits_empty_audit_key(temp_app_root):
         sqlite_store.init_schema(connection)
     data = sqlite_store.read_database()
     assert sqlite_store.STORAGE_KEYS['ticket_audit'] not in data
+
+
+def test_write_defaults_missing_mode_open_to_dual(temp_app_root):
+    """Legacy open tickets without weighing_mode must not become single on sync."""
+    legacy_open = {
+        'id': 'legacy-open',
+        'ticket_number': 1,
+        'vehicle_number': 'А001АА56',
+        'vehicle_brand': '',
+        'trailer_number': '',
+        'driver_name': 'Иванов',
+        'cargo_name': 'Грунт',
+        'shipper_name': 'А',
+        'receiver_name': 'Б',
+        'carrier_name': 'В',
+        'price': 100,
+        'vat_rate': 20,
+        'gross_weight': 20000,
+        'tare_weight': None,
+        'net_weight': None,
+        'total_amount': None,
+        'gross_source': 'manual',
+        'tare_source': 'manual',
+        'gross_raw': None,
+        'tare_raw': None,
+        'gross_datetime': '2026-01-01T10:00:00',
+        'tare_datetime': None,
+        'scale_device': '',
+        'operator_id': None,
+        'operator_name': 'Оператор',
+        'status': 'open',
+        'reo_status': 'pending',
+        'reo_sent_at': None,
+        'notes': '',
+        'created_at': '2026-01-01T10:00:00',
+        'completed_at': None,
+        # weighing_mode intentionally omitted
+    }
+    legacy_completed = {
+        **legacy_open,
+        'id': 'legacy-done',
+        'ticket_number': 2,
+        'status': 'completed',
+        'tare_weight': 5000,
+        'net_weight': 15000,
+        'total_amount': 1500,
+        'completed_at': '2026-01-01T11:00:00',
+    }
+    sqlite_store.write_database(
+        {
+            sqlite_store.STORAGE_KEYS['tickets']: json.dumps(
+                [legacy_open, legacy_completed], ensure_ascii=False
+            ),
+        }
+    )
+    loaded = json.loads(sqlite_store.read_database()[sqlite_store.STORAGE_KEYS['tickets']])
+    by_id = {row['id']: row for row in loaded}
+    assert by_id['legacy-open']['weighing_mode'] == 'dual'
+    assert by_id['legacy-done']['weighing_mode'] == 'single'

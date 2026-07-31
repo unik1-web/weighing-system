@@ -147,20 +147,30 @@ export const isMaxTimeBetweenExceeded = isMaxTimeExceeded;
 /**
  * Fills weighing_mode only when the field is absent.
  * open → dual, otherwise → single. Existing value is kept.
+ *
+ * Stage-1 product rule: single mode always completes in one pass, so an
+ * explicit open+single (e.g. after a sync that defaulted missing mode to
+ * single) is treated as dual so incomplete tickets stay resumable.
  */
 export function normalizeWeighingMode(ticket: {
   status: string;
   weighing_mode?: WeighingMode;
 }): WeighingMode {
+  if (ticket.status === 'open') {
+    if (ticket.weighing_mode === undefined || ticket.weighing_mode === 'single') {
+      return 'dual';
+    }
+    return ticket.weighing_mode;
+  }
   if (ticket.weighing_mode !== undefined) return ticket.weighing_mode;
-  return ticket.status === 'open' ? 'dual' : 'single';
+  return 'single';
 }
 
 /** Open dual tickets for the incomplete panel. */
 export function filterIncompleteDual<T extends { status: string; weighing_mode?: WeighingMode }>(
   tickets: T[],
 ): T[] {
-  return tickets.filter((t) => t.status === 'open' && t.weighing_mode === 'dual');
+  return tickets.filter((t) => t.status === 'open' && normalizeWeighingMode(t) === 'dual');
 }
 
 export function netWeight(gross: number, tare: number): number {
@@ -342,7 +352,7 @@ export function validateSingleComplete(args: {
   gross: number | null;
   tare: number | null;
 }): string | null {
-  if (args.gross == null) return 'Введите брутто вес.';
+  if (args.gross == null || args.gross <= 0) return 'Введите брутто вес.';
   if (args.tare == null) return 'Для одиночного режима нужна тара.';
   return null;
 }

@@ -128,6 +128,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [photoWarning, setPhotoWarning] = useState<string | null>(null);
   const [unstableWarning, setUnstableWarning] = useState<string | null>(null);
   const [intervalWarnedForId, setIntervalWarnedForId] = useState<string | null>(null);
+  const [liveScaleWeight, setLiveScaleWeight] = useState<number | null>(null);
 
   const buildScaleRuntimeContext = useCallback(
     (phase: string, code?: string) => ({
@@ -160,14 +161,13 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     return { grossEditable: true, tareEditable: true };
   }, [completingTicket]);
 
+  // Threshold hint must use the live instrument weight (same input as capture),
+  // not empty form fields (null→0 always suggested tare).
   const suggestedPhase = useMemo(() => {
     if (formMode !== 'dual' || phaseOverride) return null;
-    const sample =
-      activeField === 'gross'
-        ? (grossWeight ?? 0)
-        : (tareWeight ?? 0);
-    return suggestPhase(sample, appSettings.tara_threshold);
-  }, [formMode, phaseOverride, activeField, grossWeight, tareWeight, appSettings.tara_threshold]);
+    if (liveScaleWeight == null) return null;
+    return suggestPhase(liveScaleWeight, appSettings.tara_threshold);
+  }, [formMode, phaseOverride, liveScaleWeight, appSettings.tara_threshold]);
 
   const highlightPhase: WeightPhase = phaseOverride
     ? overridePhase
@@ -435,8 +435,19 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     if (isCompleting) return;
     setFormMode(mode);
     setPhaseOverride(false);
+    setOverridePhase('gross');
+    setActiveField('gross');
     setCompletingTicket(null);
     setError(null);
+    // Drop prior weights so single autofill / dual first-pass cannot reuse the other mode's values.
+    setGrossWeight(null);
+    setTareWeight(null);
+    setGrossSource('manual');
+    setTareSource('manual');
+    setGrossRaw(null);
+    setTareRaw(null);
+    setGrossDatetime(null);
+    setTareDatetime(null);
   };
 
   const captureGross = (w: number, raw: string) => {
@@ -1284,6 +1295,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           capturedWeight={highlightPhase === 'gross' ? grossWeight : tareWeight}
           activeScale={activeScale}
           stableMode={appSettings.stable_mode}
+          onReadingChange={setLiveScaleWeight}
           onUnstableCapture={() => {
             setUnstableWarning('Зафиксирован нестабильный вес.');
             window.setTimeout(() => setUnstableWarning(null), 4000);

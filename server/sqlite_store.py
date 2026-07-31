@@ -1811,6 +1811,15 @@ def _replace_profiles(connection: sqlite3.Connection, profiles: dict[str, Any]) 
         )
 
 
+def _default_weighing_mode(ticket: dict[str, Any]) -> str:
+    """Match client normalizeWeighingMode: missing mode → dual if open, else single."""
+    mode = ticket.get('weighing_mode')
+    if mode is not None and mode != '':
+        return str(mode)
+    status = ticket.get('status') or 'open'
+    return 'dual' if status == 'open' else 'single'
+
+
 def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None:
     """
     Full-replace weighing_tickets with defense-in-depth for photo stubs.
@@ -1842,7 +1851,7 @@ def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None
         values = []
         for column in TICKET_COLUMNS:
             if column == 'weighing_mode':
-                values.append(ticket.get(column) if ticket.get(column) is not None else 'single')
+                values.append(_default_weighing_mode(ticket))
             elif column == 'version':
                 values.append(ticket.get(column) if ticket.get(column) is not None else 1)
             elif column == 'auto_closed':
