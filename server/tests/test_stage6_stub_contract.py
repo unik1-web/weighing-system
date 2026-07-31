@@ -19,6 +19,19 @@ import persistence
 import sqlite_store
 
 
+def _resolve_python_bin(repo_root: Path) -> str:
+    """Prefer local .venv when present; otherwise use the active interpreter (CI)."""
+    import sys
+    candidates = [
+        repo_root / '.venv' / 'bin' / 'python',
+        repo_root / '.venv' / 'Scripts' / 'python.exe',
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
 def _pick_free_port() -> int:
     """Reserve a free localhost TCP port for smoke server process."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -167,7 +180,7 @@ def test_stage6_stub_endpoints_keep_minimal_contract(api_client, temp_stage6_roo
 def test_stage6_smoke_runner_writes_reports_and_returns_zero(tmp_path):
     """TC-UNIT-01: stage-6 smoke runner works against real HTTP entrypoint."""
     repo_root = Path(__file__).resolve().parents[2]
-    python_bin = repo_root / ".venv" / "bin" / "python"
+    python_bin = Path(_resolve_python_bin(repo_root))
     port = _pick_free_port()
     base_url = f"http://127.0.0.1:{port}"
     env = dict(os.environ)

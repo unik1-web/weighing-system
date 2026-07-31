@@ -65,6 +65,19 @@ class StepResult:
     note: str | None = None
 
 
+def _resolve_python_bin(repo_root: Path) -> str:
+    """Prefer local .venv when present; otherwise use the active interpreter (CI)."""
+    import sys
+    candidates = [
+        repo_root / '.venv' / 'bin' / 'python',
+        repo_root / '.venv' / 'Scripts' / 'python.exe',
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
 def _safe_json(response: requests.Response) -> Any:
     """Parse JSON body or return plain text for non-JSON responses."""
     try:
@@ -705,11 +718,8 @@ def _run_capture_degrade(args: argparse.Namespace) -> tuple[list[StepResult], st
 
 
 def _python_bin() -> str:
-    """Prefer project venv interpreter."""
-    venv_python = REPO_ROOT / ".venv" / "bin" / "python"
-    if venv_python.is_file():
-        return str(venv_python)
-    return sys.executable
+    """Prefer project venv interpreter; fall back to the active interpreter (CI)."""
+    return _resolve_python_bin(REPO_ROOT)
 
 
 def _run_basic_import(_args: argparse.Namespace) -> list[StepResult]:

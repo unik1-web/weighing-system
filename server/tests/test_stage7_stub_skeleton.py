@@ -12,6 +12,19 @@ import cameras
 import persistence
 
 
+def _resolve_python_bin(repo_root: Path) -> str:
+    """Prefer local .venv when present; otherwise use the active interpreter (CI)."""
+    import sys
+    candidates = [
+        repo_root / '.venv' / 'bin' / 'python',
+        repo_root / '.venv' / 'Scripts' / 'python.exe',
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
 def _seed_operator_session(api_client, *, role: str = 'user') -> None:
     """Persist an active operator session for camera API stubs."""
     session_payload = json.dumps(
@@ -205,9 +218,7 @@ def _wait_for_health(base_url: str, *, timeout_sec: float = 20.0) -> None:
 def test_smoke_photo_capture_cli_help_and_mode_validation():
     """TC-UNIT-02: smoke_photo_capture.py --help and invalid mode exit non-zero."""
     repo_root = Path(__file__).resolve().parents[2]
-    python_bin = repo_root / '.venv' / 'bin' / 'python'
-    if not python_bin.is_file():
-        python_bin = Path('python3')
+    python_bin = Path(_resolve_python_bin(repo_root))
 
     help_run = subprocess.run(
         [str(python_bin), 'scripts/smoke_photo_capture.py', '--help'],
@@ -241,9 +252,7 @@ def test_smoke_photo_capture_cli_help_and_mode_validation():
 def test_smoke_photo_capability_against_live_flask(tmp_path):
     """Production-like smoke: capability mode against real server/app.py entrypoint."""
     repo_root = Path(__file__).resolve().parents[2]
-    python_bin = repo_root / '.venv' / 'bin' / 'python'
-    if not python_bin.is_file():
-        python_bin = Path('python3')
+    python_bin = Path(_resolve_python_bin(repo_root))
 
     import os
 
@@ -296,9 +305,7 @@ def test_smoke_photo_capture_noop_against_live_flask():
     import os
 
     repo_root = Path(__file__).resolve().parents[2]
-    python_bin = repo_root / '.venv' / 'bin' / 'python'
-    if not python_bin.is_file():
-        python_bin = Path('python3')
+    python_bin = Path(_resolve_python_bin(repo_root))
 
     port = _pick_free_port()
     base_url = f'http://127.0.0.1:{port}'
@@ -347,9 +354,7 @@ def test_smoke_photo_capture_noop_against_live_flask():
 def _run_smoke_mode(mode: str, *, extra_args: list[str] | None = None) -> tuple[int, dict]:
     """Invoke smoke_photo_capture.py for a mode; return (exit_code, report)."""
     repo_root = Path(__file__).resolve().parents[2]
-    python_bin = repo_root / '.venv' / 'bin' / 'python'
-    if not python_bin.is_file():
-        python_bin = Path('python3')
+    python_bin = Path(_resolve_python_bin(repo_root))
     cmd = [
         str(python_bin),
         'scripts/smoke_photo_capture.py',
@@ -411,9 +416,7 @@ def test_smoke_photo_full_import_gate():
     """TC-E2E-04: full-import requires cv2; fails clearly when missing."""
     code, report = _run_smoke_mode('full-import')
     repo_root = Path(__file__).resolve().parents[2]
-    python_bin = repo_root / '.venv' / 'bin' / 'python'
-    if not python_bin.is_file():
-        python_bin = Path('python3')
+    python_bin = Path(_resolve_python_bin(repo_root))
     probe = subprocess.run(
         [str(python_bin), '-c', 'import cv2'],
         cwd=repo_root,

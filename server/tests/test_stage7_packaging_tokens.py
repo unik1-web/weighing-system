@@ -18,6 +18,18 @@ def _repo_root() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parents[2]
 
 
+def _resolve_python_bin(repo_root: pathlib.Path) -> str:
+    """Prefer local .venv when present; otherwise use the active interpreter (CI)."""
+    candidates = [
+        repo_root / '.venv' / 'bin' / 'python',
+        repo_root / '.venv' / 'Scripts' / 'python.exe',
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return sys.executable
+
+
 REPO_ROOT = _repo_root()
 SERVER_DIR = REPO_ROOT / 'server'
 INSTALLER_DIR = REPO_ROOT / 'installer'
@@ -62,11 +74,8 @@ def _read(path: pathlib.Path) -> str:
 
 
 def _python_bin() -> str:
-    """Prefer project venv interpreter for import-smoke."""
-    venv_python = REPO_ROOT / '.venv' / 'bin' / 'python'
-    if venv_python.is_file():
-        return str(venv_python)
-    return sys.executable
+    """Prefer project venv interpreter for import-smoke; fall back to CI interpreter."""
+    return _resolve_python_bin(REPO_ROOT)
 
 
 # ---------------------------------------------------------------------------
