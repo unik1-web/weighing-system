@@ -1,0 +1,137 @@
+{
+  "meta": {
+    "generated_at": "2026-07-31T04:45:40.504417+00:00",
+    "run_label": "stage6-task-3-2-active",
+    "scenario": "active",
+    "environment": {
+      "platform": "Linux-6.12.94+-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    }
+  },
+  "request_context": {
+    "base_url": "http://127.0.0.1:5031",
+    "origin": "http://127.0.0.1:5031",
+    "scenario": "active"
+  },
+  "steps": [
+    {
+      "name": "health",
+      "method": "GET",
+      "path": "/api/health",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 3,
+      "body": {
+        "service": "weighing-system-api",
+        "success": true
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": null
+    },
+    {
+      "name": "config",
+      "method": "GET",
+      "path": "/api/config",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 4,
+      "body": {
+        "bootstrap": {
+          "active_db_path": "/workspace/BD/weighing-2026.db",
+          "backup_path": null,
+          "migration_year": 2026,
+          "status": "resumed_after_publish",
+          "warning": null
+        },
+        "config": {
+          "active_year": "2026",
+          "driver_input_mode": "vehicle",
+          "manual_weight_reason_policy": "optional",
+          "max_time_between": "24",
+          "metra_db_path": "",
+          "metra_enabled": "false",
+          "nav_tab_mode": "compact",
+          "org_address": "",
+          "org_bik": "",
+          "org_inn": "",
+          "org_kpp": "",
+          "org_name": "Полигон отходов",
+          "org_ogrn": "",
+          "org_phone": "",
+          "print_layout": "act",
+          "reo_access_key": "",
+          "reo_cargo_names": "[]",
+          "reo_enabled": "false",
+          "reo_object_id": "",
+          "reo_object_url": "",
+          "scale_device_id": "newton",
+          "stable_mode": "false",
+          "tara_default": "0",
+          "tara_threshold": "15000",
+          "vescom_db_password": "masterkey",
+          "vescom_db_path": "",
+          "vescom_db_user": "SYSDBA",
+          "vescom_enabled": "false",
+          "wa_db_password": "masterkey",
+          "wa_db_path": "C:\\Program Files (x86)\\WA",
+          "wa_db_user": "SYSDBA",
+          "wa_enabled": "false",
+          "weighing_mode_default": "dual"
+        },
+        "success": true
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": null
+    },
+    {
+      "name": "seed_session",
+      "method": "POST",
+      "path": "/api/database",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 4,
+      "body": {
+        "success": true
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": null
+    },
+    {
+      "name": "rotation_preview",
+      "method": "POST",
+      "path": "/api/year/rotation/preview",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 4,
+      "body": {
+        "blocking_tickets": [],
+        "open_candidates": [],
+        "pending_reo_count": 1,
+        "preview_token": "rotprev_2026_2026_3c54875590d4",
+        "rotation_required": false,
+        "source_db_fingerprint": "size:159744;mtime:2026-07-31T04:45:40.496631Z",
+        "source_db_path": "/workspace/BD/weighing-2026.db",
+        "source_year": 2026,
+        "success": true,
+        "target_db_path": "/workspace/BD/weighing-2026.db",
+        "target_year": 2026
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": null
+    }
+  ],
+  "summary": {
+    "all_steps_passed": true,
+    "passed_steps": 4,
+    "failed_steps": 0,
+    "status": "PASS"
+  }
+}

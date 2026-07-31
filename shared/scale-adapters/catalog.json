@@ -1,0 +1,102 @@
+{
+  "adapter_schema_version": "1.0",
+  "transports": {
+    "web_serial": {
+      "label": "Web Serial",
+      "supports_runtime": true
+    },
+    "serial_backend": {
+      "label": "Backend Serial",
+      "supports_runtime": true
+    },
+    "tcp_client": {
+      "label": "TCP Client",
+      "supports_runtime": false
+    }
+  },
+  "adapters": [
+    {
+      "id": "microsim-m0601",
+      "title": "Микросим М0601",
+      "kind": "builtin",
+      "parser_kind": "preset",
+      "transports": ["web_serial", "serial_backend"],
+      "default_connection": {
+        "transport": "web_serial",
+        "device_id": "microsim-m0601",
+        "serial": {
+          "baud_rate": 9600,
+          "data_bits": 8,
+          "stop_bits": 1,
+          "parity": "none",
+          "line_terminator": "\r",
+          "read_timeout_ms": 1000
+        }
+      }
+    },
+    {
+      "id": "newton",
+      "title": "Ньютон",
+      "kind": "builtin",
+      "parser_kind": "preset",
+      "transports": ["web_serial", "serial_backend"],
+      "default_connection": {
+        "transport": "web_serial",
+        "device_id": "newton",
+        "serial": {
+          "baud_rate": 9600,
+          "data_bits": 8,
+          "stop_bits": 1,
+          "parity": "none",
+          "line_terminator": "\r\n",
+          "read_timeout_ms": 1000
+        }
+      }
+    },
+    {
+      "id": "cas",
+      "title": "CAS",
+      "kind": "builtin",
+      "parser_kind": "preset",
+      "transports": ["web_serial", "serial_backend"],
+      "default_connection": {
+        "transport": "web_serial",
+        "device_id": "cas",
+        "serial": {
+          "baud_rate": 9600,
+          "data_bits": 7,
+          "stop_bits": 1,
+          "parity": "even",
+          "line_terminator": "\r\n",
+          "read_timeout_ms": 1000
+        }
+      }
+    },
+    {
+      "id": "midl-mi-vda",
+      "title": "Мидл Ми ВДА",
+      "kind": "builtin",
+      "parser_kind": "preset",
+      "transports": ["web_serial", "serial_backend"],
+      "default_connection": {
+        "transport": "web_serial",
+        "device_id": "midl-mi-vda",
+        "serial": {
+          "baud_rate": 9600,
+          "data_bits": 8,
+          "stop_bits": 1,
+          "parity": "none",
+          "line_terminator": "\r\n",
+          "read_timeout_ms": 1000
+        }
+      }
+    },
+    {
+      "id": "generic-regex",
+      "title": "Generic Regex",
+      "kind": "generic-regex",
+      "parser_kind": "regex",
+      "transports": ["serial_backend", "tcp_client"]
+    }
+  ]
+}

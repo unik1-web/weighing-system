@@ -1,0 +1,227 @@
+{
+  "meta": {
+    "generated_at": "2026-07-31T04:46:09.891655+00:00",
+    "run_label": "stage6-task-3-2-fail-retry",
+    "scenario": "fail-retry",
+    "environment": {
+      "platform": "Linux-6.12.94+-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    }
+  },
+  "request_context": {
+    "base_url": "http://127.0.0.1:5001",
+    "origin": "http://127.0.0.1:5001",
+    "scenario": "fail-retry"
+  },
+  "steps": [
+    {
+      "name": "seed_session",
+      "method": "POST",
+      "path": "/api/database",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 5,
+      "body": {
+        "success": true
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": null
+    },
+    {
+      "name": "rotation_preview",
+      "method": "POST",
+      "path": "/api/year/rotation/preview",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 5,
+      "body": {
+        "blocking_tickets": [],
+        "open_candidates": [
+          {
+            "auto_closed": true,
+            "gross_weight": 5000.0,
+            "net_weight": 3800.0,
+            "source_year": 2025,
+            "status": "completed",
+            "tare_source": "dictionary",
+            "tare_weight": 1200.0,
+            "ticket_id": "t-dictionary",
+            "ticket_number": 101,
+            "total_amount": 9120.0,
+            "vehicle_number": "А001АА"
+          },
+          {
+            "auto_closed": true,
+            "gross_weight": 4000.0,
+            "net_weight": 3100.0,
+            "source_year": 2025,
+            "status": "completed",
+            "tare_source": "default",
+            "tare_weight": 900.0,
+            "ticket_id": "t-default",
+            "ticket_number": 102,
+            "total_amount": 11160.0,
+            "vehicle_number": "В002ВВ"
+          }
+        ],
+        "pending_reo_count": 1,
+        "preview_token": "rotprev_2025_2026_4df321b6897b",
+        "rotation_required": true,
+        "source_db_fingerprint": "size:159744;mtime:2026-07-31T04:46:09.336641Z",
+        "source_db_path": "/tmp/stage6-smoke-stppap5d/app/BD/weighing-2025.db",
+        "source_year": 2025,
+        "success": true,
+        "target_db_path": "/tmp/stage6-smoke-stppap5d/app/BD/weighing-2026.db",
+        "target_year": 2026
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": null
+    },
+    {
+      "name": "rotation_commit_failed",
+      "method": "POST",
+      "path": "/api/year/rotation/commit",
+      "ok": true,
+      "status_code": 500,
+      "elapsed_ms": 7,
+      "body": {
+        "code": "rotation_failed",
+        "message": "Ротация не завершена; active_year не переключён: injected failure after backup",
+        "success": false
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": false,
+      "note": null
+    },
+    {
+      "name": "active_year_after_fail",
+      "method": "GET",
+      "path": "/api/config",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 2,
+      "body": {
+        "bootstrap": {
+          "active_db_path": "/tmp/stage6-smoke-stppap5d/app/BD/weighing-2025.db",
+          "backup_path": null,
+          "migration_year": 2025,
+          "status": "ready",
+          "warning": {
+            "archive_year": 2025,
+            "code": "mixed_legacy_year_mismatch",
+            "message": "В legacy-базе обнаружены тикеты за другие календарные годы; данные оставлены в одном архивном контейнере года миграции.",
+            "ticket_years": [
+              2025,
+              2026
+            ]
+          }
+        },
+        "config": {
+          "active_year": "2025",
+          "manual_weight_reason_policy": "optional",
+          "tara_default": "900"
+        },
+        "success": true
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": "2025"
+    },
+    {
+      "name": "rotation_preview",
+      "method": "POST",
+      "path": "/api/year/rotation/preview",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 5,
+      "body": {
+        "blocking_tickets": [],
+        "open_candidates": [],
+        "pending_reo_count": 1,
+        "preview_token": "rotprev_2025_2026_2620e9834fc0",
+        "rotation_required": true,
+        "source_db_fingerprint": "size:159744;mtime:2026-07-31T04:46:09.352641Z",
+        "source_db_path": "/tmp/stage6-smoke-stppap5d/app/BD/weighing-2025.db",
+        "source_year": 2025,
+        "success": true,
+        "target_db_path": "/tmp/stage6-smoke-stppap5d/app/BD/weighing-2026.db",
+        "target_year": 2026
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": "retry-preview"
+    },
+    {
+      "name": "rotation_commit_retry",
+      "method": "POST",
+      "path": "/api/year/rotation/commit",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 26,
+      "body": {
+        "auto_closed_count": 0,
+        "backup_path": "/tmp/stage6-smoke-stppap5d/app/backup/weighing-2025.db.before-rotation-2026.20260101T100000.bak",
+        "new_db_path": "/tmp/stage6-smoke-stppap5d/app/BD/weighing-2026.db",
+        "recovery": {
+          "copied_counts": {
+            "dictionary_entries": 1,
+            "profiles": 1,
+            "scales": 0,
+            "site_runtime": 0,
+            "sites": 0,
+            "users": 1,
+            "vehicle_drivers": 0
+          },
+          "mode": "rebuild_target"
+        },
+        "source_year": 2025,
+        "success": true,
+        "target_year": 2026
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": null
+    },
+    {
+      "name": "active_year_after_retry",
+      "method": "GET",
+      "path": "/api/config",
+      "ok": true,
+      "status_code": 200,
+      "elapsed_ms": 2,
+      "body": {
+        "bootstrap": {
+          "active_db_path": "/tmp/stage6-smoke-stppap5d/app/BD/weighing-2026.db",
+          "backup_path": null,
+          "migration_year": 2026,
+          "status": "ready",
+          "warning": null
+        },
+        "config": {
+          "active_year": "2026",
+          "manual_weight_reason_policy": "optional",
+          "tara_default": "900"
+        },
+        "success": true
+      },
+      "error": null,
+      "contract_error": null,
+      "expected_ok": true,
+      "note": "2026"
+    }
+  ],
+  "summary": {
+    "all_steps_passed": true,
+    "passed_steps": 7,
+    "failed_steps": 0,
+    "status": "PASS"
+  }
+}

@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { type WeighingTicket } from '@/lib/storage';
 import { TicketStorage } from '@/lib/storage';
+import {
+  summarizeWeightSources,
+  WEIGHT_SOURCES,
+  WEIGHT_SOURCE_LABELS,
+} from '@/lib/weighing-mode';
 import { BarChart3, Download, Filter, Calendar, RefreshCw } from 'lucide-react';
 
 type GroupBy = 'shipper_name' | 'carrier_name' | 'cargo_name' | 'operator_name' | 'receiver_name' | 'vehicle_number';
@@ -75,6 +80,8 @@ export function ReportsView() {
     (acc, r) => ({ count: acc.count + r.count, net: acc.net + r.totalNet, amount: acc.amount + r.totalAmount }),
     { count: 0, net: 0, amount: 0 }
   );
+
+  const sourceSummary = summarizeWeightSources(tickets);
 
   const exportCSV = () => {
     const headers = [GROUP_LABELS[groupBy], 'Взвешиваний', 'Брутто, кг', 'Тара, кг', 'Нетто, кг', 'Нетто, т', 'Сумма, ₽'];
@@ -152,6 +159,33 @@ export function ReportsView() {
         <SummaryCard label="Нетто (т)" value={(totals.net / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 2 })} sub="тонн" color="emerald" />
         <SummaryCard label="Сумма" value={totals.amount.toLocaleString('ru-RU', { maximumFractionDigits: 0 })} sub="₽" color="amber" />
         <SummaryCard label="Позиций" value={grouped.length.toString()} sub={GROUP_LABELS[groupBy].toLowerCase()} color="slate" />
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50">
+          <h3 className="text-sm font-semibold text-slate-800">Сводка по источникам</h3>
+          <p className="mt-1 text-xs text-slate-500">Число тикетов периода по источнику брутто и тары</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase">
+              <tr>
+                <th className="px-5 py-3 text-left font-medium">Источник</th>
+                <th className="px-3 py-3 text-right font-medium">Брутто</th>
+                <th className="px-5 py-3 text-right font-medium">Тара</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {WEIGHT_SOURCES.map((src) => (
+                <tr key={src} className="hover:bg-slate-50/50 transition">
+                  <td className="px-5 py-2.5 font-medium text-slate-700">{WEIGHT_SOURCE_LABELS[src]}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-600">{sourceSummary.gross[src]}</td>
+                  <td className="px-5 py-2.5 text-right tabular-nums text-slate-600">{sourceSummary.tare[src]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {error && <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">{error}</div>}

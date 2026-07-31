@@ -1,17 +1,19 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   type WeighingTicket,
   type WeightSource,
   TicketStorage,
   SettingsStorage,
+  VehicleDriversStorage,
+  onTicketCompletedLearning,
 } from '@/lib/storage';
 import { logger } from '@/lib/logger';
 import { useDictionary } from '@/hooks/useDictionary';
 import { useAuth } from '@/hooks/useAuth';
 import { ScalePanel } from '@/components/ScalePanel';
-import { formatVehiclePlate } from '@/lib/vehicle-plate';
+import { formatVehiclePlate, normalizeVehicleKey } from '@/lib/vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from '@/lib/text-format';
-import { SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
+import { SCALE_DEVICES } from '@/lib/scales';
 import {
   type WeighingMode,
   type WeightPhase,
@@ -19,6 +21,7 @@ import {
   suggestPhase,
   shouldAutofillTare,
   resolveCaptureSlot,
+  resolveTareAutofill,
   slotEditability,
   classifyOpenWeightState,
   emptySlotForOne,
@@ -26,12 +29,42 @@ import {
   validateSingleComplete,
   validateDualFirstPass,
   validateDualComplete,
+  isManualWeightUsedOnCurrentStep,
+  isManualWeightReasonRequiredOnCurrentStep,
   netWeight as calcNetWeight,
   totalAmount as calcTotalAmount,
   firstWeightDatetime,
   isMaxTimeExceeded,
+  WEIGHT_SOURCE_LABELS,
 } from '@/lib/weighing-mode';
+import {
+  driverDatalistOptions,
+  findVehicleByKey,
+  resolvePlateSource,
+  resolveTripFields,
+} from '@/lib/vehicle-resolve';
+import {
+  SITE_RUNTIME_CHANGED_EVENT,
+  activeScaleSetIndicatorLabel,
+  DEFAULT_SITE_ID,
+  getActiveScale,
+  ticketScaleFieldsFromRuntime,
+} from '@/lib/site';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
+import { captureAfterWeightPersist } from '@/lib/photo-capture';
+import type { CaptureEvent } from '@/lib/cameras';
+import { TicketPhotosPreview } from '@/components/TicketPhotosPreview';
+import { ACTIVE_WRITE_BLOCKED_EVENT } from '@/lib/storage-sync';
+
+function resolveScaleDeviceLabel() {
+  const active = getActiveScale(DEFAULT_SITE_ID);
+  if (!active) return 'Неизвестный терминал';
+  const deviceId = active.connection.device_id;
+  if (deviceId) {
+    return SCALE_DEVICES[deviceId].name;
+  }
+  return active.adapter_id;
+}
 
 interface Props {
   onSaved: (ticket: WeighingTicket) => void;
@@ -64,7 +97,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [completingTicket, setCompletingTicket] = useState<WeighingTicket | null>(null);
   const [incompleteRefresh, setIncompleteRefresh] = useState(0);
 
-  const [deviceId, setDeviceId] = useState<ScaleDeviceId>('microsim-m0601');
+  const [scaleSetLabel, setScaleSetLabel] = useState(() => activeScaleSetIndicatorLabel());
+  const [activeScale, setActiveScale] = useState(() => getActiveScale(DEFAULT_SITE_ID));
   const [vehicleNumber, setVehicleNumber] = useState('');
   const [vehicleBrand, setVehicleBrand] = useState('');
   const [trailerNumber, setTrailerNumber] = useState('');
@@ -79,18 +113,36 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [tareWeight, setTareWeight] = useState<number | null>(null);
   const [grossSource, setGrossSource] = useState<WeightSource>('manual');
   const [tareSource, setTareSource] = useState<WeightSource>('manual');
+  const tareAutofillLockedRef = useRef(false);
   const [grossRaw, setGrossRaw] = useState<string | null>(null);
   const [tareRaw, setTareRaw] = useState<string | null>(null);
   const [grossDatetime, setGrossDatetime] = useState<string | null>(null);
   const [tareDatetime, setTareDatetime] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
+  const [manualWeightReason, setManualWeightReason] = useState('');
+  const [manualWeightReasonTouched, setManualWeightReasonTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [lastTicket, setLastTicket] = useState<WeighingTicket | null>(null);
+  const [photoWarning, setPhotoWarning] = useState<string | null>(null);
   const [unstableWarning, setUnstableWarning] = useState<string | null>(null);
   const [intervalWarnedForId, setIntervalWarnedForId] = useState<string | null>(null);
   const [liveScaleWeight, setLiveScaleWeight] = useState<number | null>(null);
+
+  const buildScaleRuntimeContext = useCallback(
+    (phase: string, code?: string) => ({
+      site_id: activeScale?.site_id ?? null,
+      scale_id: activeScale?.id ?? null,
+      scale_role: activeScale?.role ?? null,
+      adapter_id: activeScale?.adapter_id ?? null,
+      transport: activeScale?.connection.transport ?? null,
+      session_id: null,
+      code: code ?? null,
+      phase,
+    }),
+    [activeScale],
+  );
 
   const isCompleting = completingTicket != null;
   // For completion, editability is based on the loaded ticket's original weights for locked slots,
@@ -149,6 +201,115 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     }
   }, [showIntervalBanner, completingTicket, intervalWarnedForId, appSettings.max_time_between]);
 
+  useEffect(() => {
+    const refreshSettings = () => {
+      const settings = SettingsStorage.getAppSettings();
+      setAppSettings(settings);
+      setScaleSetLabel(activeScaleSetIndicatorLabel());
+      setActiveScale(getActiveScale(DEFAULT_SITE_ID));
+    };
+    const onRuntimeChanged = () => {
+      setScaleSetLabel(activeScaleSetIndicatorLabel());
+      setActiveScale(getActiveScale(DEFAULT_SITE_ID));
+    };
+    const onWriteBlocked = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string }>).detail;
+      setPhotoWarning(
+        detail?.message
+          || 'Смена года не завершена: запись и съёмка временно недоступны.',
+      );
+    };
+    window.addEventListener('focus', refreshSettings);
+    document.addEventListener('visibilitychange', refreshSettings);
+    window.addEventListener(SITE_RUNTIME_CHANGED_EVENT, onRuntimeChanged);
+    window.addEventListener(ACTIVE_WRITE_BLOCKED_EVENT, onWriteBlocked as EventListener);
+    return () => {
+      window.removeEventListener('focus', refreshSettings);
+      document.removeEventListener('visibilitychange', refreshSettings);
+      window.removeEventListener(SITE_RUNTIME_CHANGED_EVENT, onRuntimeChanged);
+      window.removeEventListener(ACTIVE_WRITE_BLOCKED_EVENT, onWriteBlocked as EventListener);
+    };
+  }, []);
+
+  const appendPhotoWarning = useCallback((message: string | null) => {
+    if (!message) return;
+    setPhotoWarning((prev) => (prev ? `${prev} ${message}` : message));
+  }, []);
+
+  const setTareAutofillLockedSafe = useCallback((locked: boolean) => {
+    tareAutofillLockedRef.current = locked;
+  }, []);
+
+  const applyConfirmedVehicleNumber = useCallback(
+    (rawNumber: string) => {
+      if (isCompleting) return;
+      const key = normalizeVehicleKey(rawNumber);
+      if (!key) return;
+
+      const history = VehicleDriversStorage.getByVehicleKey(key);
+      const patch = resolveTripFields({
+        key,
+        vehicles: vehicles.entries,
+        tickets: TicketStorage.getAll(),
+        driversHistory: history,
+        current: {
+          vehicle_brand: vehicleBrand,
+          driver_name: driverName,
+          cargo_name: cargoName,
+          shipper_name: shipperName,
+        },
+      });
+
+      if (patch.vehicle_brand !== undefined) setVehicleBrand(patch.vehicle_brand);
+      if (patch.driver_name !== undefined) setDriverName(patch.driver_name);
+      if (patch.cargo_name !== undefined) setCargoName(patch.cargo_name);
+      if (patch.shipper_name !== undefined) setShipperName(patch.shipper_name);
+
+      const allowed = shouldAutofillTare({ mode: formMode, completing: isCompleting });
+      const vehicle = findVehicleByKey(vehicles.entries, key);
+      const tareResult = resolveTareAutofill({
+        allowed,
+        locked: tareAutofillLockedRef.current,
+        vehicleNumber: rawNumber,
+        tareWeight,
+        defaultTareWeight: vehicle?.default_tare_weight ?? null,
+        taraDefault: appSettings.tara_default,
+      });
+      if (tareResult) {
+        setTareWeight(tareResult.tareWeight);
+        setTareSource(tareResult.tareSource);
+      }
+    },
+    [
+      isCompleting,
+      vehicles.entries,
+      vehicleBrand,
+      driverName,
+      cargoName,
+      shipperName,
+      formMode,
+      tareWeight,
+      appSettings.tara_default,
+    ],
+  );
+
+  const handleVehicleNumberChange = (value: string) => {
+    setVehicleNumber(value);
+    setTareAutofillLockedSafe(false);
+    const key = normalizeVehicleKey(value);
+    if (!key || isCompleting) return;
+    const matched = vehicles.entries.some((entry) => {
+      const plate = entry.vehicle_number ?? entry.name ?? '';
+      return (
+        normalizeVehicleKey(plate) === key &&
+        (plate === value || formatVehiclePlate(plate) === formatVehiclePlate(value))
+      );
+    });
+    if (matched) {
+      applyConfirmedVehicleNumber(value);
+    }
+  };
+
   const resetFormFields = useCallback(() => {
     setActiveField('gross');
     setPhaseOverride(false);
@@ -167,14 +328,17 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setTareWeight(null);
     setGrossSource('manual');
     setTareSource('manual');
+    setTareAutofillLockedSafe(false);
     setGrossRaw(null);
     setTareRaw(null);
     setGrossDatetime(null);
     setTareDatetime(null);
     setNotes('');
+    setManualWeightReason('');
+    setManualWeightReasonTouched(false);
     setError(null);
     setUnstableWarning(null);
-  }, []);
+  }, [setTareAutofillLockedSafe]);
 
   const exitCompletion = useCallback(() => {
     setCompletingTicket(null);
@@ -227,11 +391,14 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setTareWeight(ticket.tare_weight);
       setGrossSource(ticket.gross_source);
       setTareSource(ticket.tare_source);
+      setTareAutofillLockedSafe(true);
       setGrossRaw(ticket.gross_raw);
       setTareRaw(ticket.tare_raw);
       setGrossDatetime(ticket.gross_datetime);
       setTareDatetime(ticket.tare_datetime);
       setNotes(ticket.notes);
+      setManualWeightReason(ticket.manual_weight_reason ?? '');
+      setManualWeightReasonTouched(false);
 
       const state = classifyOpenWeightState(ticket);
       if (state === 'one') {
@@ -246,7 +413,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         setActiveField('gross');
       }
     },
-    [exitCompletion],
+    [exitCompletion, setTareAutofillLockedSafe],
   );
 
   useEffect(() => {
@@ -263,38 +430,6 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       }
     }
   }, [cargoName, cargos.entries, price]);
-
-  useEffect(() => {
-    if (!vehicleNumber) return;
-    const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
-    if (vehicle?.vehicle_brand && !vehicleBrand) {
-      setVehicleBrand(vehicle.vehicle_brand);
-    }
-  }, [vehicleNumber, vehicles.entries, vehicleBrand]);
-
-  useEffect(() => {
-    if (!shouldAutofillTare({ mode: formMode, completing: isCompleting })) return;
-    if (!vehicleNumber) return;
-    if (tareWeight != null) return;
-
-    const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
-    if (vehicle?.default_tare_weight != null) {
-      setTareWeight(vehicle.default_tare_weight);
-      setTareSource('manual');
-      return;
-    }
-    if (appSettings.tara_default > 0) {
-      setTareWeight(appSettings.tara_default);
-      setTareSource('manual');
-    }
-  }, [
-    vehicleNumber,
-    vehicles.entries,
-    tareWeight,
-    formMode,
-    isCompleting,
-    appSettings.tara_default,
-  ]);
 
   const handleModeChange = (mode: WeighingMode) => {
     if (isCompleting) return;
@@ -356,6 +491,52 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const requiredFilled =
     !!vehicleNumber && !!driverName && !!cargoName && !!shipperName && !!receiverName && !!carrierName;
 
+  const validateManualReasonForStep = useCallback(
+    (slotsOnStep: Array<'gross' | 'tare'>): boolean => {
+      const reasonRequired = isManualWeightReasonRequiredOnCurrentStep({
+        policy: appSettings.manual_weight_reason_policy,
+        slotsOnStep,
+        grossSource,
+        tareSource,
+      });
+      if (!reasonRequired) {
+        return true;
+      }
+      if (manualWeightReason.trim()) {
+        return true;
+      }
+      setError('Укажите причину ручного ввода веса.');
+      logger.scaleRuntime.warn(
+        'Валидация manual_weight_reason отклонила сохранение',
+        buildScaleRuntimeContext('manual_reason_validation', 'manual_weight_reason_required'),
+        { slots_on_step: slotsOnStep },
+      );
+      return false;
+    },
+    [
+      appSettings.manual_weight_reason_policy,
+      grossSource,
+      tareSource,
+      manualWeightReason,
+      buildScaleRuntimeContext,
+    ],
+  );
+
+  const resolveManualReasonForStep = useCallback(
+    (slotsOnStep: Array<'gross' | 'tare'>): string | null => {
+      const manualOnStep = isManualWeightUsedOnCurrentStep({
+        slotsOnStep,
+        grossSource,
+        tareSource,
+      });
+      if (!manualOnStep) {
+        return null;
+      }
+      return manualWeightReason.trim() || null;
+    },
+    [grossSource, tareSource, manualWeightReason],
+  );
+
   const handleSaveSingle = async () => {
     setError(null);
     setSuccess(null);
@@ -368,12 +549,28 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setError(validation);
       return;
     }
+    if (!validateManualReasonForStep(['gross', 'tare'])) {
+      return;
+    }
+
+    const scaleFields = ticketScaleFieldsFromRuntime();
+    if (!scaleFields) {
+      setError('Площадка/комплект весов не инициализированы');
+      return;
+    }
 
     setSaving(true);
     const now = new Date().toISOString();
     const net = calcNetWeight(grossWeight!, tareWeight!);
     const amount = calcTotalAmount(net, parseFloat(price) || 0);
+    const plateKey = normalizeVehicleKey(vehicleNumber);
     try {
+      setPhotoWarning(null);
+      logger.scaleRuntime.info(
+        'Сохранение тикета с источниками веса',
+        buildScaleRuntimeContext('save_single'),
+        { gross_source: grossSource, tare_source: tareSource },
+      );
       const ticket = TicketStorage.create({
         vehicle_number: formatVehiclePlate(vehicleNumber),
         vehicle_brand: formatVehicleBrand(vehicleBrand),
@@ -395,7 +592,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         tare_raw: tareRaw,
         gross_datetime: grossDatetime,
         tare_datetime: tareDatetime,
-        scale_device: SCALE_DEVICES[deviceId].name,
+        scale_device: resolveScaleDeviceLabel(),
+        manual_weight_reason: resolveManualReasonForStep(['gross', 'tare']),
         operator_id: null,
         operator_name: displayName,
         status: 'completed',
@@ -403,16 +601,29 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         notes,
         weighing_mode: 'single',
         version: 1,
+        plate_source: resolvePlateSource(plateKey, vehicles.entries),
+        site_id: scaleFields.site_id,
+        scale_id: scaleFields.scale_id,
+        scale_role: scaleFields.scale_role,
+        photo_entry_path: null,
+        photo_exit_path: null,
       });
-      logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
-        id: ticket.id,
+      onTicketCompletedLearning(ticket);
+      // Single gesture fixes both phases → capture gross then tare.
+      const grossCapture = await captureAfterWeightPersist(ticket.id, 'gross');
+      appendPhotoWarning(grossCapture.warning);
+      const tareCapture = await captureAfterWeightPersist(ticket.id, 'tare');
+      appendPhotoWarning(tareCapture.warning);
+      const refreshed = TicketStorage.getById(ticket.id) ?? ticket;
+      logger.info('weighing', `Создан тикет №${refreshed.ticket_number}`, {
+        id: refreshed.id,
         mode: 'single',
-        status: ticket.status,
+        status: refreshed.status,
       });
       setSaving(false);
-      setLastTicket(ticket);
+      setLastTicket(refreshed);
       setSuccess('Взвешивание завершено и сохранено.');
-      onSaved(ticket);
+      onSaved(refreshed);
       resetFormFields();
       setIncompleteRefresh((n) => n + 1);
     } catch (err: unknown) {
@@ -436,9 +647,26 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       return;
     }
 
+    const scaleFields = ticketScaleFieldsFromRuntime();
+    if (!scaleFields) {
+      setError('Площадка/комплект весов не инициализированы');
+      return;
+    }
+
     const hasGross = grossWeight != null && grossWeight > 0;
+    const slotsOnStep: Array<'gross' | 'tare'> = [hasGross ? 'gross' : 'tare'];
+    if (!validateManualReasonForStep(slotsOnStep)) {
+      return;
+    }
+    const plateKey = normalizeVehicleKey(vehicleNumber);
     setSaving(true);
     try {
+      setPhotoWarning(null);
+      logger.scaleRuntime.info(
+        'Сохранение первого прохода с источниками веса',
+        buildScaleRuntimeContext('save_dual_first'),
+        { gross_source: hasGross ? grossSource : 'manual', tare_source: hasGross ? 'manual' : tareSource },
+      );
       const ticket = TicketStorage.create({
         vehicle_number: formatVehiclePlate(vehicleNumber),
         vehicle_brand: formatVehicleBrand(vehicleBrand),
@@ -460,7 +688,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         tare_raw: hasGross ? null : tareRaw,
         gross_datetime: hasGross ? grossDatetime : null,
         tare_datetime: hasGross ? null : tareDatetime,
-        scale_device: SCALE_DEVICES[deviceId].name,
+        scale_device: resolveScaleDeviceLabel(),
+        manual_weight_reason: resolveManualReasonForStep(slotsOnStep),
         operator_id: null,
         operator_name: displayName,
         status: 'open',
@@ -468,16 +697,26 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         notes,
         weighing_mode: 'dual',
         version: 1,
+        plate_source: resolvePlateSource(plateKey, vehicles.entries),
+        site_id: scaleFields.site_id,
+        scale_id: scaleFields.scale_id,
+        scale_role: scaleFields.scale_role,
+        photo_entry_path: null,
+        photo_exit_path: null,
       });
-      logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
-        id: ticket.id,
+      const captureEvent: CaptureEvent = hasGross ? 'gross' : 'tare';
+      const captureResult = await captureAfterWeightPersist(ticket.id, captureEvent);
+      appendPhotoWarning(captureResult.warning);
+      const refreshed = TicketStorage.getById(ticket.id) ?? ticket;
+      logger.info('weighing', `Создан тикет №${refreshed.ticket_number}`, {
+        id: refreshed.id,
         mode: 'dual',
-        status: ticket.status,
+        status: refreshed.status,
       });
       setSaving(false);
-      setLastTicket(ticket);
+      setLastTicket(refreshed);
       setSuccess('Первый проход сохранён. Тикет в незавершённых.');
-      onSaved(ticket);
+      onSaved(refreshed);
       resetFormFields();
       setIncompleteRefresh((n) => n + 1);
     } catch (err: unknown) {
@@ -506,11 +745,22 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setError(validation);
       return;
     }
+    const slotsOnStep: Array<'gross' | 'tare'> = [];
+    if (editability.grossEditable) {
+      slotsOnStep.push('gross');
+    }
+    if (editability.tareEditable) {
+      slotsOnStep.push('tare');
+    }
+    if (!validateManualReasonForStep(slotsOnStep)) {
+      return;
+    }
 
     const now = new Date().toISOString();
     const net = calcNetWeight(grossWeight!, tareWeight!);
     const amount = calcTotalAmount(net, parseFloat(price) || 0);
 
+    const plateKey = normalizeVehicleKey(vehicleNumber);
     const updates: Partial<WeighingTicket> = {
       vehicle_number: formatVehiclePlate(vehicleNumber),
       vehicle_brand: formatVehicleBrand(vehicleBrand),
@@ -527,7 +777,23 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       completed_at: now,
       net_weight: net,
       total_amount: amount,
+      plate_source: resolvePlateSource(plateKey, vehicles.entries),
     };
+    const manualReasonForStep = resolveManualReasonForStep(slotsOnStep);
+    if (manualReasonForStep !== null) {
+      updates.manual_weight_reason = manualReasonForStep;
+    } else if (manualWeightReasonTouched) {
+      updates.manual_weight_reason = manualWeightReason.trim() || null;
+    }
+
+    const scaleFields = ticketScaleFieldsFromRuntime();
+    if (!scaleFields) {
+      setError('Площадка/комплект весов не инициализированы');
+      return;
+    }
+    updates.site_id = scaleFields.site_id;
+    updates.scale_id = scaleFields.scale_id;
+    updates.scale_role = scaleFields.scale_role;
 
     // Only write weight meta for slots that were editable (new on this step)
     if (editability.grossEditable) {
@@ -552,11 +818,18 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       (editability.grossEditable && grossSource === 'instrument') ||
       (editability.tareEditable && tareSource === 'instrument');
     if (instrumentOnStep) {
-      updates.scale_device = SCALE_DEVICES[deviceId].name;
+      updates.scale_device = resolveScaleDeviceLabel();
     }
 
     setSaving(true);
     try {
+      setPhotoWarning(null);
+      logger.scaleRuntime.info(
+        'Сохранение дозавершения с источниками веса',
+        buildScaleRuntimeContext('save_dual_complete'),
+        { gross_source: grossSource, tare_source: tareSource },
+      );
+      // photo_* omitted from patch → TicketStorage.update preserves existing stubs.
       const ticket = TicketStorage.update(completingTicket.id, updates, {
         expectedVersion: completingTicket.version ?? 1,
       });
@@ -566,15 +839,25 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         setIncompleteRefresh((n) => n + 1);
         return;
       }
-      logger.info('weighing', `Завершён тикет №${ticket.ticket_number}`, {
-        id: ticket.id,
-        mode: ticket.weighing_mode,
-        status: ticket.status,
+      onTicketCompletedLearning(ticket);
+      // Capture only newly fixed phase(s) on this complete step.
+      const captureEvents: CaptureEvent[] = [];
+      if (editability.grossEditable) captureEvents.push('gross');
+      if (editability.tareEditable) captureEvents.push('tare');
+      for (const event of captureEvents) {
+        const captureResult = await captureAfterWeightPersist(ticket.id, event);
+        appendPhotoWarning(captureResult.warning);
+      }
+      const refreshed = TicketStorage.getById(ticket.id) ?? ticket;
+      logger.info('weighing', `Завершён тикет №${refreshed.ticket_number}`, {
+        id: refreshed.id,
+        mode: refreshed.weighing_mode,
+        status: refreshed.status,
       });
       setSaving(false);
-      setLastTicket(ticket);
+      setLastTicket(refreshed);
       setSuccess('Взвешивание завершено и сохранено.');
-      onSaved(ticket);
+      onSaved(refreshed);
       resetFormFields();
       exitCompletion();
       const settings = SettingsStorage.getAppSettings();
@@ -607,6 +890,14 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition';
   const labelClass = 'block text-xs font-medium text-slate-600 mb-1';
   const showIncompletePanel = formMode === 'dual' || isCompleting;
+  const confirmedVehicleKey = normalizeVehicleKey(vehicleNumber);
+  const driverOptions = driverDatalistOptions({
+    mode: appSettings.driver_input_mode,
+    history: VehicleDriversStorage.getByVehicleKey(confirmedVehicleKey),
+    allDrivers: drivers.entries,
+  });
+  const driverListId =
+    appSettings.driver_input_mode === 'free' ? undefined : 'drivers-list';
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px] min-w-0">
@@ -640,6 +931,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
                   Двойное
                 </button>
               </div>
+              <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800">
+                {scaleSetLabel}
+              </span>
               <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
                 Весовщик: {displayName}
               </span>
@@ -661,7 +955,14 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className={labelClass}>Номер автомобиля *</label>
-              <input list="vehicles-list" value={vehicleNumber} onChange={(e) => setVehicleNumber(e.target.value)} placeholder="А123ВС77" className={inputClass} />
+              <input
+                list="vehicles-list"
+                value={vehicleNumber}
+                onChange={(e) => handleVehicleNumberChange(e.target.value)}
+                onBlur={() => applyConfirmedVehicleNumber(vehicleNumber)}
+                placeholder="А123ВС77"
+                className={inputClass}
+              />
               <datalist id="vehicles-list">
                 {vehicles.entries.map((v) => <option key={v.id} value={v.vehicle_number} />)}
               </datalist>
@@ -679,10 +980,20 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             </div>
             <div>
               <label className={labelClass}>ФИО водителя *</label>
-              <input list="drivers-list" value={driverName} onChange={(e) => setDriverName(e.target.value)} placeholder="Иванов И.И." className={inputClass} />
-              <datalist id="drivers-list">
-                {drivers.entries.map((d) => <option key={d.id} value={d.name} />)}
-              </datalist>
+              <input
+                list={driverListId}
+                value={driverName}
+                onChange={(e) => setDriverName(e.target.value)}
+                placeholder="Иванов И.И."
+                className={inputClass}
+              />
+              {driverListId && (
+                <datalist id="drivers-list">
+                  {driverOptions.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+              )}
             </div>
             <div>
               <label className={labelClass}>Наименование груза *</label>
@@ -723,6 +1034,20 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <div className="sm:col-span-2">
               <label className={labelClass}>Примечание</label>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Дополнительная информация" className={`${inputClass} resize-none`} />
+            </div>
+            <div className="sm:col-span-2">
+              <label className={labelClass}>
+                Причина ручного ввода веса {appSettings.manual_weight_reason_policy === 'required' ? '*' : '(опционально)'}
+              </label>
+              <input
+                value={manualWeightReason}
+                onChange={(e) => {
+                  setManualWeightReason(e.target.value);
+                  setManualWeightReasonTouched(true);
+                }}
+                placeholder="Например: сбой подключения, ручной контроль"
+                className={inputClass}
+              />
             </div>
           </div>
         </div>
@@ -780,7 +1105,11 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <div className={`rounded-xl border-2 p-4 transition ${highlightPhase === 'gross' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">БРУТТО</span>
-                {grossSource === 'instrument' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">ПРИБОР</span>}
+                {grossSource && (
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                    {WEIGHT_SOURCE_LABELS[grossSource]}
+                  </span>
+                )}
               </div>
               <input
                 type="number"
@@ -803,7 +1132,11 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <div className={`rounded-xl border-2 p-4 transition ${highlightPhase === 'tare' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">ТАРА</span>
-                {tareSource === 'instrument' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">ПРИБОР</span>}
+                {tareSource && (
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                    {WEIGHT_SOURCE_LABELS[tareSource]}
+                  </span>
+                )}
               </div>
               <input
                 type="number"
@@ -812,6 +1145,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
                 onChange={(e) => {
                   setTareWeight(parseWeightInput(e.target.value));
                   setTareSource('manual');
+                  setTareAutofillLockedSafe(true);
                   setTareRaw(null);
                   setTareDatetime(new Date().toISOString());
                 }}
@@ -900,9 +1234,20 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <AlertCircle size={18} className="mt-0.5 shrink-0" /> {unstableWarning}
           </div>
         )}
+        {photoWarning && (
+          <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
+            <AlertCircle size={18} className="mt-0.5 shrink-0" /> {photoWarning}
+          </div>
+        )}
         {success && (
           <div className="flex items-start gap-2 rounded-lg bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm text-emerald-700">
             <CheckCircle2 size={18} className="mt-0.5 shrink-0" /> {success}
+          </div>
+        )}
+        {lastTicket && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-semibold text-slate-800 mb-2">Снимки талона</h3>
+            <TicketPhotosPreview ticketId={lastTicket.id} />
           </div>
         )}
 
@@ -948,13 +1293,18 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           onCapture={handleInstrumentCapture}
           label={captureLabel}
           capturedWeight={highlightPhase === 'gross' ? grossWeight : tareWeight}
-          deviceId={deviceId}
-          onDeviceChange={setDeviceId}
+          activeScale={activeScale}
           stableMode={appSettings.stable_mode}
           onReadingChange={setLiveScaleWeight}
           onUnstableCapture={() => {
             setUnstableWarning('Зафиксирован нестабильный вес.');
             window.setTimeout(() => setUnstableWarning(null), 4000);
+          }}
+          onUnstableBlocked={() => {
+            logger.scaleRuntime.warn(
+              'Блокировка фиксации нестабильного веса',
+              buildScaleRuntimeContext('unstable_capture_blocked', 'unstable_weight_blocked'),
+            );
           }}
         />
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

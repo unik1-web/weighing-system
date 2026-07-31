@@ -1,15 +1,81 @@
 // Local storage abstraction for weighing system
 import { scheduleConfigSync, scheduleDatabaseSync, flushDatabaseSync, DICTIONARIES_UPDATED_EVENT } from './storage-sync';
-import { formatVehiclePlate } from './vehicle-plate';
+import { formatVehiclePlate, normalizeVehicleKey } from './vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from './text-format';
 import { ticketImportKey } from './import-keys';
-import { normalizeWeighingMode, type WeighingMode } from './weighing-mode';
+import { normalizeWeighingMode, normalizeWeightSource, type WeighingMode } from './weighing-mode';
+import { normalizeScaleDeviceId, type ScaleDeviceId } from './scales';
 import { logger } from './logger';
+import type { ParserDraft, ScaleTransport, SerialDraft, TcpDraft } from './scale-adapters/contract';
+import type { Camera, CameraRole, CaptureEvent, TicketPhoto } from './cameras';
 
-export type WeightSource = 'manual' | 'instrument';
+export type { Camera, CameraRole, CaptureEvent, TicketPhoto } from './cameras';
+
+export type WeightSource = 'manual' | 'instrument' | 'dictionary' | 'default';
 export type TicketStatus = 'open' | 'completed';
 export type ReoStatus = 'pending' | 'sent';
-export type { WeighingMode };
+export type DriverInputMode = 'vehicle' | 'all' | 'free';
+export type PlateSource = 'anpr' | 'operator' | 'directory';
+export type ScaleRole = 'primary' | 'spare';
+export type ScaleSet = 'primary' | 'spare';
+export type CameraMode = 'primary' | 'spare';
+export type AnprMode = 'enabled' | 'disabled_by_configuration' | 'failed';
+export type SwitchReason = 'repair' | 'cleaning' | 'verification' | 'other';
+export type { WeighingMode, ScaleDeviceId };
+
+export interface ScaleConnectionJson {
+  transport: ScaleTransport;
+  device_id: ScaleDeviceId | null;
+  serial?: SerialDraft;
+  tcp?: TcpDraft;
+  parser?: ParserDraft;
+}
+
+export interface Site {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface Scale {
+  id: string;
+  site_id: string;
+  role: ScaleSet;
+  adapter_id: string;
+  connection: ScaleConnectionJson;
+  name?: string;
+  created_at: string;
+}
+
+export interface SiteRuntime {
+  site_id: string;
+  active_scale_set: ScaleSet;
+  camera_mode: CameraMode;
+  anpr_mode: AnprMode;
+  last_switch_reason: SwitchReason | null;
+  last_switch_comment: string | null;
+  last_switch_operator_name: string | null;
+  last_switch_operator_id: string | null;
+  last_switch_at: string | null;
+  updated_at: string;
+}
+
+export interface ScaleSwitchJournalEntry {
+  id: string;
+  site_id: string;
+  from_set: ScaleSet;
+  to_set: ScaleSet;
+  reason: SwitchReason;
+  comment: string | null;
+  operator_name: string;
+  operator_id: string | null;
+  switched_at: string;
+}
+
+export function normalizeDriverInputMode(raw: string | null | undefined): DriverInputMode {
+  if (raw === 'vehicle' || raw === 'all' || raw === 'free') return raw;
+  return 'vehicle';
+}
 
 export const REO_STATUS_LABELS: Record<ReoStatus, string> = {
   pending: 'Не отправлено',
@@ -40,22 +106,47 @@ export interface WeighingTicket {
   gross_datetime: string | null;
   tare_datetime: string | null;
   scale_device: string;
+  manual_weight_reason?: string | null;
   operator_id: string | null;
   operator_name: string;
   status: TicketStatus;
   reo_status: ReoStatus;
   reo_sent_at: string | null;
+  auto_closed?: boolean;
   notes: string;
   created_at: string;
   completed_at: string | null;
   weighing_mode?: WeighingMode;
   version?: number;
+  plate_source?: PlateSource | null;
+  site_id?: string | null;
+  scale_id?: string | null;
+  scale_role?: ScaleRole | null;
+  photo_entry_path?: string | null;
+  photo_exit_path?: string | null;
+  /** Transient capture-merge marker for post-capture flush (not a DB column). */
+  capture_token?: string | null;
+  readonly year?: number;
+}
+
+export interface VehicleDriverRecord {
+  id: string;
+  vehicle_key: string;
+  driver_name: string;
+  last_used_at: string;
+  use_count: number;
 }
 
 export interface TicketAuditEvent {
   id: string;
   ticket_id: string;
-  action: 'created' | 'completed';
+  action: 'created' | 'completed' | 'auto_close' | 'archive_edit';
+  event_type?: 'created' | 'completed' | 'auto_close' | 'archive_edit';
+  source_year?: number;
+  changed_fields?: string[];
+  old_values?: Record<string, unknown> | null;
+  new_values?: Record<string, unknown> | null;
+  reo_divergence_warning?: boolean;
   at: string;
   operator_name: string;
   operator_id: string | null;
@@ -83,6 +174,13 @@ const STORAGE_KEYS = {
   SESSIONS: 'app_sessions',
   TICKETS: 'app_weighing_tickets',
   TICKET_AUDIT: 'app_ticket_audit',
+  VEHICLE_DRIVERS: 'app_vehicle_drivers',
+  SITES: 'app_sites',
+  SCALES: 'app_scales',
+  SITE_RUNTIME: 'app_site_runtime',
+  SCALE_SWITCH_JOURNAL: 'app_scale_switch_journal',
+  CAMERAS: 'app_cameras',
+  TICKET_PHOTOS: 'app_ticket_photos',
   VEHICLES: 'app_vehicles',
   DRIVERS: 'app_drivers',
   CARGOS: 'app_cargos',
@@ -243,11 +341,52 @@ export const SessionStorage = {
   },
 };
 
+function normalizePlateSource(raw: unknown): PlateSource | null {
+  if (raw === 'anpr' || raw === 'operator' || raw === 'directory') return raw;
+  return null;
+}
+
+function normalizeScaleRole(raw: unknown): ScaleRole | null {
+  if (raw === 'primary' || raw === 'spare') return raw;
+  return null;
+}
+
+function normalizeNullableString(raw: unknown): string | null {
+  if (raw === undefined || raw === null || raw === '') return null;
+  return String(raw);
+}
+
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
+  const inferredYear =
+    typeof ticket.created_at === 'string' && ticket.created_at.length >= 4
+      ? Number.parseInt(ticket.created_at.slice(0, 4), 10)
+      : NaN;
   const next: WeighingTicket = {
     ...ticket,
     reo_status: ticket.reo_status ?? 'pending',
     reo_sent_at: ticket.reo_sent_at ?? null,
+    auto_closed: ticket.auto_closed ?? false,
+    gross_source: normalizeWeightSource(ticket.gross_source as string),
+    tare_source: normalizeWeightSource(ticket.tare_source as string),
+    plate_source: normalizePlateSource(ticket.plate_source),
+    site_id: normalizeNullableString(ticket.site_id),
+    scale_id: normalizeNullableString(ticket.scale_id),
+    scale_role: normalizeScaleRole(ticket.scale_role),
+    manual_weight_reason: normalizeNullableString(ticket.manual_weight_reason),
+    photo_entry_path:
+      ticket.photo_entry_path === undefined || ticket.photo_entry_path === null
+        ? null
+        : String(ticket.photo_entry_path),
+    photo_exit_path:
+      ticket.photo_exit_path === undefined || ticket.photo_exit_path === null
+        ? null
+        : String(ticket.photo_exit_path),
+    year:
+      typeof ticket.year === 'number'
+        ? ticket.year
+        : Number.isFinite(inferredYear)
+          ? inferredYear
+          : undefined,
   };
   const mode = normalizeWeighingMode(ticket);
   if (ticket.weighing_mode !== mode) {
@@ -259,20 +398,63 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
   return next;
 }
 
-/** Persist normalized mode/version so sync does not re-default open tickets to single. */
-function persistNormalizedTicketsIfNeeded(tickets: WeighingTicket[]): WeighingTicket[] {
-  let dirty = false;
-  const normalized = tickets.map((ticket) => {
-    const next = normalizeTicket(ticket);
-    if (ticket.weighing_mode !== next.weighing_mode || ticket.version !== next.version) {
-      dirty = true;
-    }
-    return next;
-  });
-  if (dirty) {
-    persist(STORAGE_KEYS.TICKETS, JSON.stringify(normalized));
+function resolveActiveYear(): number | null {
+  const { active_year } = SettingsStorage.getAppSettings();
+  return typeof active_year === 'number' ? active_year : null;
+}
+
+function ticketMatchesActiveYear(ticket: WeighingTicket, activeYear: number | null): boolean {
+  if (activeYear === null) return true;
+  if (typeof ticket.year === 'number') return ticket.year === activeYear;
+  if (typeof ticket.created_at === 'string' && ticket.created_at.length >= 4) {
+    const parsedYear = Number.parseInt(ticket.created_at.slice(0, 4), 10);
+    return Number.isFinite(parsedYear) && parsedYear === activeYear;
   }
-  return normalized;
+  return false;
+}
+
+function normalizeAuditEvent(raw: unknown): TicketAuditEvent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const source = raw as Record<string, unknown>;
+  const eventType = source.event_type;
+  const actionRaw = source.action;
+  const action =
+    actionRaw === 'created' || actionRaw === 'completed' || actionRaw === 'auto_close' || actionRaw === 'archive_edit'
+      ? actionRaw
+      : eventType === 'created' || eventType === 'completed' || eventType === 'auto_close' || eventType === 'archive_edit'
+        ? eventType
+        : null;
+  if (!action || typeof source.ticket_id !== 'string' || typeof source.at !== 'string') {
+    return null;
+  }
+  return {
+    id: typeof source.id === 'string' ? source.id : crypto.randomUUID(),
+    ticket_id: source.ticket_id,
+    action,
+    event_type:
+      eventType === 'created' || eventType === 'completed' || eventType === 'auto_close' || eventType === 'archive_edit'
+        ? eventType
+        : undefined,
+    source_year: typeof source.source_year === 'number' ? source.source_year : undefined,
+    changed_fields: Array.isArray(source.changed_fields)
+      ? source.changed_fields.filter((item): item is string => typeof item === 'string')
+      : undefined,
+    old_values:
+      source.old_values && typeof source.old_values === 'object'
+        ? (source.old_values as Record<string, unknown>)
+        : null,
+    new_values:
+      source.new_values && typeof source.new_values === 'object'
+        ? (source.new_values as Record<string, unknown>)
+        : null,
+    reo_divergence_warning: source.reo_divergence_warning === true,
+    at: source.at,
+    operator_name: typeof source.operator_name === 'string' ? source.operator_name : '',
+    operator_id:
+      source.operator_id === null || source.operator_id === undefined || source.operator_id === ''
+        ? null
+        : String(source.operator_id),
+  };
 }
 
 // Weighing tickets storage
@@ -292,9 +474,14 @@ export const TicketStorage = {
   ): WeighingTicket[] => {
     if (tickets.length === 0) return [];
 
-    const stored = getAllTickets();
+    const activeYear = resolveActiveYear();
+    const stored = getAllTickets().filter((ticket) => ticketMatchesActiveYear(ticket, activeYear));
     let maxNumber = Math.max(0, ...stored.map((ticket) => ticket.ticket_number || 0));
     const createdAt = new Date().toISOString();
+    const parsedCreatedYear = Number.parseInt(createdAt.slice(0, 4), 10);
+    const currentYear =
+      activeYear
+      ?? (Number.isFinite(parsedCreatedYear) ? parsedCreatedYear : new Date().getFullYear());
     const created: WeighingTicket[] = tickets.map((ticket) => {
       maxNumber += 1;
       const weighingMode =
@@ -309,6 +496,7 @@ export const TicketStorage = {
         ...ticket,
         weighing_mode: weighingMode,
         version: 1,
+        year: currentYear,
       });
     });
 
@@ -338,9 +526,11 @@ export const TicketStorage = {
   },
 
   getAll: (): WeighingTicket[] => {
-    return persistNormalizedTicketsIfNeeded(getAllTickets()).sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-    );
+    const activeYear = resolveActiveYear();
+    return getAllTickets()
+      .map(normalizeTicket)
+      .filter((ticket) => ticketMatchesActiveYear(ticket, activeYear))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
 
   getImportKeys: (): Set<string> => {
@@ -356,9 +546,11 @@ export const TicketStorage = {
   },
 
   getById: (id: string): WeighingTicket | null => {
-    const tickets = persistNormalizedTicketsIfNeeded(getAllTickets());
-    const ticket = tickets.find((t) => t.id === id);
-    return ticket ?? null;
+    const activeYear = resolveActiveYear();
+    const ticket = getAllTickets().find(
+      (item) => item.id === id && ticketMatchesActiveYear(item, activeYear),
+    );
+    return ticket ? normalizeTicket(ticket) : null;
   },
 
   delete: (id: string): void => {
@@ -390,12 +582,25 @@ export const TicketStorage = {
 
     const safeUpdates = { ...updates };
     delete safeUpdates.version;
+    // Do not force photo_* to null when the patch omits them.
+    if (!Object.prototype.hasOwnProperty.call(updates, 'photo_entry_path')) {
+      delete safeUpdates.photo_entry_path;
+    }
+    if (!Object.prototype.hasOwnProperty.call(updates, 'photo_exit_path')) {
+      delete safeUpdates.photo_exit_path;
+    }
     const wasCompleted = current.status === 'completed';
     const merged = normalizeTicket({
       ...current,
       ...safeUpdates,
       version: (current.version ?? 1) + 1,
     });
+    if (!Object.prototype.hasOwnProperty.call(updates, 'photo_entry_path')) {
+      merged.photo_entry_path = current.photo_entry_path ?? null;
+    }
+    if (!Object.prototype.hasOwnProperty.call(updates, 'photo_exit_path')) {
+      merged.photo_exit_path = current.photo_exit_path ?? null;
+    }
 
     tickets[index] = merged;
     persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
@@ -447,6 +652,7 @@ export const TicketAuditStorage = {
     events.push({
       id: crypto.randomUUID(),
       ...event,
+      event_type: event.event_type ?? event.action,
     });
     persist(STORAGE_KEYS.TICKET_AUDIT, JSON.stringify(events));
   },
@@ -457,7 +663,10 @@ export const TicketAuditStorage = {
     if (!stored) return [];
     try {
       const parsed = JSON.parse(stored);
-      return Array.isArray(parsed) ? parsed : [];
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map(normalizeAuditEvent)
+        .filter((event): event is TicketAuditEvent => event !== null);
     } catch {
       return [];
     }
@@ -481,6 +690,9 @@ export interface DictionaryEntry {
   vehicle_brand?: string;
   vehicle_number?: string;
   inn?: string;
+  preferred_driver_name?: string;
+  preferred_cargo_name?: string;
+  preferred_shipper_name?: string;
 }
 
 export const DICTIONARY_LABELS: Record<DictionaryTable, string> = {
@@ -635,6 +847,16 @@ export interface AppSettings {
   tara_threshold: number;
   max_time_between: number;
   tara_default: number;
+  driver_input_mode: DriverInputMode;
+  scale_device_id: ScaleDeviceId;
+  manual_weight_reason_policy: 'optional' | 'required';
+  active_year?: number | null;
+  /** Video capture master switch (SoT: config.ini via SettingsStorage). */
+  video_enabled: boolean;
+  /** Hard timeout for camera capture, seconds (SoT: config.ini). */
+  camera_capture_timeout_sec: number;
+  /** JPEG quality 1–100 (SoT: config.ini). */
+  camera_jpeg_quality: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -667,6 +889,19 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   tara_threshold: 15000,
   max_time_between: 24,
   tara_default: 0,
+  driver_input_mode: 'vehicle',
+  scale_device_id: 'microsim-m0601',
+  manual_weight_reason_policy: 'optional',
+  active_year: null,
+  video_enabled: false,
+  camera_capture_timeout_sec: 3,
+  camera_jpeg_quality: 80,
+};
+
+export const DRIVER_INPUT_MODE_LABELS: Record<DriverInputMode, string> = {
+  vehicle: 'По машине',
+  all: 'Весь справочник',
+  free: 'Свободный ввод',
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -732,12 +967,54 @@ export const SettingsStorage = {
       tara_threshold: parseNumber(stored.tara_threshold, DEFAULT_APP_SETTINGS.tara_threshold),
       max_time_between: parseNumber(stored.max_time_between, DEFAULT_APP_SETTINGS.max_time_between),
       tara_default: parseNumber(stored.tara_default, DEFAULT_APP_SETTINGS.tara_default),
+      driver_input_mode: normalizeDriverInputMode(stored.driver_input_mode),
+      scale_device_id: normalizeScaleDeviceId(stored.scale_device_id),
+      manual_weight_reason_policy:
+        stored.manual_weight_reason_policy === 'required' ? 'required' : 'optional',
+      active_year:
+        stored.active_year === undefined || stored.active_year === ''
+          ? null
+          : Number.isFinite(Number(stored.active_year))
+            ? Number(stored.active_year)
+            : null,
+      video_enabled: stored.video_enabled === 'true',
+      camera_capture_timeout_sec: parseNumber(
+        stored.camera_capture_timeout_sec,
+        DEFAULT_APP_SETTINGS.camera_capture_timeout_sec,
+      ),
+      camera_jpeg_quality: parseNumber(
+        stored.camera_jpeg_quality,
+        DEFAULT_APP_SETTINGS.camera_jpeg_quality,
+      ),
     };
   },
 
   updateAppSettings: (updates: Partial<AppSettings>): AppSettings => {
     const current = SettingsStorage.getAppSettings();
-    const next = { ...current, ...updates };
+    const next = {
+      ...current,
+      ...updates,
+      driver_input_mode: normalizeDriverInputMode(
+        updates.driver_input_mode ?? current.driver_input_mode,
+      ),
+      scale_device_id: normalizeScaleDeviceId(
+        updates.scale_device_id ?? current.scale_device_id,
+      ),
+      manual_weight_reason_policy:
+        updates.manual_weight_reason_policy === 'required' ? 'required' : 'optional',
+      video_enabled:
+        updates.video_enabled !== undefined ? Boolean(updates.video_enabled) : current.video_enabled,
+      camera_capture_timeout_sec:
+        updates.camera_capture_timeout_sec !== undefined &&
+        Number.isFinite(Number(updates.camera_capture_timeout_sec))
+          ? Number(updates.camera_capture_timeout_sec)
+          : current.camera_capture_timeout_sec,
+      camera_jpeg_quality:
+        updates.camera_jpeg_quality !== undefined &&
+        Number.isFinite(Number(updates.camera_jpeg_quality))
+          ? Number(updates.camera_jpeg_quality)
+          : current.camera_jpeg_quality,
+    };
     const flat: Record<string, string> = {
       org_name: next.org_name,
       org_address: next.org_address,
@@ -768,6 +1045,12 @@ export const SettingsStorage = {
       tara_threshold: String(next.tara_threshold),
       max_time_between: String(next.max_time_between),
       tara_default: String(next.tara_default),
+      driver_input_mode: next.driver_input_mode,
+      scale_device_id: next.scale_device_id,
+      manual_weight_reason_policy: next.manual_weight_reason_policy,
+      video_enabled: String(next.video_enabled),
+      camera_capture_timeout_sec: String(next.camera_capture_timeout_sec),
+      camera_jpeg_quality: String(next.camera_jpeg_quality),
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
@@ -795,6 +1078,648 @@ export async function clearAllDictionaries(): Promise<void> {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(DICTIONARIES_UPDATED_EVENT));
   }
+}
+
+function sortVehicleDriverRecords(records: VehicleDriverRecord[]): VehicleDriverRecord[] {
+  return [...records].sort((a, b) => {
+    const ta = Date.parse(a.last_used_at) || 0;
+    const tb = Date.parse(b.last_used_at) || 0;
+    if (tb !== ta) return tb - ta;
+    return (b.use_count ?? 0) - (a.use_count ?? 0);
+  });
+}
+
+function getAllVehicleDrivers(): VehicleDriverRecord[] {
+  const stored = localStorage.getItem(STORAGE_KEYS.VEHICLE_DRIVERS);
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (row): row is VehicleDriverRecord =>
+        !!row &&
+        typeof row === 'object' &&
+        typeof row.id === 'string' &&
+        typeof row.vehicle_key === 'string' &&
+        typeof row.driver_name === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** History of drivers per vehicle plate key (sync: app_vehicle_drivers). */
+export const VehicleDriversStorage = {
+  getAll(): VehicleDriverRecord[] {
+    return sortVehicleDriverRecords(getAllVehicleDrivers());
+  },
+
+  getByVehicleKey(key: string): VehicleDriverRecord[] {
+    if (!key) return [];
+    return sortVehicleDriverRecords(
+      getAllVehicleDrivers().filter((row) => row.vehicle_key === key),
+    );
+  },
+
+  /**
+   * Upsert usage for (vehicle_key, driver_name). Empty key/name → no-op.
+   * Best-effort: logs errors and does not throw.
+   */
+  recordUsage(vehicleKey: string, driverName: string, at: string): VehicleDriverRecord | null {
+    try {
+      const key = (vehicleKey ?? '').trim();
+      const name = formatPersonName(driverName ?? '');
+      if (!key || !name) return null;
+
+      const rows = getAllVehicleDrivers();
+      const index = rows.findIndex(
+        (row) => row.vehicle_key === key && row.driver_name.toLowerCase() === name.toLowerCase(),
+      );
+
+      let record: VehicleDriverRecord;
+      if (index === -1) {
+        record = {
+          id: crypto.randomUUID(),
+          vehicle_key: key,
+          driver_name: name,
+          last_used_at: at,
+          use_count: 1,
+        };
+        rows.push(record);
+      } else {
+        record = {
+          ...rows[index],
+          driver_name: name,
+          last_used_at: at,
+          use_count: (rows[index].use_count ?? 0) + 1,
+        };
+        rows[index] = record;
+      }
+
+      persist(STORAGE_KEYS.VEHICLE_DRIVERS, JSON.stringify(rows));
+      return record;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error('vehicle_drivers', `Ошибка записи истории водителей: ${message}`);
+      return null;
+    }
+  },
+};
+
+/**
+ * Update preferred_* on an existing vehicle card. Does not create a card.
+ * Does not touch vehicle_brand / default_tare_weight.
+ */
+export function updateVehiclePreferencesFromTrip(
+  vehicleKey: string,
+  prefs: {
+    preferred_driver_name?: string;
+    preferred_cargo_name?: string;
+    preferred_shipper_name?: string;
+  },
+): DictionaryEntry | null {
+  const key = (vehicleKey ?? '').trim();
+  if (!key) return null;
+
+  const vehicles = DictionaryStorage.getTable('vehicles');
+  const vehicle = vehicles.find((entry) => {
+    const raw = entry.vehicle_number ?? entry.name ?? '';
+    return normalizeVehicleKey(raw) === key;
+  });
+  if (!vehicle) return null;
+
+  const updates: Partial<DictionaryEntry> = {};
+  const driver = (prefs.preferred_driver_name ?? '').trim();
+  const cargo = (prefs.preferred_cargo_name ?? '').trim();
+  const shipper = (prefs.preferred_shipper_name ?? '').trim();
+  if (driver) updates.preferred_driver_name = formatPersonName(driver);
+  if (cargo) updates.preferred_cargo_name = cargo;
+  if (shipper) updates.preferred_shipper_name = shipper;
+  if (Object.keys(updates).length === 0) return vehicle;
+
+  return DictionaryStorage.update('vehicles', vehicle.id, updates);
+}
+
+function normalizeScaleSetValue(raw: unknown): ScaleSet | null {
+  if (raw === 'primary' || raw === 'spare') return raw;
+  return null;
+}
+const BUILTIN_ADAPTER_IDS = new Set<ScaleDeviceId>([
+  'microsim-m0601',
+  'newton',
+  'cas',
+  'midl-mi-vda',
+]);
+
+function normalizeAnprModeValue(raw: unknown): AnprMode | null {
+  if (raw === 'enabled' || raw === 'disabled_by_configuration' || raw === 'failed') {
+    return raw;
+  }
+  return null;
+}
+
+function normalizeSwitchReasonValue(raw: unknown): SwitchReason | null {
+  if (raw === 'repair' || raw === 'cleaning' || raw === 'verification' || raw === 'other') {
+    return raw;
+  }
+  return null;
+}
+
+function normalizeScaleConnectionValue(raw: unknown): ScaleConnectionJson {
+  if (!raw || typeof raw !== 'object') {
+    return { transport: 'web_serial', device_id: null };
+  }
+  const source = raw as {
+    transport?: unknown;
+    device_id?: unknown;
+    serial?: unknown;
+    tcp?: unknown;
+    parser?: unknown;
+  };
+  const transport: ScaleTransport =
+    source.transport === 'serial_backend' || source.transport === 'tcp_client'
+      ? source.transport
+      : 'web_serial';
+  const deviceRaw = source.device_id;
+  const deviceId =
+    deviceRaw === null || deviceRaw === undefined || deviceRaw === ''
+      ? null
+      : normalizeScaleDeviceId(String(deviceRaw));
+  const connection: ScaleConnectionJson = {
+    transport,
+    device_id: deviceId,
+  };
+  if (source.serial && typeof source.serial === 'object') {
+    connection.serial = source.serial as SerialDraft;
+  }
+  if (source.tcp && typeof source.tcp === 'object') {
+    connection.tcp = source.tcp as TcpDraft;
+  }
+  if (source.parser && typeof source.parser === 'object') {
+    connection.parser = source.parser as ParserDraft;
+  }
+  return connection;
+}
+
+function normalizeStoredAdapterId(
+  raw: unknown,
+  connection: ScaleConnectionJson,
+): string {
+  if (typeof raw === 'string' && BUILTIN_ADAPTER_IDS.has(raw as ScaleDeviceId)) {
+    return raw;
+  }
+  if (raw === 'generic-regex') {
+    return 'generic-regex';
+  }
+  if (raw === 'web_serial' && connection.device_id) {
+    return connection.device_id;
+  }
+  if (typeof raw === 'string' && raw) {
+    return raw;
+  }
+  return 'web_serial';
+}
+
+function normalizeSite(row: unknown): Site | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  if (typeof r.id !== 'string' || !r.id) return null;
+  return {
+    id: r.id,
+    name: typeof r.name === 'string' ? r.name : '',
+    created_at: typeof r.created_at === 'string' ? r.created_at : new Date().toISOString(),
+  };
+}
+
+function normalizeScale(row: unknown): Scale | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const role = normalizeScaleSetValue(r.role);
+  if (typeof r.id !== 'string' || !r.id || typeof r.site_id !== 'string' || !role) return null;
+  const connection = normalizeScaleConnectionValue(r.connection);
+  const adapterId = normalizeStoredAdapterId(r.adapter_id, connection);
+  if (BUILTIN_ADAPTER_IDS.has(adapterId as ScaleDeviceId)) {
+    connection.device_id = adapterId as ScaleDeviceId;
+  }
+  return {
+    id: r.id,
+    site_id: r.site_id,
+    role,
+    adapter_id: adapterId,
+    connection,
+    name: typeof r.name === 'string' ? r.name : '',
+    created_at: typeof r.created_at === 'string' ? r.created_at : new Date().toISOString(),
+  };
+}
+
+function normalizeSiteRuntime(row: unknown): SiteRuntime | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const active = normalizeScaleSetValue(r.active_scale_set);
+  const camera = normalizeScaleSetValue(r.camera_mode);
+  const anpr = normalizeAnprModeValue(r.anpr_mode);
+  if (typeof r.site_id !== 'string' || !r.site_id || !active || !camera || !anpr) return null;
+  return {
+    site_id: r.site_id,
+    active_scale_set: active,
+    camera_mode: camera,
+    anpr_mode: anpr,
+    last_switch_reason: normalizeSwitchReasonValue(r.last_switch_reason),
+    last_switch_comment:
+      r.last_switch_comment === undefined || r.last_switch_comment === null || r.last_switch_comment === ''
+        ? null
+        : String(r.last_switch_comment),
+    last_switch_operator_name:
+      r.last_switch_operator_name === undefined || r.last_switch_operator_name === null
+        ? null
+        : String(r.last_switch_operator_name),
+    last_switch_operator_id:
+      r.last_switch_operator_id === undefined || r.last_switch_operator_id === null || r.last_switch_operator_id === ''
+        ? null
+        : String(r.last_switch_operator_id),
+    last_switch_at:
+      r.last_switch_at === undefined || r.last_switch_at === null || r.last_switch_at === ''
+        ? null
+        : String(r.last_switch_at),
+    updated_at: typeof r.updated_at === 'string' ? r.updated_at : new Date().toISOString(),
+  };
+}
+
+function normalizeJournalEntry(row: unknown): ScaleSwitchJournalEntry | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const fromSet = normalizeScaleSetValue(r.from_set);
+  const toSet = normalizeScaleSetValue(r.to_set);
+  const reason = normalizeSwitchReasonValue(r.reason);
+  if (typeof r.id !== 'string' || !r.id || typeof r.site_id !== 'string' || !fromSet || !toSet || !reason) {
+    return null;
+  }
+  return {
+    id: r.id,
+    site_id: r.site_id,
+    from_set: fromSet,
+    to_set: toSet,
+    reason,
+    comment:
+      r.comment === undefined || r.comment === null || r.comment === ''
+        ? null
+        : String(r.comment),
+    operator_name: typeof r.operator_name === 'string' ? r.operator_name : '',
+    operator_id:
+      r.operator_id === undefined || r.operator_id === null || r.operator_id === ''
+        ? null
+        : String(r.operator_id),
+    switched_at: typeof r.switched_at === 'string' ? r.switched_at : new Date().toISOString(),
+  };
+}
+
+/** Sites (sync: app_sites). */
+export const SiteStorage = {
+  getAll(): Site[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.SITES);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeSite).filter((row): row is Site => row !== null);
+    } catch {
+      return [];
+    }
+  },
+
+  getById(id: string): Site | null {
+    return SiteStorage.getAll().find((row) => row.id === id) ?? null;
+  },
+
+  upsert(site: Site): Site {
+    const rows = SiteStorage.getAll();
+    const index = rows.findIndex((row) => row.id === site.id);
+    if (index === -1) rows.push(site);
+    else rows[index] = site;
+    persist(STORAGE_KEYS.SITES, JSON.stringify(rows));
+    return site;
+  },
+};
+
+/** Scale sets on a site (sync: app_scales). One primary and one spare per site. */
+export const ScaleStorage = {
+  getAll(): Scale[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.SCALES);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeScale).filter((row): row is Scale => row !== null);
+    } catch {
+      return [];
+    }
+  },
+
+  getBySite(siteId: string): Scale[] {
+    return ScaleStorage.getAll().filter((row) => row.site_id === siteId);
+  },
+
+  getByRole(siteId: string, role: ScaleSet): Scale | null {
+    return ScaleStorage.getBySite(siteId).find((row) => row.role === role) ?? null;
+  },
+
+  upsert(scale: Scale): Scale {
+    const rows = ScaleStorage.getAll();
+    const byId = rows.findIndex((row) => row.id === scale.id);
+    if (byId !== -1) {
+      rows[byId] = scale;
+    } else {
+      const byRole = rows.findIndex(
+        (row) => row.site_id === scale.site_id && row.role === scale.role,
+      );
+      if (byRole !== -1) rows[byRole] = scale;
+      else rows.push(scale);
+    }
+    persist(STORAGE_KEYS.SCALES, JSON.stringify(rows));
+    return scale;
+  },
+};
+
+/** Active scale runtime (sync: app_site_runtime). */
+export const SiteRuntimeStorage = {
+  getAll(): SiteRuntime[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.SITE_RUNTIME);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeSiteRuntime).filter((row): row is SiteRuntime => row !== null);
+    } catch {
+      return [];
+    }
+  },
+
+  get(siteId?: string): SiteRuntime | null {
+    const rows = SiteRuntimeStorage.getAll();
+    if (siteId) return rows.find((row) => row.site_id === siteId) ?? null;
+    return rows[0] ?? null;
+  },
+
+  upsert(runtime: SiteRuntime): SiteRuntime {
+    const rows = SiteRuntimeStorage.getAll();
+    const index = rows.findIndex((row) => row.site_id === runtime.site_id);
+    if (index === -1) rows.push(runtime);
+    else rows[index] = runtime;
+    persist(STORAGE_KEYS.SITE_RUNTIME, JSON.stringify(rows));
+    return runtime;
+  },
+
+  /** Test/helper: clear all runtime rows (does not remove sites/scales). */
+  clear(): void {
+    persist(STORAGE_KEYS.SITE_RUNTIME, JSON.stringify([]));
+  },
+};
+
+/** Append-only scale switch journal (sync: app_scale_switch_journal). */
+export const ScaleSwitchJournalStorage = {
+  getAll(siteId?: string): ScaleSwitchJournalEntry[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.SCALE_SWITCH_JOURNAL);
+    let rows: ScaleSwitchJournalEntry[] = [];
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          rows = parsed
+            .map(normalizeJournalEntry)
+            .filter((row): row is ScaleSwitchJournalEntry => row !== null);
+        }
+      } catch {
+        rows = [];
+      }
+    }
+    if (siteId) rows = rows.filter((row) => row.site_id === siteId);
+    return rows.sort(
+      (a, b) => new Date(b.switched_at).getTime() - new Date(a.switched_at).getTime(),
+    );
+  },
+
+  append(entry: ScaleSwitchJournalEntry): ScaleSwitchJournalEntry {
+    const stored = localStorage.getItem(STORAGE_KEYS.SCALE_SWITCH_JOURNAL);
+    let rows: ScaleSwitchJournalEntry[] = [];
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          rows = parsed
+            .map(normalizeJournalEntry)
+            .filter((row): row is ScaleSwitchJournalEntry => row !== null);
+        }
+      } catch {
+        rows = [];
+      }
+    }
+    rows.push(entry);
+    persist(STORAGE_KEYS.SCALE_SWITCH_JOURNAL, JSON.stringify(rows));
+    return entry;
+  },
+};
+
+function normalizeCameraRole(raw: unknown): CameraRole | null {
+  if (raw === 'entry' || raw === 'exit' || raw === 'overview') return raw;
+  return null;
+}
+
+function normalizeCaptureEvent(raw: unknown): CaptureEvent | null {
+  if (raw === 'gross' || raw === 'tare') return raw;
+  return null;
+}
+
+function normalizeCamera(row: unknown): Camera | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const role = normalizeCameraRole(r.role);
+  if (typeof r.id !== 'string' || !r.id || typeof r.site_id !== 'string' || !role) {
+    return null;
+  }
+  const asNumOrNull = (v: unknown): number | null => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    id: r.id,
+    site_id: r.site_id,
+    name: typeof r.name === 'string' ? r.name : '',
+    role,
+    http_snapshot_url: normalizeNullableString(r.http_snapshot_url),
+    rtsp_url: normalizeNullableString(r.rtsp_url),
+    enabled: r.enabled === true || r.enabled === 1 || r.enabled === '1' || r.enabled === 'true',
+    roi_x: asNumOrNull(r.roi_x),
+    roi_y: asNumOrNull(r.roi_y),
+    roi_w: asNumOrNull(r.roi_w),
+    roi_h: asNumOrNull(r.roi_h),
+    etalon_primary_path: normalizeNullableString(r.etalon_primary_path),
+    etalon_spare_path: normalizeNullableString(r.etalon_spare_path),
+    sort_order: Number.isFinite(Number(r.sort_order)) ? Number(r.sort_order) : 0,
+    created_at: typeof r.created_at === 'string' ? r.created_at : new Date().toISOString(),
+    updated_at: typeof r.updated_at === 'string' ? r.updated_at : new Date().toISOString(),
+  };
+}
+
+function normalizeTicketPhoto(row: unknown): TicketPhoto | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const cameraRole = normalizeCameraRole(r.camera_role);
+  const event = normalizeCaptureEvent(r.event);
+  if (
+    typeof r.id !== 'string' ||
+    !r.id ||
+    typeof r.ticket_id !== 'string' ||
+    typeof r.camera_id !== 'string' ||
+    !cameraRole ||
+    !event
+  ) {
+    return null;
+  }
+  const status = r.status === 'failed' ? 'failed' : r.status === 'success' ? 'success' : null;
+  if (!status) return null;
+  const cameraMode =
+    r.camera_mode === 'primary' || r.camera_mode === 'spare' ? r.camera_mode : null;
+  return {
+    id: r.id,
+    ticket_id: r.ticket_id,
+    camera_id: r.camera_id,
+    camera_role: cameraRole,
+    event,
+    file_path: normalizeNullableString(r.file_path),
+    status,
+    error_code: normalizeNullableString(r.error_code),
+    captured_at: typeof r.captured_at === 'string' ? r.captured_at : new Date().toISOString(),
+    camera_mode: cameraMode,
+  };
+}
+
+function ticketPhotoMatchKey(row: TicketPhoto): string {
+  return `${row.ticket_id}|${row.camera_id}|${row.event}`;
+}
+
+/**
+ * Merge capture response photos into the full local list.
+ * Upserts by id or UNIQUE (ticket_id, camera_id, event).
+ * Must not replace the whole collection with a single-ticket capture payload.
+ */
+export function upsertTicketPhotosFromCapture(
+  fullList: TicketPhoto[],
+  captureTicketPhotos: TicketPhoto[],
+): TicketPhoto[] {
+  const result = fullList.map((row) => ({ ...row }));
+  for (const incoming of captureTicketPhotos) {
+    const byId = result.findIndex((row) => row.id === incoming.id);
+    if (byId !== -1) {
+      result[byId] = incoming;
+      continue;
+    }
+    const key = ticketPhotoMatchKey(incoming);
+    const byKey = result.findIndex((row) => ticketPhotoMatchKey(row) === key);
+    if (byKey !== -1) {
+      result[byKey] = incoming;
+    } else {
+      result.push(incoming);
+    }
+  }
+  return result;
+}
+
+/** Cameras registry (sync: app_cameras). */
+export const CameraStorage = {
+  getAll(): Camera[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.CAMERAS);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map(normalizeCamera)
+        .filter((row): row is Camera => row !== null)
+        .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, 'ru'));
+    } catch {
+      return [];
+    }
+  },
+
+  getBySite(siteId: string): Camera[] {
+    return CameraStorage.getAll().filter((row) => row.site_id === siteId);
+  },
+
+  replaceAll(rows: Camera[]): Camera[] {
+    const normalized = rows
+      .map(normalizeCamera)
+      .filter((row): row is Camera => row !== null);
+    persist(STORAGE_KEYS.CAMERAS, JSON.stringify(normalized));
+    return normalized;
+  },
+
+  upsert(row: Camera): Camera {
+    const normalized = normalizeCamera(row);
+    if (!normalized) {
+      throw new Error('Invalid camera row');
+    }
+    const rows = CameraStorage.getAll();
+    const index = rows.findIndex((item) => item.id === normalized.id);
+    if (index === -1) rows.push(normalized);
+    else rows[index] = normalized;
+    persist(STORAGE_KEYS.CAMERAS, JSON.stringify(rows));
+    return normalized;
+  },
+
+  remove(id: string): void {
+    const rows = CameraStorage.getAll().filter((row) => row.id !== id);
+    persist(STORAGE_KEYS.CAMERAS, JSON.stringify(rows));
+  },
+};
+
+/** Ticket photos metadata (sync: app_ticket_photos). No replaceAll of full collection from capture. */
+export const TicketPhotoStorage = {
+  getAll(): TicketPhoto[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.TICKET_PHOTOS);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeTicketPhoto).filter((row): row is TicketPhoto => row !== null);
+    } catch {
+      return [];
+    }
+  },
+
+  getByTicket(ticketId: string): TicketPhoto[] {
+    return TicketPhotoStorage.getAll().filter((row) => row.ticket_id === ticketId);
+  },
+
+  upsertMany(rows: TicketPhoto[]): TicketPhoto[] {
+    const merged = upsertTicketPhotosFromCapture(TicketPhotoStorage.getAll(), rows);
+    persist(STORAGE_KEYS.TICKET_PHOTOS, JSON.stringify(merged));
+    return merged;
+  },
+};
+
+/**
+ * Learning after ticket reaches completed: upsert vehicle_drivers + preferred_*.
+ * Caller must not invoke for open dual first pass.
+ */
+export function onTicketCompletedLearning(ticket: {
+  vehicle_number?: string | null;
+  driver_name?: string | null;
+  cargo_name?: string | null;
+  shipper_name?: string | null;
+  completed_at?: string | null;
+}): void {
+  const key = normalizeVehicleKey(ticket.vehicle_number ?? '');
+  const driver = formatPersonName(ticket.driver_name ?? '');
+  if (!key || !driver) return;
+
+  const at = ticket.completed_at || new Date().toISOString();
+  VehicleDriversStorage.recordUsage(key, driver, at);
+  updateVehiclePreferencesFromTrip(key, {
+    preferred_driver_name: driver,
+    preferred_cargo_name: ticket.cargo_name ?? '',
+    preferred_shipper_name: ticket.shipper_name ?? '',
+  });
 }
 
 // Initialize default data (only on first run)

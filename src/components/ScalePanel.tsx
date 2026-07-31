@@ -1,34 +1,46 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useScale } from '@/hooks/useScale';
-import { SCALE_DEVICE_LIST, type ScaleDeviceId } from '@/lib/scales';
+import type { Scale } from '@/lib/storage';
 import { isCaptureAllowed } from '@/lib/weighing-mode';
-import { Usb, Power, Activity, AlertCircle, ChevronDown } from 'lucide-react';
+import { Usb, Power, Activity, AlertCircle } from 'lucide-react';
 
 interface Props {
   onCapture: (weight: number, raw: string) => void;
   label: string;
   capturedWeight: number | null;
-  deviceId: ScaleDeviceId;
-  onDeviceChange: (id: ScaleDeviceId) => void;
+  activeScale: Scale | null;
   stableMode?: boolean;
   onUnstableCapture?: () => void;
-  /** Live instrument weight for dual-mode threshold hints (null when disconnected). */
-  onReadingChange?: (weight: number | null) => void;
+  onUnstableBlocked?: () => void;
 }
 
 export function ScalePanel({
   onCapture,
   label,
   capturedWeight,
-  deviceId,
-  onDeviceChange,
+  activeScale,
   stableMode = false,
   onUnstableCapture,
-  onReadingChange,
+  onUnstableBlocked,
 }: Props) {
-  const { reading, connected, error, connect, disconnect } = useScale();
-  const [supported] = useState(() => typeof navigator !== 'undefined' && 'serial' in navigator);
+  const { reading, connected, error, connect, disconnect, manualOnly, transport, status } = useScale();
+  const supported = typeof navigator !== 'undefined' && 'serial' in navigator;
   const canCapture = !!reading && isCaptureAllowed(reading.stable, stableMode);
+  const selectedTransport = transport ?? (activeScale?.connection.transport === 'serial_backend' ? 'backend_api' : 'web_serial');
+  const sourceLabel = selectedTransport === 'backend_api' ? 'Backend API' : 'Browser Web Serial';
+  const unstableBlocked = !!reading && !reading.stable && !stableMode;
+  const unstableAllowed = !!reading && !reading.stable && stableMode;
+  const blockedNotifiedAtRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!unstableBlocked || !reading) {
+      blockedNotifiedAtRef.current = null;
+      return;
+    }
+    if (blockedNotifiedAtRef.current === reading.captured_at) return;
+    blockedNotifiedAtRef.current = reading.captured_at;
+    onUnstableBlocked?.();
+  }, [unstableBlocked, reading, onUnstableBlocked]);
 
   useEffect(() => {
     onReadingChange?.(reading ? reading.weight : null);
@@ -54,21 +66,14 @@ export function ScalePanel({
         </span>
       </div>
 
-      {/* Device selector */}
       <div className="mb-4">
-        <label className="block text-xs font-medium text-slate-600 mb-1">Модель прибора</label>
-        <div className="relative">
-          <select
-            value={deviceId}
-            onChange={(e) => onDeviceChange(e.target.value as ScaleDeviceId)}
-            disabled={connected}
-            className="w-full appearance-none rounded-lg border border-slate-300 bg-white px-3 py-2 pr-9 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60"
-          >
-            {SCALE_DEVICE_LIST.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
-          </select>
-          <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+        <label className="block text-xs font-medium text-slate-600 mb-1">Активный комплект</label>
+        <div className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700">
+          {activeScale ? `${activeScale.name || activeScale.role} · ${activeScale.adapter_id}` : 'Не выбран'}
+          <div className="mt-1 text-xs text-slate-500">
+            Источник: {sourceLabel}
+          </div>
+          <div className="mt-1 text-xs text-slate-500">Статус runtime: {status}</div>
         </div>
       </div>
 
@@ -97,7 +102,28 @@ export function ScalePanel({
         </div>
       )}
 
-      {!supported && (
+      {manualOnly && (
+        <div className="mb-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-700">
+          <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <span>Автосъём недоступен для текущей конфигурации. Доступен ручной ввод.</span>
+        </div>
+      )}
+
+      {unstableBlocked && (
+        <div className="mb-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-700">
+          <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <span>Вес нестабилен: фиксация заблокирована, дождитесь стабилизации или введите вручную.</span>
+        </div>
+      )}
+
+      {unstableAllowed && (
+        <div className="mb-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-700">
+          <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <span>Вес нестабилен: фиксация разрешена по настройке `stable_mode`.</span>
+        </div>
+      )}
+
+      {!supported && selectedTransport === 'web_serial' && (
         <div className="mb-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-700">
           <AlertCircle size={16} className="mt-0.5 shrink-0" />
           <span>Браузер не поддерживает Web Serial. Используйте Chrome или Edge.</span>
@@ -107,8 +133,8 @@ export function ScalePanel({
       <div className="flex gap-2">
         {!connected ? (
           <button
-            onClick={() => connect(deviceId)}
-            disabled={!supported}
+            onClick={() => activeScale && connect(activeScale)}
+            disabled={!activeScale || (!supported && activeScale?.connection.transport === 'web_serial')}
             className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Usb size={16} /> Подключить
@@ -135,6 +161,16 @@ export function ScalePanel({
           Зафиксировать вес
         </button>
       </div>
+
+      {(manualOnly || !!error) && (
+        <button
+          onClick={() => activeScale && connect(activeScale)}
+          disabled={!activeScale}
+          className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Повторить подключение
+        </button>
+      )}
 
       {capturedWeight !== null && (
         <div className="mt-3 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-sm text-emerald-700">

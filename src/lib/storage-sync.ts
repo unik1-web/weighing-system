@@ -4,11 +4,51 @@ const APP_PREFIX = 'app_';
 const SETTINGS_KEY = 'app_settings';
 
 export const DICTIONARIES_UPDATED_EVENT = 'dictionaries-updated';
+export const ACTIVE_WRITE_BLOCKED_EVENT = 'active-write-blocked';
 
 let configSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let databaseSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let databaseSyncPaused = false;
 let databaseSyncPending = false;
+
+export type Stage6SyncCode =
+  | 'rotation_in_progress'
+  | 'invalid_archive_year'
+  | 'archive_year_not_found';
+
+interface Stage6ErrorPayload {
+  success?: boolean;
+  code?: string;
+  message?: string;
+}
+
+async function readStage6ErrorPayload(response: Response): Promise<Stage6ErrorPayload | null> {
+  try {
+    const text = await response.text();
+    if (!text.trim()) return null;
+    const parsed = JSON.parse(text) as Stage6ErrorPayload;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function isStage6SyncCode(code: string | undefined): code is Stage6SyncCode {
+  return code === 'rotation_in_progress' || code === 'invalid_archive_year' || code === 'archive_year_not_found';
+}
+
+function notifyActiveWriteBlocked(message: string): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent(ACTIVE_WRITE_BLOCKED_EVENT, {
+      detail: {
+        code: 'rotation_in_progress',
+        message,
+      },
+    }),
+  );
+}
 
 function collectDatabaseStorage(): Record<string, string> {
   const data: Record<string, string> = {};
@@ -44,22 +84,34 @@ export function applyStorageData(data: Record<string, string>): void {
 
 export async function loadStorageFromServer(): Promise<boolean> {
   try {
-    const [configResponse, databaseResponse] = await Promise.all([
-      fetch('/api/config'),
-      fetch('/api/database'),
-    ]);
-
-    let loaded = false;
-
-    if (configResponse.ok) {
-      const configBody = (await configResponse.json()) as { config?: Record<string, string> };
-      const config = configBody.config ?? {};
-      if (Object.keys(config).length > 0) {
-        localStorage.setItem(SETTINGS_KEY, JSON.stringify(config));
-        loaded = true;
-      }
+    const configResponse = await fetch('/api/config');
+    const configBody = (await configResponse.json()) as {
+      success?: boolean;
+      config?: Record<string, string>;
+      bootstrap?: { status?: string; code?: string; message?: string };
+      code?: string;
+      message?: string;
+    };
+    const bootstrapStatus = configBody.bootstrap?.status;
+    if (bootstrapStatus === 'error') {
+      logger.error(
+        'storage',
+        `Bootstrap миграции завершился ошибкой: ${configBody.bootstrap?.code ?? 'migration_failed'} ${configBody.bootstrap?.message ?? ''}`,
+      );
+      return false;
+    }
+    if (!configResponse.ok || configBody.success === false) {
+      return false;
     }
 
+    let loaded = false;
+    const config = configBody.config ?? {};
+    if (Object.keys(config).length > 0) {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(config));
+      loaded = true;
+    }
+
+    const databaseResponse = await fetch('/api/database');
     if (databaseResponse.ok) {
       const databaseBody = (await databaseResponse.json()) as { data?: Record<string, string> };
       const database = databaseBody.data ?? {};
@@ -71,9 +123,7 @@ export async function loadStorageFromServer(): Promise<boolean> {
       if (Object.keys(database).length > 0) loaded = true;
     }
 
-    if (loaded) {
-      logger.info('storage', 'Загружены config.ini и BD/weighing.db');
-    }
+    if (loaded) logger.info('storage', 'Загружены config.ini и BD/weighing.db');
     return loaded;
   } catch {
     try {
@@ -118,6 +168,20 @@ async function syncDatabaseToServer(): Promise<void> {
     });
     if (response.ok) {
       logger.debug('storage', 'BD/weighing.db сохранён');
+      return;
+    }
+    const errorBody = await readStage6ErrorPayload(response);
+    if (errorBody?.code === 'rotation_in_progress') {
+      const message =
+        errorBody.message
+        || 'Смена года не завершена: запись данных временно заблокирована';
+      logger.warn('storage', `Синхронизация БД отклонена: ${message}`);
+      databaseSyncPending = false;
+      notifyActiveWriteBlocked(message);
+      return;
+    }
+    if (isStage6SyncCode(errorBody?.code)) {
+      logger.warn('storage', `Синхронизация БД отклонена кодом ${errorBody.code}`);
     }
   } catch {
     // Backend недоступен
@@ -145,6 +209,14 @@ export function resumeDatabaseSync(): void {
     databaseSyncPending = false;
     scheduleDatabaseSync();
   }
+}
+
+export function beginRotationCommitSyncPause(): void {
+  pauseDatabaseSync();
+}
+
+export function endRotationCommitSyncPause(): void {
+  resumeDatabaseSync();
 }
 
 export function scheduleDatabaseSync(): void {
@@ -274,12 +346,20 @@ export async function importExternalDictionaries(
 
   const body = (await response.json()) as {
     success?: boolean;
+    code?: string;
     message?: string;
     added?: Record<string, number>;
     data?: Record<string, string>;
   };
 
   if (!response.ok || !body.data) {
+    if (body.code === 'rotation_in_progress') {
+      const message =
+        body.message
+        || 'Смена года не завершена: импорт недоступен до завершения ротации';
+      notifyActiveWriteBlocked(message);
+      throw new Error(message);
+    }
     throw new Error(body.message ?? 'Не удалось импортировать справочники');
   }
 

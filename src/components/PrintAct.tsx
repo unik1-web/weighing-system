@@ -25,6 +25,12 @@ function fmtTimeFull(ts: string | null) {
   return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+function formatTicketNumberWithDate(ticket: WeighingTicket): string {
+  const number = ticket.ticket_number ?? '—';
+  const date = fmtDateFull(ticket.created_at);
+  return `№ ${number} от ${date}`;
+}
+
 function fmtTons(kg: number | null) {
   if (kg == null) return '——';
   return (kg / 1000).toLocaleString('ru-RU', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
@@ -50,7 +56,7 @@ function renderActClassic(t: WeighingTicket, settings: AppSettings): string {
 <div style="font-family:Times New Roman,serif;font-size:10.5px;box-sizing:border-box;color:#000;width:100%;">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.2mm;border-bottom:1px solid #000;padding-bottom:0.8mm;gap:3mm;">
     <div style="font-size:12px;font-weight:bold;white-space:nowrap;min-width:32%">${esc(receiverLabel)}</div>
-    <div style="font-size:12px;font-weight:bold;text-align:center;flex:1">Акт взвешивания № ${t.ticket_number ?? '—'}</div>
+      <div style="font-size:12px;font-weight:bold;text-align:center;flex:1">Акт взвешивания ${formatTicketNumberWithDate(t)}</div>
     <div style="min-width:18mm;text-align:right;font-size:10px;white-space:nowrap;">${t.created_at ? fmt(t.created_at) : '——'}</div>
   </div>
 
@@ -226,12 +232,14 @@ function renderActReceipt(t: WeighingTicket, settings: AppSettings, copyNumber: 
   const priceLabel = `${(t.price || 0).toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} руб/т.`;
   const sumLabel = `${(t.total_amount ?? 0).toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 })} руб.`;
   const orgLine = buildOrgHeaderLine(settings);
+  const ticketLabel = formatTicketNumberWithDate(t);
 
   return `
 <div style="font-family:Arial,sans-serif;font-size:10px;box-sizing:border-box;color:#000;width:100%;">
   <div style="position:relative;margin-bottom:1.5mm;padding-bottom:1mm;">
     <div style="text-align:center;padding-right:16mm;">
       <div style="font-size:13px;font-weight:bold;">${esc(settings.org_name || '—')}</div>
+      <div style="font-size:10px;font-weight:bold;margin-top:0.6mm;">${ticketLabel}</div>
       ${orgLine ? `<div style="font-size:8.5px;margin-top:0.8mm;line-height:1.3;">${orgLine}</div>` : ''}
     </div>
     <div style="position:absolute;top:0;right:0;border:1px solid #000;padding:1mm 2.5mm;font-size:10px;font-weight:bold;white-space:nowrap;">
@@ -292,11 +300,18 @@ function buildSheetHtml(t: WeighingTicket, settings: AppSettings): string {
   return `<div style="display:flex;flex-direction:column;gap:0;">${acts}</div>`;
 }
 
-export function printTicket(ticket: WeighingTicket, settings?: AppSettings) {
+export function printTicket(
+  ticket: WeighingTicket,
+  settings?: AppSettings,
+  options?: { source?: 'active' | 'archive' },
+) {
+  // Archive reprint must stay side-effect free: no TicketStorage/REO writes.
+  void options?.source;
   const appSettings = settings ?? SettingsStorage.getAppSettings();
+  const ticketNumberLabel = formatTicketNumberWithDate(ticket);
   const title = appSettings.print_layout === 'receipt'
-    ? `Талон № ${ticket.ticket_number ?? '—'}`
-    : `Акт взвешивания № ${ticket.ticket_number ?? '—'}`;
+    ? `Талон ${ticketNumberLabel}`
+    : `Акт взвешивания ${ticketNumberLabel}`;
 
   const html = `<!DOCTYPE html>
 <html lang="ru">

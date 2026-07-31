@@ -1,12 +1,15 @@
 import logging
 import json
+import base64
 import os
+import re
 import sys
 import threading
 import time
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
+from typing import Any
 
 import requests
 from flask import Flask, g, jsonify, request, send_from_directory
@@ -34,12 +37,11 @@ from persistence import (
     get_storage_paths,
     import_backup,
     import_backup_file,
-    read_combined_storage,
+    read_active_year,
     read_config,
     read_database,
-    write_combined_storage,
+    register_runtime_invalidator,
     write_config,
-    write_database,
 )
 from vescom import connect_vescom, fetch_vescom_dictionaries, fetch_vescom_weighings
 from wa import (
@@ -54,6 +56,36 @@ from reo_client import (
     is_reo_test_successful,
     post_reo_import,
 )
+from scale_api import invalidate_for_database_payload, register_scale_api
+from scale_api_guard import ScaleApiGuard
+from scale_registry_contract import validate_portable_regex
+from cameras import (
+    CameraCaptureService,
+    get_camera_build_label,
+    is_camera_module_available,
+    mask_url,
+)
+from camera_logging import (
+    log_etalon_result,
+    log_photo_io_error,
+    log_snapshot_result,
+    log_video_enabled_changed,
+)
+from photo_storage import PhotoStorage
+from ticket_photos import TicketPhotosService, run_phase_capture
+from archive_edit_service import apply_archive_edit
+from archive_service import get_archive_ticket, get_archive_tickets, list_archive_years
+from active_year_service import read_active_storage, write_active_storage
+from stage6_logging import log_stage6_event
+from year_rotation import commit_rotation, preview_rotation
+from year_rotation import ensure_stage6_storage_bootstrap
+from year_context import (
+    ArchiveContractError,
+    RotationContractError,
+    assert_active_db_write_allowed,
+    validate_archive_year,
+)
+from sqlite_store import StorageValidationError
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, 'frozen', False):
@@ -67,6 +99,10 @@ os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 logger = logging.getLogger('weighing-system-api')
 logger.setLevel(logging.INFO)
+
+_IP_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+_TTY_RE = re.compile(r'/dev/tty[^\s"\'`]+', re.IGNORECASE)
+_COM_RE = re.compile(r'\bCOM\d+\b', re.IGNORECASE)
 
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(logging.Formatter(LOG_FORMAT))
@@ -83,14 +119,33 @@ if not logger.handlers:
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
 
+
+def _redact_scale_runtime_value(value):
+    if isinstance(value, str):
+        value = _COM_RE.sub('COM***', value)
+        value = _TTY_RE.sub('/dev/tty***', value)
+        return _IP_RE.sub('***.***.***.***', value)
+    if isinstance(value, list):
+        return [_redact_scale_runtime_value(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _redact_scale_runtime_value(v) for k, v in value.items()}
+    return value
+
+
+def log_scale_runtime_event(event: str, *, level: int = logging.INFO, **context):
+    payload = {'event': event, **_redact_scale_runtime_value(context)}
+    logger.log(level, 'scale_runtime %s', json.dumps(payload, ensure_ascii=False))
+
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r'/api/(?!scales).*': {'origins': '*'}})
 
 
 @app.before_request
 def log_request_start():
     g.request_started_at = time.time()
     logger.info('HTTP %s %s', request.method, request.path)
+    if request.path.startswith('/api/scales'):
+        log_scale_runtime_event('api_request_start', path=request.path, method=request.method)
 
 
 @app.after_request
@@ -98,12 +153,391 @@ def log_request_end(response):
     started_at = getattr(g, 'request_started_at', None)
     duration_ms = round((time.time() - started_at) * 1000, 1) if started_at else '-'
     logger.info('HTTP %s %s -> %s (%s ms)', request.method, request.path, response.status_code, duration_ms)
+    if request.path.startswith('/api/scales'):
+        log_scale_runtime_event(
+            'api_request_end',
+            path=request.path,
+            method=request.method,
+            status=response.status_code,
+            duration_ms=duration_ms,
+        )
     return response
 
 
 def error_response(message: str, status: int = 400):
     logger.warning('API error (%s): %s', status, message)
     return jsonify({'success': False, 'message': message}), status
+
+
+def scale_error_response(code: str, message: str, status: int):
+    logger.warning('Scale API error (%s %s): %s', status, code, message)
+    log_scale_runtime_event(
+        'api_error',
+        level=logging.WARNING,
+        code=code,
+        status=status,
+        message=message,
+        path=request.path if request else None,
+    )
+    return jsonify({'success': False, 'code': code, 'message': message}), status
+
+
+def stage6_error_response(code: str, message: str, status: int):
+    """Return stage-6 contract error payload and emit structured log."""
+    logger.warning('Stage6 API error (%s %s): %s', status, code, message)
+    log_stage6_event(
+        'api_error',
+        'error',
+        reason=code,
+        http_status=status,
+        path=request.path if request else None,
+        method=request.method if request else None,
+        message=message,
+    )
+    return jsonify({'success': False, 'code': code, 'message': message}), status
+
+
+def _stage6_request_actor_fields(actor: dict[str, Any] | None) -> dict[str, Any]:
+    """Map session actor to stage-6 log operator fields."""
+    if not isinstance(actor, dict):
+        return {}
+    return {
+        'operator_id': actor.get('id'),
+        'operator_name': actor.get('display_name') or actor.get('username'),
+    }
+
+
+def _read_active_actor() -> dict[str, Any] | None:
+    """Read active session actor from persisted `app_current_user` payload."""
+    try:
+        data = read_active_storage()
+    except Exception:
+        return None
+    raw_session = data.get('app_current_user')
+    if (not isinstance(raw_session, str) or not raw_session.strip()):
+        try:
+            # Backward-compatible fallback for tests/legacy flows that persisted
+            # session before active_year was configured.
+            raw_session = read_database().get('app_current_user')
+        except Exception:
+            raw_session = None
+    if not isinstance(raw_session, str) or not raw_session.strip():
+        return None
+    try:
+        parsed = json.loads(raw_session)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    user = parsed.get('user') if isinstance(parsed.get('user'), dict) else {}
+    profile = parsed.get('profile') if isinstance(parsed.get('profile'), dict) else {}
+    role = profile.get('role')
+    if role not in ('user', 'admin'):
+        return None
+    return {
+        'id': user.get('id'),
+        'username': profile.get('username') or user.get('username'),
+        'display_name': profile.get('display_name'),
+        'role': role,
+    }
+
+
+def _require_rotation_actor() -> dict[str, Any] | tuple[Any, int]:
+    """Validate session for year-rotation endpoints."""
+    actor = _read_active_actor()
+    if actor is None:
+        return stage6_error_response(
+            'auth_required',
+            'Требуется активная сессия пользователя',
+            401,
+        )
+    if actor.get('role') not in ('user', 'admin'):
+        return stage6_error_response(
+            'insufficient_permissions',
+            'Недостаточно прав для выполнения операции',
+            403,
+        )
+    return actor
+
+
+def _require_archive_actor() -> dict[str, Any] | tuple[Any, int]:
+    """Validate session for archive read/edit endpoints."""
+    return _require_rotation_actor()
+
+
+def _parse_archive_year() -> int:
+    """Parse and validate archive year query/body parameter."""
+    raw_year = request.args.get('year')
+    if raw_year is None and request.is_json:
+        body = request.get_json(silent=True) or {}
+        raw_year = body.get('year')
+    return validate_archive_year(raw_year)
+
+
+def _validate_generic_regex_in_database_payload(data: dict[str, str]) -> tuple[bool, str | None]:
+    scales_blob = data.get('app_scales')
+    if not isinstance(scales_blob, str):
+        return True, None
+    try:
+        scales_rows = json.loads(scales_blob)
+    except json.JSONDecodeError:
+        return False, 'Некорректный JSON в app_scales'
+    if not isinstance(scales_rows, list):
+        return False, 'app_scales должен быть JSON-массивом'
+
+    for row in scales_rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get('adapter_id') != 'generic-regex':
+            continue
+        connection = row.get('connection') if isinstance(row.get('connection'), dict) else {}
+        parser = connection.get('parser') if isinstance(connection.get('parser'), dict) else {}
+        test_frame = parser.get('test_frame')
+        validation = validate_portable_regex(
+            connection,
+            test_frame if isinstance(test_frame, str) and test_frame.strip() else None,
+        )
+        if not validation.get('valid'):
+            code = validation.get('validation_error_code') or 'invalid_connection_config'
+            message = validation.get('validation_error_message') or 'Некорректная regex-конфигурация'
+            return False, f'{code}: {message}'
+        parser = connection.setdefault('parser', {})
+        parser['validation_status'] = validation.get('validation_status')
+        parser['last_validation_at'] = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+        parser['validation_error_code'] = validation.get('validation_error_code')
+        parser['validation_error_message'] = validation.get('validation_error_message')
+        row['connection'] = connection
+
+    data['app_scales'] = json.dumps(scales_rows, ensure_ascii=False)
+    return True, None
+
+
+app.register_blueprint(register_scale_api(scale_error_response))
+register_runtime_invalidator(invalidate_for_database_payload)
+
+_CAMERA_GUARD = ScaleApiGuard(read_database)
+_CAMERA_CAPTURE = CameraCaptureService()
+_PHOTO_STORAGE = PhotoStorage()
+_TICKET_PHOTOS = TicketPhotosService()
+
+
+def camera_error_response(code: str, message: str, status: int):
+    """Return camera/photo API error payload with ``code``."""
+    logger.warning('Camera API error (%s %s): %s', status, code, message)
+    return jsonify({'success': False, 'code': code, 'message': message}), status
+
+
+def _require_camera_actor(allowed_roles: set[str]) -> dict[str, Any] | tuple[Any, int]:
+    """Validate origin + session role for camera mutation endpoints."""
+    from scale_runtime import RuntimeErrorPayload
+
+    try:
+        _CAMERA_GUARD.validate_origin(request)
+    except RuntimeErrorPayload as exc:
+        return camera_error_response(exc.code, exc.message, exc.http_status)
+    actor = _read_active_actor()
+    if actor is None:
+        return camera_error_response(
+            'auth_required',
+            'Требуется активная сессия оператора.',
+            401,
+        )
+    if actor.get('role') not in allowed_roles:
+        return camera_error_response(
+            'insufficient_permissions',
+            'Недостаточно прав для выполнения операции',
+            403,
+        )
+    return actor
+
+
+def _find_camera_row(camera_id: str) -> dict[str, Any] | None:
+    """Load a camera registry row by id from active storage."""
+    try:
+        data = read_active_storage()
+    except Exception:
+        data = read_database()
+    raw = data.get('app_cameras') if data else None
+    if not raw:
+        return None
+    try:
+        rows = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and str(row.get('id') or '') == camera_id:
+            return row
+    return None
+
+
+def _capture_error_response(error_code: str | None):
+    """Map CaptureResult.error_code to HTTP camera API error."""
+    code = (error_code or 'unreachable').strip()
+    if code == 'timeout':
+        return camera_error_response(
+            'camera_timeout',
+            'Таймаут захвата кадра с камеры',
+            504,
+        )
+    if code == 'capability_unavailable':
+        return camera_error_response(
+            'camera_module_unavailable',
+            'Модуль камер недоступен в этой сборке',
+            501,
+        )
+    if code == 'decode':
+        return camera_error_response(
+            'invalid_request',
+            'Не удалось декодировать кадр камеры',
+            400,
+        )
+    return camera_error_response(
+        'camera_unreachable',
+        'Камера недоступна',
+        503,
+    )
+
+
+def _camera_capture_timeout_and_quality(payload: dict[str, Any]) -> tuple[float, int]:
+    """Read capture timeout/quality from request payload and config.ini."""
+    config = read_config()
+    try:
+        timeout_sec = float(
+            payload.get('timeout_sec')
+            if payload.get('timeout_sec') is not None
+            else config.get('camera_capture_timeout_sec') or 3
+        )
+    except (TypeError, ValueError):
+        timeout_sec = 3.0
+    try:
+        jpeg_quality = int(config.get('camera_jpeg_quality') or 80)
+    except (TypeError, ValueError):
+        jpeg_quality = 80
+    return timeout_sec, jpeg_quality
+
+
+def _persist_camera_etalon_path(
+    camera_id: str,
+    scale_set: str,
+    path: str,
+) -> dict[str, Any]:
+    """
+    Update ``etalon_primary_path`` or ``etalon_spare_path`` for one camera in SQLite.
+
+    Loads the full ``app_cameras`` collection, patches the matching row, and writes
+    via ``write_active_storage`` (write-gate + preserve-non-null on replace).
+
+    Returns:
+        Updated camera row dict as stored after write.
+    """
+    try:
+        data = read_active_storage()
+    except Exception:
+        data = read_database()
+    raw = data.get('app_cameras') if data else None
+    try:
+        rows = json.loads(raw) if raw else []
+    except (TypeError, json.JSONDecodeError):
+        rows = []
+    if not isinstance(rows, list):
+        rows = []
+
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    updated: dict[str, Any] | None = None
+    next_rows: list[Any] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            next_rows.append(row)
+            continue
+        if str(row.get('id') or '') != camera_id:
+            next_rows.append(row)
+            continue
+        patched = dict(row)
+        if scale_set == 'spare':
+            patched['etalon_spare_path'] = path
+        else:
+            patched['etalon_primary_path'] = path
+        patched['updated_at'] = now
+        next_rows.append(patched)
+        updated = patched
+
+    if updated is None:
+        raise ValueError('camera_not_found')
+
+    write_active_storage(
+        {'app_cameras': json.dumps(next_rows, ensure_ascii=False)},
+        operation='POST /api/cameras/etalon',
+    )
+    # Re-read to return preserve-resolved values from SQLite.
+    refreshed = _find_camera_row(camera_id)
+    return refreshed if refreshed is not None else updated
+
+
+def _camera_snapshot_response():
+    """
+    Shared handler for snapshot/test: capture via CameraCaptureService.
+
+    Resolves URLs from body draft fields or from SQLite camera_id.
+    HTTP snapshot does not require OpenCV; RTSP does.
+    """
+    payload = request.get_json(silent=True) or {}
+    camera_id = str(payload.get('camera_id') or '').strip()
+    http_url = payload.get('http_snapshot_url')
+    rtsp_url = payload.get('rtsp_url')
+
+    if camera_id and not (http_url or rtsp_url):
+        row = _find_camera_row(camera_id)
+        if row is None:
+            return camera_error_response(
+                'invalid_request',
+                'Камера не найдена',
+                400,
+            )
+        http_url = row.get('http_snapshot_url')
+        rtsp_url = row.get('rtsp_url')
+
+    http_text = str(http_url).strip() if http_url else ''
+    rtsp_text = str(rtsp_url).strip() if rtsp_url else ''
+    if not http_text and not rtsp_text:
+        return camera_error_response(
+            'invalid_request',
+            'Укажите camera_id или URL снимка',
+            400,
+        )
+
+    timeout_sec, jpeg_quality = _camera_capture_timeout_and_quality(payload)
+
+    log_target = http_text or rtsp_text
+    masked = mask_url(log_target)
+    logger.info('Camera snapshot request url=%s', masked)
+
+    result = _CAMERA_CAPTURE.capture(http_text or None, rtsp_text or None, timeout_sec, jpeg_quality)
+    if not result.ok or not result.jpeg_bytes:
+        error_code = result.error_code or 'unreachable'
+        status = 'timeout' if error_code == 'timeout' else 'failed'
+        log_snapshot_result(
+            status=status,
+            camera_id=camera_id or None,
+            error_code=error_code,
+            masked_url=masked,
+        )
+        return _capture_error_response(result.error_code)
+
+    log_snapshot_result(
+        status='success',
+        camera_id=camera_id or None,
+        masked_url=masked,
+    )
+    preview = base64.b64encode(result.jpeg_bytes).decode('ascii')
+    return jsonify(
+        {
+            'success': True,
+            'preview_jpeg_base64': preview,
+            'content_type': 'image/jpeg',
+        }
+    )
 
 
 def frontend_available() -> bool:
@@ -152,13 +586,270 @@ def storage_paths():
     return jsonify({'success': True, **get_storage_paths()})
 
 
+@app.get('/api/archive/years')
+def archive_years():
+    actor_or_error = _require_archive_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    log_stage6_event(
+        'api_archive_years',
+        'start',
+        path=request.path,
+        method=request.method,
+        **_stage6_request_actor_fields(actor),
+    )
+    years = list_archive_years(read_active_year())
+    log_stage6_event(
+        'api_archive_years',
+        'success',
+        path=request.path,
+        method=request.method,
+        year_count=len(years),
+        **_stage6_request_actor_fields(actor),
+    )
+    return jsonify({'success': True, 'years': years})
+
+
+@app.get('/api/archive/tickets')
+def archive_tickets():
+    actor_or_error = _require_archive_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    try:
+        year = _parse_archive_year()
+        log_stage6_event(
+            'api_archive_tickets',
+            'start',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            **_stage6_request_actor_fields(actor),
+        )
+        filters = {
+            key: value
+            for key, value in request.args.items()
+            if key != 'year'
+        }
+        payload = get_archive_tickets(year, filters=filters)
+        log_stage6_event(
+            'api_archive_tickets',
+            'success',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_count=len(payload.get('tickets') or []),
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except ArchiveContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
+@app.get('/api/archive/tickets/<ticket_id>')
+def archive_ticket(ticket_id: str):
+    actor_or_error = _require_archive_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    try:
+        year = _parse_archive_year()
+        log_stage6_event(
+            'api_archive_ticket',
+            'start',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_id=ticket_id,
+            **_stage6_request_actor_fields(actor),
+        )
+        payload = get_archive_ticket(year, ticket_id)
+        log_stage6_event(
+            'api_archive_ticket',
+            'success',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_id=ticket_id,
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except ArchiveContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
+@app.patch('/api/archive/tickets/<ticket_id>')
+def archive_ticket_patch(ticket_id: str):
+    actor_or_error = _require_archive_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    if actor.get('role') != 'admin':
+        return stage6_error_response(
+            'insufficient_permissions',
+            'Недостаточно прав для выполнения операции',
+            403,
+        )
+    body = request.get_json(silent=True) or {}
+    try:
+        year = _parse_archive_year()
+        patch = body.get('patch')
+        if not isinstance(patch, dict):
+            log_stage6_event(
+                'api_archive_edit',
+                'forbidden',
+                source_year=year,
+                path=request.path,
+                method=request.method,
+                ticket_id=ticket_id,
+                reason='archive_edit_forbidden_field',
+                **_stage6_request_actor_fields(actor),
+            )
+            return stage6_error_response(
+                'archive_edit_forbidden_field',
+                'Некорректный формат patch',
+                422,
+            )
+        acknowledge = bool(body.get('acknowledge_reo_sent_warning'))
+        log_stage6_event(
+            'api_archive_edit',
+            'start',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_id=ticket_id,
+            **_stage6_request_actor_fields(actor),
+        )
+        payload = apply_archive_edit(
+            year,
+            ticket_id,
+            patch,
+            actor,
+            acknowledge,
+        )
+        log_stage6_event(
+            'api_archive_edit',
+            'success',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_id=ticket_id,
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except ArchiveContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
+@app.post('/api/year/rotation/preview')
+def year_rotation_preview():
+    actor_or_error = _require_rotation_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    body = request.get_json(silent=True) or {}
+    body = {**body, 'actor': actor}
+    log_stage6_event(
+        'api_rotation_preview',
+        'start',
+        path=request.path,
+        method=request.method,
+        source_year=body.get('source_year'),
+        target_year=body.get('target_year'),
+        **_stage6_request_actor_fields(actor),
+    )
+    try:
+        payload = preview_rotation(body)
+        log_stage6_event(
+            'api_rotation_preview',
+            'success',
+            path=request.path,
+            method=request.method,
+            source_year=payload.get('source_year'),
+            target_year=payload.get('target_year'),
+            open_count=len(payload.get('open_candidates') or []),
+            pending_reo_count=payload.get('pending_reo_count'),
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
+@app.post('/api/year/rotation/commit')
+def year_rotation_commit():
+    actor_or_error = _require_rotation_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    body = request.get_json(silent=True) or {}
+    body = {**body, 'actor': actor}
+    log_stage6_event(
+        'api_rotation_commit',
+        'start',
+        path=request.path,
+        method=request.method,
+        source_year=body.get('source_year'),
+        target_year=body.get('target_year'),
+        **_stage6_request_actor_fields(actor),
+    )
+    try:
+        payload = commit_rotation(body)
+        log_stage6_event(
+            'api_rotation_commit',
+            'success',
+            path=request.path,
+            method=request.method,
+            source_year=payload.get('source_year'),
+            target_year=payload.get('target_year'),
+            auto_closed_count=payload.get('auto_closed_count'),
+            backup_path=payload.get('backup_path'),
+            db_path=payload.get('new_db_path'),
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
 @app.get('/api/config')
 def get_config():
     try:
-        return jsonify({'success': True, 'config': read_config()})
+        bootstrap = ensure_stage6_storage_bootstrap()
+        if bootstrap.get('status') == 'error':
+            return jsonify(
+                {
+                    'success': False,
+                    'code': bootstrap.get('code', 'migration_failed'),
+                    'message': bootstrap.get('message', 'Ошибка миграции годовой БД'),
+                    'bootstrap': bootstrap,
+                }
+            ), 500
+        return jsonify({'success': True, 'config': read_config(), 'bootstrap': bootstrap})
     except Exception as exc:
         logger.exception('Config read failed')
         return error_response(f'Ошибка чтения config.ini: {exc}')
+
+
+_VIDEO_CONFIG_KEYS = (
+    'video_enabled',
+    'camera_capture_timeout_sec',
+    'camera_jpeg_quality',
+)
+
+
+def _video_config_keys_changing(incoming: dict[str, Any], current: dict[str, str]) -> list[str]:
+    """Return video_* keys whose values would change relative to current config."""
+    changing: list[str] = []
+    for key in _VIDEO_CONFIG_KEYS:
+        if key not in incoming:
+            continue
+        new_value = str(incoming[key])
+        old_value = str(current.get(key, ''))
+        if new_value != old_value:
+            changing.append(key)
+    return changing
 
 
 @app.post('/api/config')
@@ -169,8 +860,50 @@ def save_config():
         return error_response('Некорректный формат config.ini')
 
     try:
+        current = read_config()
+        changing_video = _video_config_keys_changing(config, current)
+        if changing_video:
+            actor = _read_active_actor()
+            if actor is None:
+                return jsonify(
+                    {
+                        'success': False,
+                        'code': 'auth_required',
+                        'message': 'Требуется активная сессия оператора для изменения настроек видео.',
+                    }
+                ), 401
+            if actor.get('role') != 'admin':
+                return jsonify(
+                    {
+                        'success': False,
+                        'code': 'insufficient_permissions',
+                        'message': 'Изменение video_enabled / параметров камер доступно только администратору.',
+                    }
+                ), 403
+
         write_config(config)
-        logger.info('Config saved (%s keys)', len(config))
+        if changing_video:
+            logger.info(
+                'Config saved (%s keys); video keys changed: %s',
+                len(config),
+                ','.join(changing_video),
+            )
+            if 'video_enabled' in changing_video:
+                actor = _read_active_actor()
+                operator = None
+                if actor:
+                    operator = (
+                        actor.get('display_name')
+                        or actor.get('username')
+                        or actor.get('user_id')
+                    )
+                log_video_enabled_changed(
+                    current.get('video_enabled', ''),
+                    config.get('video_enabled', ''),
+                    operator=str(operator) if operator else None,
+                )
+        else:
+            logger.info('Config saved (%s keys)', len(config))
         return jsonify({'success': True})
     except Exception as exc:
         logger.exception('Config write failed')
@@ -180,7 +913,17 @@ def save_config():
 @app.get('/api/database')
 def get_database():
     try:
-        return jsonify({'success': True, 'data': read_database()})
+        bootstrap = ensure_stage6_storage_bootstrap()
+        if bootstrap.get('status') == 'error':
+            return jsonify(
+                {
+                    'success': False,
+                    'code': bootstrap.get('code', 'migration_failed'),
+                    'message': bootstrap.get('message', 'Ошибка миграции годовой БД'),
+                    'bootstrap': bootstrap,
+                }
+            ), 500
+        return jsonify({'success': True, 'data': read_active_storage()})
     except Exception as exc:
         logger.exception('Database read failed')
         return error_response(f'Ошибка чтения BD/weighing.db: {exc}')
@@ -194,9 +937,16 @@ def save_database():
         return error_response('Некорректный формат BD/weighing.db')
 
     try:
-        write_database(data)
+        valid_payload, validation_message = _validate_generic_regex_in_database_payload(data)
+        if not valid_payload:
+            return scale_error_response('invalid_connection_config', validation_message or 'Некорректная конфигурация', 422)
+        write_active_storage(data, operation='POST /api/database')
         logger.info('Database saved (%s keys)', len(data))
         return jsonify({'success': True})
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+    except StorageValidationError as exc:
+        return camera_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Database write failed')
         return error_response(f'Ошибка сохранения BD/weighing.db: {exc}')
@@ -205,7 +955,12 @@ def save_database():
 @app.get('/api/storage')
 def get_storage():
     try:
-        return jsonify({'success': True, 'data': read_combined_storage()})
+        combined: dict[str, str] = {}
+        config = read_config()
+        if config:
+            combined['app_settings'] = json.dumps(config, ensure_ascii=False)
+        combined.update(read_active_storage())
+        return jsonify({'success': True, 'data': combined})
     except Exception as exc:
         logger.exception('Storage read failed')
         return error_response(f'Ошибка чтения данных: {exc}')
@@ -225,9 +980,22 @@ def save_storage():
     }
 
     try:
-        write_combined_storage(safe_data)
+        config_raw = safe_data.get('app_settings')
+        if isinstance(config_raw, str) and config_raw.strip():
+            parsed_config = json.loads(config_raw)
+            if isinstance(parsed_config, dict):
+                write_config({str(key): str(value) for key, value in parsed_config.items()})
+
+        db_payload = {key: value for key, value in safe_data.items() if key != 'app_settings'}
+        write_active_storage(db_payload, operation='POST /api/storage')
         logger.info('Storage saved (%s keys)', len(safe_data))
         return jsonify({'success': True})
+    except json.JSONDecodeError:
+        return error_response('Некорректный формат app_settings')
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+    except StorageValidationError as exc:
+        return camera_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Storage write failed')
         return error_response(f'Ошибка сохранения данных: {exc}')
@@ -252,6 +1020,7 @@ def import_storage():
     content = body.get('content')
 
     try:
+        assert_active_db_write_allowed('POST /api/storage/import')
         if isinstance(content, str) and content.strip():
             combined = import_backup_file(content, filename=str(body.get('filename') or ''))
         elif isinstance(backup, dict):
@@ -261,6 +1030,8 @@ def import_storage():
 
         logger.info('Storage imported (%s keys)', len(combined))
         return jsonify({'success': True, 'data': combined})
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except ValueError as exc:
         return error_response(str(exc))
     except Exception as exc:
@@ -330,6 +1101,7 @@ def reo_send():
 
     count = len(payload.get('weightControls') or payload.get('WeightControls') or [])
     try:
+        assert_active_db_write_allowed('POST /api/reo/send')
         logger.info('REO send request to %s (%s records)', object_url, count)
         filename = f'data_{datetime.now().strftime("%Y-%m-%d")}.json'
         response = post_reo_import(object_url, payload, filename=filename)
@@ -410,6 +1182,7 @@ def vescom_import_dictionaries():
         return error_response('Не указан путь к базе данных Vescom')
 
     try:
+        assert_active_db_write_allowed('POST /api/vescom/import_dictionaries')
         dictionaries = fetch_vescom_dictionaries(db_path, user, password)
         added = merge_dictionaries(dictionaries)
         fetched_total = sum(len(values) for values in dictionaries.values())
@@ -420,8 +1193,10 @@ def vescom_import_dictionaries():
             'message': message,
             'fetched': {key: len(values) for key, values in dictionaries.items()},
             'added': added,
-            'data': read_database(),
+            'data': read_active_storage(),
         })
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Vescom dictionary import failed')
         return error_response(f'Ошибка импорта справочников Vescom: {exc}')
@@ -483,6 +1258,7 @@ def metra_import_dictionaries():
         return error_response('Не указан путь к базе Metra')
 
     try:
+        assert_active_db_write_allowed('POST /api/metra/import_dictionaries')
         dictionaries = fetch_metra_dictionary_names(db_path)
         added = merge_dictionaries(dictionaries)
         logger.info('Metra dictionaries imported: %s new entries', sum(added.values()))
@@ -491,8 +1267,10 @@ def metra_import_dictionaries():
             'message': format_import_message('Metra', dictionaries, added),
             'fetched': {key: len(values) for key, values in dictionaries.items()},
             'added': added,
-            'data': read_database(),
+            'data': read_active_storage(),
         })
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Metra dictionary import failed')
         return error_response(f'Ошибка импорта справочников Metra: {exc}')
@@ -559,6 +1337,7 @@ def wa_import_dictionaries():
         return error_response('Не указан путь к базе WA')
 
     try:
+        assert_active_db_write_allowed('POST /api/wa/import_dictionaries')
         dictionaries = fetch_wa_dictionary_names(db_path, user, password)
         added = merge_dictionaries(dictionaries)
         logger.info('WA dictionaries imported: %s new entries', sum(added.values()))
@@ -567,12 +1346,258 @@ def wa_import_dictionaries():
             'message': format_import_message('WA', dictionaries, added),
             'fetched': {key: len(values) for key, values in dictionaries.items()},
             'added': added,
-            'data': read_database(),
+            'data': read_active_storage(),
         })
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('WA dictionary import failed')
         return error_response(f'Ошибка импорта справочников WA: {exc}')
 
+
+@app.get('/api/cameras/capability')
+def cameras_capability():
+    """Report whether the camera module (OpenCV) is available in this build."""
+    available = is_camera_module_available()
+    payload: dict[str, Any] = {
+        'success': True,
+        'available': available,
+        'build': get_camera_build_label(),
+        'opencv': available,
+    }
+    if not available:
+        payload['code'] = 'camera_module_unavailable'
+    return jsonify(payload)
+
+
+@app.post('/api/cameras/snapshot')
+def cameras_snapshot():
+    """Live/preview capture for operator (user|admin) via HTTP or RTSP."""
+    actor_or_error = _require_camera_actor({'user', 'admin'})
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    return _camera_snapshot_response()
+
+
+@app.post('/api/cameras/test')
+def cameras_test():
+    """Admin-only alias of snapshot (same transport and semantics)."""
+    actor_or_error = _require_camera_actor({'admin'})
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    return _camera_snapshot_response()
+
+
+@app.post('/api/cameras/etalon')
+def cameras_etalon():
+    """
+    Capture etalon primary/spare JPEG (admin).
+
+    On capture failure the previous etalon file and DB path are left unchanged.
+    On success writes ``Photo/etalons/{camera_id}/{primary|spare}.jpg`` and updates
+    the matching ``etalon_*_path`` on the camera row in SQLite.
+    """
+    actor_or_error = _require_camera_actor({'admin'})
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+
+    payload = request.get_json(silent=True) or {}
+    camera_id = str(payload.get('camera_id') or '').strip()
+    scale_set = str(payload.get('scale_set') or '').strip()
+    if not camera_id:
+        return camera_error_response(
+            'invalid_request',
+            'Укажите camera_id',
+            400,
+        )
+    if scale_set not in ('primary', 'spare'):
+        return camera_error_response(
+            'invalid_request',
+            'scale_set должен быть primary или spare',
+            400,
+        )
+
+    row = _find_camera_row(camera_id)
+    if row is None:
+        return camera_error_response(
+            'invalid_request',
+            'Камера не найдена',
+            400,
+        )
+
+    http_url = row.get('http_snapshot_url')
+    rtsp_url = row.get('rtsp_url')
+    http_text = str(http_url).strip() if http_url else ''
+    rtsp_text = str(rtsp_url).strip() if rtsp_url else ''
+    if not http_text and not rtsp_text:
+        return camera_error_response(
+            'invalid_request',
+            'У камеры не задан URL снимка',
+            400,
+        )
+
+    timeout_sec, jpeg_quality = _camera_capture_timeout_and_quality(payload)
+    log_target = http_text or rtsp_text
+    masked = mask_url(log_target)
+    logger.info(
+        'Camera etalon request camera_id=%s scale_set=%s url=%s',
+        camera_id,
+        scale_set,
+        masked,
+    )
+
+    result = _CAMERA_CAPTURE.capture(
+        http_text or None,
+        rtsp_text or None,
+        timeout_sec,
+        jpeg_quality,
+    )
+    if not result.ok or not result.jpeg_bytes:
+        error_code = result.error_code or 'unreachable'
+        status = 'timeout' if error_code == 'timeout' else 'failed'
+        log_etalon_result(
+            camera_id,
+            scale_set,
+            status=status,
+            error_code=error_code,
+            masked_url=masked,
+        )
+        # Do not overwrite previous etalon file or path on failure.
+        return _capture_error_response(result.error_code)
+
+    try:
+        path = _PHOTO_STORAGE.write_etalon(camera_id, scale_set, result.jpeg_bytes)
+        updated_camera = _persist_camera_etalon_path(camera_id, scale_set, path)
+    except RotationContractError as exc:
+        return camera_error_response(exc.code, exc.message, exc.status)
+    except ValueError:
+        return camera_error_response(
+            'invalid_request',
+            'Камера не найдена',
+            400,
+        )
+    except OSError as exc:
+        log_photo_io_error(
+            operation='write_etalon',
+            camera_id=camera_id,
+            error=exc,
+            scale_set=scale_set,
+        )
+        log_etalon_result(
+            camera_id,
+            scale_set,
+            status='failed',
+            error_code='io_error',
+            masked_url=masked,
+        )
+        return camera_error_response(
+            'camera_unreachable',
+            f'Не удалось сохранить эталон: {exc}',
+            503,
+        )
+    except Exception as exc:
+        logger.exception('Etalon persist failed for camera_id=%s', camera_id)
+        log_etalon_result(
+            camera_id,
+            scale_set,
+            status='failed',
+            error_code='io_error',
+            masked_url=masked,
+        )
+        return camera_error_response(
+            'camera_unreachable',
+            f'Не удалось сохранить эталон: {exc}',
+            503,
+        )
+
+    log_etalon_result(
+        camera_id,
+        scale_set,
+        status='success',
+        masked_url=masked,
+        path=path,
+    )
+    preview = base64.b64encode(result.jpeg_bytes).decode('ascii')
+    return jsonify(
+        {
+            'success': True,
+            'path': path,
+            'preview_jpeg_base64': preview,
+            'camera': updated_camera,
+        }
+    )
+
+
+@app.post('/api/cameras/capture')
+def cameras_capture():
+    """
+    Capture all enabled cameras for a ticket phase (architecture §5.1).
+
+    Enabled cameras are read from SQLite only (never from request body).
+    Per-camera failures return HTTP 200 with mixed ``results``.
+    """
+    actor_or_error = _require_camera_actor({'user', 'admin'})
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+
+    payload = request.get_json(silent=True) or {}
+    ticket_id = str(payload.get('ticket_id') or '').strip()
+    event = str(payload.get('event') or '').strip()
+    config = read_config()
+
+    try:
+        result = run_phase_capture(
+            ticket_id,
+            event,
+            service=_TICKET_PHOTOS,
+            config=config,
+        )
+    except RotationContractError as exc:
+        return camera_error_response(exc.code, exc.message, exc.status)
+
+    error_code = result.get('error')
+    if error_code:
+        return camera_error_response(
+            str(error_code),
+            str(result.get('message') or error_code),
+            int(result.get('http_status') or 400),
+        )
+
+    return jsonify(
+        {
+            'success': True,
+            'noop': bool(result.get('noop')),
+            'results': result.get('results') or [],
+            'ticket_photos': result.get('ticket_photos') or [],
+            'photo_entry_path': result.get('photo_entry_path'),
+            'photo_exit_path': result.get('photo_exit_path'),
+            'capture_token': result.get('capture_token'),
+        }
+    )
+
+
+@app.get('/api/photos/<path:relpath>')
+def serve_photo(relpath: str):
+    """
+    Serve a JPEG under Photo/ for ``<img src>`` (UC-04).
+
+    Session is not required. Origin/Referer follows ``ScaleApiGuard.validate_origin``
+    (missing OK; present → allowlist). Path traversal → 400; missing file → 404.
+    """
+    from scale_runtime import RuntimeErrorPayload
+
+    try:
+        _CAMERA_GUARD.validate_origin(request)
+    except RuntimeErrorPayload as exc:
+        return camera_error_response(exc.code, exc.message, exc.http_status)
+    try:
+        absolute = _PHOTO_STORAGE.resolve(relpath)
+    except ValueError:
+        return camera_error_response('path_traversal', 'Некорректный путь к фото', 400)
+    if not os.path.isfile(absolute):
+        return camera_error_response('not_found', 'Файл фото не найден', 404)
+    directory, filename = os.path.split(absolute)
+    return send_from_directory(directory, filename, mimetype='image/jpeg')
 
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')

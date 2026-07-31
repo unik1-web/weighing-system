@@ -5,8 +5,11 @@ import {
   TicketStorage,
   PRINT_LAYOUT_LABELS,
   NAV_TAB_MODE_LABELS,
+  DRIVER_INPUT_MODE_LABELS,
   clearAllDictionaries,
+  normalizeDriverInputMode,
   type AppSettings,
+  type DriverInputMode,
   type NavTabMode,
   type PrintLayout,
 } from '@/lib/storage';
@@ -22,6 +25,8 @@ import {
 } from '@/lib/storage-sync';
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
+import { SiteScalesSettingsSection, type DraftErrors } from '@/components/SiteScalesSettingsSection';
+import { VideoSettingsSection } from '@/components/VideoSettingsSection';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 const NAV_TAB_OPTIONS: NavTabMode[] = ['full', 'compact'];
@@ -52,6 +57,10 @@ export function SettingsView({ onSaved }: Props) {
   const [dictClearBusy, setDictClearBusy] = useState(false);
   const [pathPicker, setPathPicker] = useState<'vescom' | 'metra' | 'wa' | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [scaleDraftErrors, setScaleDraftErrors] = useState<DraftErrors>({
+    primary: [],
+    spare: [],
+  });
 
   useEffect(() => {
     setSettings(SettingsStorage.getAppSettings());
@@ -98,13 +107,23 @@ export function SettingsView({ onSaved }: Props) {
       setSettingsError('Порог тары, интервал и тара по умолчанию должны быть ≥ 0.');
       return;
     }
-    SettingsStorage.updateAppSettings(settings);
+    // video_* пишет VideoSettingsSection → config.ini; не затирать их общим Save.
+    const storedVideo = SettingsStorage.getAppSettings();
+    const nextSettings: AppSettings = {
+      ...settings,
+      video_enabled: storedVideo.video_enabled,
+      camera_capture_timeout_sec: storedVideo.camera_capture_timeout_sec,
+      camera_jpeg_quality: storedVideo.camera_jpeg_quality,
+    };
+    SettingsStorage.updateAppSettings(nextSettings);
+    setSettings(nextSettings);
     logger.info('settings', 'Сохранены настройки режимов взвешивания', {
       weighing_mode_default: settings.weighing_mode_default,
       stable_mode: settings.stable_mode,
       tara_threshold: settings.tara_threshold,
       max_time_between: settings.max_time_between,
       tara_default: settings.tara_default,
+      driver_input_mode: settings.driver_input_mode,
     });
     logger.info('settings', 'Настройки сохранены');
     setSaved(true);
@@ -439,6 +458,19 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
+      <SiteScalesSettingsSection onDraftErrorsChange={setScaleDraftErrors} />
+      <VideoSettingsSection />
+      {(scaleDraftErrors.primary.length > 0 || scaleDraftErrors.spare.length > 0) && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {scaleDraftErrors.primary.length > 0 && (
+            <div>Основные: {scaleDraftErrors.primary.join('; ')}</div>
+          )}
+          {scaleDraftErrors.spare.length > 0 && (
+            <div>Резервные: {scaleDraftErrors.spare.join('; ')}</div>
+          )}
+        </div>
+      )}
+
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <Scale size={18} className="text-blue-600" />
@@ -463,6 +495,22 @@ export function SettingsView({ onSaved }: Props) {
             </select>
           </div>
           <div className="sm:col-span-2">
+            <label className={labelClass}>Режим ввода водителя</label>
+            <select
+              value={settings.driver_input_mode}
+              onChange={(e) =>
+                updateField('driver_input_mode', normalizeDriverInputMode(e.target.value))
+              }
+              className={inputClass}
+            >
+              {(Object.keys(DRIVER_INPUT_MODE_LABELS) as DriverInputMode[]).map((mode) => (
+                <option key={mode} value={mode}>
+                  {DRIVER_INPUT_MODE_LABELS[mode]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="sm:col-span-2">
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -471,6 +519,22 @@ export function SettingsView({ onSaved }: Props) {
               />
               <span className="text-sm text-slate-700">Разрешить фиксацию при нестабильном весе</span>
             </label>
+          </div>
+          <div className="sm:col-span-2">
+            <label className={labelClass}>Политика причины ручного ввода</label>
+            <select
+              value={settings.manual_weight_reason_policy}
+              onChange={(e) =>
+                updateField(
+                  'manual_weight_reason_policy',
+                  e.target.value === 'required' ? 'required' : 'optional',
+                )
+              }
+              className={inputClass}
+            >
+              <option value="optional">Опционально</option>
+              <option value="required">Обязательно</option>
+            </select>
           </div>
           <div>
             <label className={labelClass}>Порог тары, кг</label>

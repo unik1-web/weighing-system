@@ -28,14 +28,15 @@
 | Область | Есть | Где |
 |--------|------|-----|
 | Журнал / талон | `WeighingTicket`, SQLite | `storage.ts`, `sqlite_store.py` |
-| Источник веса | `manual` \| `instrument` | талон, форма |
+| Источник веса | `manual` \| `instrument` \| `dictionary` \| `default` | талон, форма, журнал, отчёты |
 | Терминалы | 4 Web Serial-профиля, один `ScaleConnection` | `scales.ts`, `ScalePanel` |
 | Справочники | авто, водители, грузы, контрагенты | импорт Vescom/Metra/WA |
-| Подстановка по номеру | только марка и стандартная тара | `WeighingForm.tsx` |
-| Статус тикета | `open` \| `completed` (дозавершение UX слабое) | форма / журнал |
+| Подстановка по номеру | марка, тара, ФИО/груз/ГО, история водителей | `vehicle-resolve.ts`, `WeighingForm` |
+| Статус тикета | `open` \| `completed`; single/dual, дозавершение из формы и журнала | форма / журнал |
 | Печать, РЭО, отчёты | акт, талон, CSV | `PrintAct`, `reo.ts` |
+| Режимы Vescom (этап 1) | `weighing_mode`, настройки порога/интервала/тары, `version`, зачаток audit | `weighing-mode.ts`, `storage.ts` |
 
-**Нет:** площадка primary/spare; pluggable-адаптеры; камеры и фото; ANPR; полная автоподстановка; годовая ротация БД; режимы одиночного/двойного взвешивания как в Vescom; полный аудит.
+**Нет:** pluggable-адаптеры; камеры и фото; ANPR; годовая ротация БД; полный аудит.
 
 ---
 
@@ -299,7 +300,15 @@ site_runtime (active_scale_set, switch reason/by/at, camera_mode, anpr_mode)
 
 ## 10. Ближайший шаг
 
-**Этап 1** — одиночное/двойное взвешивание и дозавершение `open`-тикетов. Даёт сразу заметный эффект оператору и не требует нового железа; этапы 2–3 опираются на ту же форму и модель талона.
+**Этап 1** (режимы single/dual) — выполнен; см. [weighing-modes-deploy.md](weighing-modes-deploy.md).
+
+**Этап 2** (источник веса) — выполнен.
+
+**Этап 3** (автоподстановка + водители) — выполнен.
+
+**Этап 4** (площадка primary/spare) — выполнен.
+
+**Следующий:** этап 5 — адаптеры терминалов ([docs/tasks/05-scale-adapters.md](tasks/05-scale-adapters.md)); параллельно возможен этап 6 ([06-yearly-db-archive.md](tasks/06-yearly-db-archive.md)). Постановки: [docs/tasks/](tasks/).
 
 ---
 
@@ -307,3 +316,4 @@ site_runtime (active_scale_set, switch reason/by/at, camera_mode, anpr_mode)
 
 - [Архитектура](architecture.md)
 - [API](api.md)
+- [Постановки для оркестратора](tasks/)

@@ -1,8 +1,10 @@
 import json
 import os
+import shutil
+import sqlite3
 import sys
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from config_ini import (
     BACKUP_SECTION,
@@ -13,7 +15,13 @@ from config_ini import (
     read_ini_section,
     write_ini_section,
 )
-from sqlite_store import get_sqlite_path, read_database as read_sqlite_database, write_database as write_sqlite_database
+from sqlite_store import (
+    SCHEMA_VERSION_STAGE_5,
+    get_sqlite_path,
+    migrate_schema_stage_5,
+    read_database as read_sqlite_database,
+    write_database as write_sqlite_database,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -21,6 +29,15 @@ SETTINGS_KEY = 'app_settings'
 BACKUP_VERSION = 3
 LEGACY_CONFIG_JSON = 'config.json'
 CONFIG_INI = 'config.ini'
+DEFAULT_MANUAL_WEIGHT_REASON_POLICY = 'optional'
+DEFAULT_VIDEO_ENABLED = 'false'
+DEFAULT_CAMERA_CAPTURE_TIMEOUT_SEC = '3'
+DEFAULT_CAMERA_JPEG_QUALITY = '80'
+_RUNTIME_CRITICAL_KEYS = {'app_scales', 'app_site_runtime', 'app_current_user'}
+_runtime_invalidator: Callable[[set[str]], None] | None = None
+STAGE5_CONFIG_BACKUP = 'config.stage5.bak.ini'
+STAGE5_DB_BACKUP = 'weighing.stage5.bak.db'
+ROTATION_LOCK_TTL_SECONDS = 15 * 60
 
 
 def get_app_root() -> str:
@@ -49,12 +66,178 @@ def get_database_path() -> str:
     return get_sqlite_path()
 
 
+def get_year_database_path(year: int, *, suffix: str = "") -> str:
+    """Build path for year-scoped SQLite database."""
+    return get_sqlite_path(year=year, suffix=suffix)
+
+
 def get_legacy_storage_path() -> str:
     return os.path.join(BASE_DIR, 'data', 'app_storage.json')
 
 
 def ensure_storage_dirs() -> None:
     os.makedirs(get_bd_dir(), exist_ok=True)
+
+
+def get_backup_dir() -> str:
+    return os.path.join(get_app_root(), 'backup')
+
+
+def get_rotation_lock_path() -> str:
+    """Return lock-file path for stage-6 year rotation."""
+    return os.path.join(get_bd_dir(), '.year_rotation.lock')
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    """Parse ISO8601 value used in lock payload."""
+    if not value:
+        return None
+    try:
+        normalized = value.replace('Z', '+00:00')
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def read_rotation_lock() -> dict[str, Any] | None:
+    """Read and parse `BD/.year_rotation.lock` payload."""
+    path = get_rotation_lock_path()
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def write_rotation_lock(payload: dict[str, Any]) -> None:
+    """
+    Persist rotation lock payload atomically.
+
+    Raises:
+        FileExistsError: if lock already exists.
+    """
+    ensure_storage_dirs()
+    required = {
+        'source_year',
+        'target_year',
+        'preview_token',
+        'source_db_fingerprint',
+        'started_at',
+        'phase',
+        'recovery_mode',
+        'backup_path',
+        'tmp_db_path',
+        'lock_ttl_seconds',
+    }
+    prepared = dict(payload)
+    missing = sorted(required - set(prepared.keys()))
+    if missing:
+        raise ValueError(f'Rotation lock payload is missing fields: {", ".join(missing)}')
+
+    path = get_rotation_lock_path()
+    serialized = json.dumps(prepared, ensure_ascii=False, separators=(',', ':'))
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(serialized)
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+
+
+def remove_rotation_lock() -> None:
+    """Delete lock file if it exists."""
+    path = get_rotation_lock_path()
+    if not os.path.isfile(path):
+        return
+    os.unlink(path)
+
+
+def rotation_lock_is_stale(payload: dict[str, Any], now: datetime) -> bool:
+    """Check whether rotation lock TTL has expired."""
+    started_at = _parse_iso_datetime(str(payload.get('started_at') or ''))
+    if started_at is None:
+        return True
+    ttl_value = payload.get('lock_ttl_seconds', ROTATION_LOCK_TTL_SECONDS)
+    try:
+        ttl_seconds = int(ttl_value)
+    except (TypeError, ValueError):
+        ttl_seconds = ROTATION_LOCK_TTL_SECONDS
+    elapsed = (now - started_at).total_seconds()
+    return elapsed > ttl_seconds
+
+
+def read_active_year() -> int | None:
+    """Read active year from config.ini[settings]."""
+    config = read_ini_section(get_config_path(), CONFIG_SECTION)
+    value = config.get('active_year')
+    if value is None or value == '':
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def write_active_year(year: int) -> None:
+    """Persist active year in config.ini[settings]."""
+    config = read_ini_section(get_config_path(), CONFIG_SECTION)
+    config['active_year'] = str(int(year))
+    write_ini_section(get_config_path(), CONFIG_SECTION, config)
+
+
+def create_database_backup(source_db_path: str, reason: str) -> str:
+    """Create database backup file and return its absolute path."""
+    os.makedirs(get_backup_dir(), exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%dT%H%M%S')
+    safe_reason = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '-' for ch in reason).strip('-')
+    if not safe_reason:
+        safe_reason = 'backup'
+    source_name = os.path.basename(source_db_path)
+    if safe_reason == 'legacy-before-stage6':
+        backup_name = f'{source_name}.legacy-before-stage6.{timestamp}.bak'
+    else:
+        backup_name = f'{source_name}.{safe_reason}.{timestamp}.bak'
+    backup_path = os.path.join(get_backup_dir(), backup_name)
+    shutil.copy2(source_db_path, backup_path)
+    return backup_path
+
+
+def create_tmp_copy_from_legacy(source_db_path: str, tmp_path: str) -> str:
+    """Create temporary copy of legacy database for copy-on-write migration."""
+    directory = os.path.dirname(tmp_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    shutil.copy2(source_db_path, tmp_path)
+    return tmp_path
+
+
+def publish_tmp_database(tmp_path: str, final_path: str) -> None:
+    """Atomically publish prepared temporary database file."""
+    os.replace(tmp_path, final_path)
+
+
+def _ensure_stage5_backup(path: str, backup_path: str) -> None:
+    if not os.path.isfile(path) or os.path.isfile(backup_path):
+        return
+    os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+    shutil.copy2(path, backup_path)
+
+
+def _stage5_backup_paths() -> dict[str, str]:
+    backup_dir = get_backup_dir()
+    return {
+        'config': os.path.join(backup_dir, STAGE5_CONFIG_BACKUP),
+        'database': os.path.join(backup_dir, STAGE5_DB_BACKUP),
+    }
 
 
 def _read_json_file(path: str) -> dict[str, Any]:
@@ -97,17 +280,82 @@ def _migrate_config_json_to_ini() -> None:
         write_ini_section(ini_path, CONFIG_SECTION, config)
 
 
+def _sql_stage5_ready() -> bool:
+    sqlite_path = get_sqlite_path()
+    if not os.path.isfile(sqlite_path):
+        return True
+    connection = sqlite3.connect(sqlite_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        version_row = connection.execute('PRAGMA user_version').fetchone()
+        user_version = int(version_row[0]) if version_row else 0
+        ticket_columns = {
+            row['name']
+            for row in connection.execute('PRAGMA table_info(weighing_tickets)').fetchall()
+        }
+        return user_version >= SCHEMA_VERSION_STAGE_5 and 'manual_weight_reason' in ticket_columns
+    finally:
+        connection.close()
+
+
+def _config_stage5_ready() -> bool:
+    config = read_ini_section(get_config_path(), CONFIG_SECTION)
+    return config.get('manual_weight_reason_policy') in ('optional', 'required')
+
+
+def _run_sql_stage5_migration() -> None:
+    with sqlite3.connect(get_sqlite_path()) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute('BEGIN IMMEDIATE')
+        migrate_schema_stage_5(connection)
+        connection.commit()
+
+
+def _run_config_stage5_migration() -> None:
+    config = read_ini_section(get_config_path(), CONFIG_SECTION)
+    policy = config.get('manual_weight_reason_policy')
+    if policy not in ('optional', 'required'):
+        config['manual_weight_reason_policy'] = DEFAULT_MANUAL_WEIGHT_REASON_POLICY
+        write_ini_section(get_config_path(), CONFIG_SECTION, config)
+
+
+def _run_stage5_migration_with_backups() -> None:
+    if _sql_stage5_ready() and _config_stage5_ready():
+        return
+
+    backups = _stage5_backup_paths()
+    _ensure_stage5_backup(get_config_path(), backups['config'])
+    _ensure_stage5_backup(get_sqlite_path(), backups['database'])
+
+    try:
+        _run_sql_stage5_migration()
+    except Exception as error:  # pragma: no cover - defensive runtime path
+        raise RuntimeError(
+            'SQL migration stage 5 failed. Restore pair config.ini + BD/weighing.db from backup.'
+        ) from error
+
+    try:
+        _run_config_stage5_migration()
+    except Exception as error:  # pragma: no cover - defensive runtime path
+        raise RuntimeError(
+            'Config migration stage 5 failed after SQL migration. Restore pair config.ini + BD/weighing.db from backup.'
+        ) from error
+
+    if not _sql_stage5_ready() or not _config_stage5_ready():
+        raise RuntimeError(
+            'Stage-5 post-check failed. Restore pair config.ini + BD/weighing.db from backup.'
+        )
+
+
 def migrate_legacy_storage() -> None:
     ensure_storage_dirs()
     _migrate_config_json_to_ini()
 
     config_exists = os.path.isfile(get_config_path())
     sqlite_exists = os.path.isfile(get_sqlite_path())
-    if config_exists or sqlite_exists:
-        return
 
     legacy_path = get_legacy_storage_path()
-    if os.path.isfile(legacy_path):
+    if not config_exists and not sqlite_exists and os.path.isfile(legacy_path):
         blob = _read_json_file(legacy_path)
         config, database = _split_storage_blob(blob)
         if config:
@@ -117,7 +365,7 @@ def migrate_legacy_storage() -> None:
         return
 
     json_path = get_json_database_path()
-    if os.path.isfile(json_path):
+    if not config_exists and not sqlite_exists and os.path.isfile(json_path):
         database = {
             str(key): value
             for key, value in _read_json_file(json_path).items()
@@ -126,30 +374,57 @@ def migrate_legacy_storage() -> None:
         if database:
             write_database(database)
 
+    if os.path.isfile(get_sqlite_path()):
+        _run_stage5_migration_with_backups()
+    else:
+        _run_config_stage5_migration()
+
 
 def read_config() -> dict[str, str]:
     migrate_legacy_storage()
-    return read_ini_section(get_config_path(), CONFIG_SECTION)
+    config = read_ini_section(get_config_path(), CONFIG_SECTION)
+    if 'manual_weight_reason_policy' not in config:
+        config['manual_weight_reason_policy'] = DEFAULT_MANUAL_WEIGHT_REASON_POLICY
+    if 'video_enabled' not in config:
+        config['video_enabled'] = DEFAULT_VIDEO_ENABLED
+    if 'camera_capture_timeout_sec' not in config:
+        config['camera_capture_timeout_sec'] = DEFAULT_CAMERA_CAPTURE_TIMEOUT_SEC
+    if 'camera_jpeg_quality' not in config:
+        config['camera_jpeg_quality'] = DEFAULT_CAMERA_JPEG_QUALITY
+    return config
 
 
 def write_config(config: dict[str, Any]) -> None:
     ensure_storage_dirs()
     safe_config = {str(key): str(value) for key, value in config.items()}
+    policy = safe_config.get('manual_weight_reason_policy')
+    if policy not in ('optional', 'required'):
+        safe_config['manual_weight_reason_policy'] = DEFAULT_MANUAL_WEIGHT_REASON_POLICY
     write_ini_section(get_config_path(), CONFIG_SECTION, safe_config)
 
 
-def read_database() -> dict[str, str]:
-    migrate_legacy_storage()
-    return read_sqlite_database()
+def read_database(db_path: str | None = None) -> dict[str, str]:
+    if db_path is None:
+        migrate_legacy_storage()
+    return read_sqlite_database(db_path=db_path)
 
 
-def write_database(data: dict[str, Any]) -> None:
+def write_database(data: dict[str, Any], db_path: str | None = None) -> None:
     safe_data = {
         str(key): value
         for key, value in data.items()
         if str(key).startswith('app_') and str(key) != SETTINGS_KEY and isinstance(value, str)
     }
-    write_sqlite_database(safe_data)
+    write_sqlite_database(safe_data, db_path=db_path)
+    changed_runtime_keys = {key for key in safe_data if key in _RUNTIME_CRITICAL_KEYS}
+    if changed_runtime_keys and _runtime_invalidator is not None:
+        _runtime_invalidator(changed_runtime_keys)
+
+
+def register_runtime_invalidator(invalidator: Callable[[set[str]], None]) -> None:
+    """Register callback fired after runtime-critical database writes."""
+    global _runtime_invalidator
+    _runtime_invalidator = invalidator
 
 
 def read_combined_storage() -> dict[str, str]:

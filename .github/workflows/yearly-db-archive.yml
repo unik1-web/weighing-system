@@ -1,0 +1,329 @@
+name: Yearly DB Archive Gate
+
+on:
+  pull_request:
+    paths:
+      - "docs/api.md"
+      - "docs/yearly-db-archive-deploy.md"
+      - "docs/reports/yearly-db-archive/**"
+      - "server/**"
+      - "src/**"
+      - "scripts/smoke_yearly_archive.py"
+      - "installer/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/yearly-db-archive.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "docs/api.md"
+      - "docs/yearly-db-archive-deploy.md"
+      - "docs/reports/yearly-db-archive/**"
+      - "server/**"
+      - "src/**"
+      - "scripts/smoke_yearly_archive.py"
+      - "installer/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/yearly-db-archive.yml"
+  workflow_dispatch:
+
+jobs:
+  frontend-tests:
+    name: frontend-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run full frontend test suite
+        run: npm test
+
+      - name: Run stage-6 frontend subset
+        run: npm run test:stage6-frontend
+
+  backend-tests:
+    name: backend-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
+
+      - name: Run full backend test suite
+        run: python3 -m pytest server/tests -q
+
+      - name: Run stage-6 backend subset
+        run: npm run test:stage6-backend
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    needs:
+      - frontend-tests
+      - backend-tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+  production-smoke:
+    name: production-smoke
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
+
+      - name: Seed stage-6 yearly fixtures for live smoke
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, "server")
+          sys.path.insert(0, "server/tests")
+          from stage6_fixtures import build_stage6_active_year_db, build_stage6_archive_db
+
+          calendar_year = datetime.now(timezone.utc).year
+          active_year = calendar_year - 1
+          Path("BD").mkdir(exist_ok=True)
+          Path("backup").mkdir(exist_ok=True)
+          Path("config.ini").write_text(
+              "[settings]\n"
+              f"active_year = {active_year}\n"
+              "tara_default = 900\n",
+              encoding="utf-8",
+          )
+          build_stage6_active_year_db(Path("BD") / f"weighing-{active_year}.db")
+          build_stage6_archive_db(Path("BD") / f"weighing-{active_year - 1}.db")
+          print(f"seeded active_year={active_year} calendar={calendar_year}")
+          PY
+
+      - name: Build frontend for production entrypoint
+        run: npm run build
+
+      - name: Start production entrypoint
+        run: |
+          set -euo pipefail
+          OPEN_BROWSER=0 PORT=5001 npm start > /tmp/stage6-smoke-server.log 2>&1 &
+          echo $! > /tmp/stage6-smoke-server.pid
+          for _ in $(seq 1 60); do
+            if curl -sf "http://127.0.0.1:5001/api/health" >/dev/null; then
+              echo "Production entrypoint is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Production entrypoint failed to become ready"
+          cat /tmp/stage6-smoke-server.log || true
+          exit 1
+
+      - name: Smoke active year
+        run: npm run smoke:stage6
+
+      - name: Smoke archive branches
+        run: npm run smoke:stage6-archive
+
+      - name: Smoke fail-retry rotation branch
+        run: npm run smoke:stage6-fail-retry
+
+      - name: Smoke parallel rotation lock
+        run: npm run smoke:stage6-parallel-lock
+
+      - name: Stop production entrypoint
+        if: always()
+        run: |
+          if [ -f /tmp/stage6-smoke-server.pid ]; then
+            kill "$(cat /tmp/stage6-smoke-server.pid)" || true
+          fi
+
+  windows-package:
+    name: windows-package
+    runs-on: windows-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install -r server/requirements.txt -r server/requirements-build.txt
+
+      - name: Build Windows executable and validate storage layout
+        run: npm run build:win:exe
+
+      - name: Smoke-check packaged storage directories
+        shell: pwsh
+        run: |
+          $exeRoot = "dist\WeighingSystem"
+          $exePath = Join-Path $exeRoot "WeighingSystem.exe"
+          if (-not (Test-Path $exePath)) {
+            throw "Missing packaged exe: $exePath"
+          }
+
+          $iss = Get-Content -Raw "installer\weighing-system.iss"
+          foreach ($token in @('{app}\BD', '{app}\backup', '{app}\logs')) {
+            if ($iss -notmatch [regex]::Escape($token)) {
+              throw "Installer missing storage directory token: $token"
+            }
+          }
+          if ($iss -match '_MEIPASS') {
+            throw "Installer must not place persistent storage under _MEIPASS"
+          }
+
+          $smokeGuide = Join-Path $exeRoot "smoke\README-smoke.txt"
+          if (-not (Test-Path $smokeGuide)) {
+            throw "Missing packaged smoke guide: $smokeGuide"
+          }
+          $guideText = Get-Content -Raw $smokeGuide
+          foreach ($token in @('BD\', 'backup\', 'logs\', 'smoke_yearly_archive.py', 'active_year')) {
+            if ($guideText -notmatch [regex]::Escape($token)) {
+              throw "Packaged smoke guide missing token: $token"
+            }
+          }
+
+          Write-Host "Windows package keeps BD/backup/logs next to exe (not in _MEIPASS)"
+
+  evidence-gate:
+    name: evidence-gate
+    runs-on: ubuntu-latest
+    needs:
+      - production-smoke
+      - windows-package
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
+
+      - name: Validate stage-6 release gate artifacts
+        run: python3 -m pytest server/tests/test_stage6_release_gate_artifacts.py -q
+
+      - name: Validate evidence files and acceptance report
+        run: |
+          set -euo pipefail
+          reports_dir="docs/reports/yearly-db-archive"
+          acceptance_report="$reports_dir/yearly-archive-acceptance.md"
+          release_checklist="$reports_dir/release-checklist.md"
+
+          required_files=(
+            "$reports_dir/yearly-archive-smoke.md"
+            "$reports_dir/yearly-archive-archive.md"
+            "$reports_dir/yearly-archive-fail-retry.md"
+            "$reports_dir/yearly-archive-parallel-lock.md"
+            "$acceptance_report"
+            "$release_checklist"
+          )
+          for path in "${required_files[@]}"; do
+            test -s "$path" || (echo "Missing evidence: $path" && exit 1)
+          done
+
+          for ec_id in EC-01 EC-02 EC-03 EC-04 EC-05 EC-06 EC-07 EC-08 EC-09 EC-10 EC-11 EC-12 EC-13 EC-14; do
+            grep -nE "^\|[[:space:]]*${ec_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
+              || (echo "Missing or malformed row for ${ec_id}" && exit 1)
+          done
+
+          for tf_id in TF-01 TF-02 TF-03 TF-04 TF-05; do
+            grep -nE "^\|[[:space:]]*${tf_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
+              || (echo "Missing or malformed row for ${tf_id}" && exit 1)
+          done
+
+          if grep -nE "^\|[[:space:]]*(EC-[0-9]+|TF-[0-9]+)[[:space:]]*\|[[:space:]]*FAIL[[:space:]]*\|" "$acceptance_report"; then
+            echo "Acceptance report contains FAIL status."
+            exit 1
+          fi
+
+          grep -niE "mixed legacy" "$acceptance_report" "$release_checklist"
+          grep -niE "rotation" "$acceptance_report" "$release_checklist"
+          grep -niE "fail-retry|fail/retry" "$acceptance_report" "$release_checklist"
+          grep -niE "parallel" "$acceptance_report" "$release_checklist"
+          grep -niE "write-gate|write gate" "$acceptance_report" "$release_checklist"
+          grep -niE "archive" "$acceptance_report" "$release_checklist"
+          grep -niE "forbidden" "$acceptance_report" "$release_checklist"
+          grep -niE "sent-REO|sent REO|reo_sent" "$acceptance_report" "$release_checklist"
+
+      - name: Upload stage-6 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: yearly-db-archive-evidence
+          path: |
+            docs/reports/yearly-db-archive/yearly-archive-smoke.md
+            docs/reports/yearly-db-archive/yearly-archive-archive.md
+            docs/reports/yearly-db-archive/yearly-archive-fail-retry.md
+            docs/reports/yearly-db-archive/yearly-archive-parallel-lock.md
+            docs/reports/yearly-db-archive/yearly-archive-acceptance.md
+            docs/reports/yearly-db-archive/release-checklist.md

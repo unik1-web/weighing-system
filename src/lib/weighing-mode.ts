@@ -1,4 +1,6 @@
-/** Domain helpers for single/dual weighing modes. */
+/** Domain helpers for single/dual weighing modes and weight source. */
+
+import type { WeightSource } from './storage';
 
 export type WeighingMode = 'single' | 'dual';
 export type WeightPhase = 'gross' | 'tare';
@@ -7,6 +9,109 @@ export type WeightSlot = WeightPhase;
 export type OpenWeightState = 'zero' | 'one' | 'two';
 /** Alias for OpenWeightState. */
 export type OpenWeightClass = OpenWeightState;
+
+/** Canonical WeightSource values (order used in UI summaries). */
+export const WEIGHT_SOURCES: readonly WeightSource[] = [
+  'manual',
+  'instrument',
+  'dictionary',
+  'default',
+] as const;
+
+/** Russian labels for badges, journal filter, and reports. */
+export const WEIGHT_SOURCE_LABELS: Record<WeightSource, string> = {
+  instrument: 'ПРИБОР',
+  manual: 'РУЧНОЙ',
+  dictionary: 'СПРАВОЧНИК',
+  default: 'ПО УМОЛЧАНИЮ',
+};
+
+/**
+ * Normalizes a raw source string from ticket/DB.
+ * Unknown / missing values map to `manual`.
+ */
+export function normalizeWeightSource(raw: string | null | undefined): WeightSource {
+  if (raw === 'manual' || raw === 'instrument' || raw === 'dictionary' || raw === 'default') {
+    return raw;
+  }
+  return 'manual';
+}
+
+/**
+ * Journal filter predicate: ticket matches if gross OR tare equals source.
+ * `all` always matches.
+ */
+export function ticketMatchesWeightSource(
+  ticket: { gross_source?: string | null; tare_source?: string | null },
+  source: WeightSource | 'all',
+): boolean {
+  if (source === 'all') return true;
+  return (
+    normalizeWeightSource(ticket.gross_source) === source ||
+    normalizeWeightSource(ticket.tare_source) === source
+  );
+}
+
+/**
+ * Counts tickets by normalized gross_source and tare_source separately.
+ */
+export function summarizeWeightSources(
+  tickets: Array<{ gross_source?: string | null; tare_source?: string | null }>,
+): { gross: Record<WeightSource, number>; tare: Record<WeightSource, number> } {
+  const gross: Record<WeightSource, number> = {
+    manual: 0,
+    instrument: 0,
+    dictionary: 0,
+    default: 0,
+  };
+  const tare: Record<WeightSource, number> = {
+    manual: 0,
+    instrument: 0,
+    dictionary: 0,
+    default: 0,
+  };
+  for (const ticket of tickets) {
+    gross[normalizeWeightSource(ticket.gross_source)] += 1;
+    tare[normalizeWeightSource(ticket.tare_source)] += 1;
+  }
+  return { gross, tare };
+}
+
+export type TareAutofillResult = {
+  tareWeight: number;
+  tareSource: 'dictionary' | 'default';
+};
+
+export interface ManualReasonRuleInput {
+  policy: 'optional' | 'required';
+  slotsOnStep: WeightSlot[];
+  grossSource: WeightSource;
+  tareSource: WeightSource;
+}
+
+/**
+ * Resolves single-mode tare autofill from vehicle card or tara_default.
+ * Returns null when autofill must not run (dual, locked, filled, no source).
+ */
+export function resolveTareAutofill(args: {
+  allowed: boolean;
+  locked: boolean;
+  vehicleNumber: string;
+  tareWeight: number | null;
+  defaultTareWeight: number | null | undefined;
+  taraDefault: number;
+}): TareAutofillResult | null {
+  if (!args.allowed) return null;
+  if (args.locked) return null;
+  if (!args.vehicleNumber || args.tareWeight != null) return null;
+  if (args.defaultTareWeight != null) {
+    return { tareWeight: args.defaultTareWeight, tareSource: 'dictionary' };
+  }
+  if (args.taraDefault > 0) {
+    return { tareWeight: args.taraDefault, tareSource: 'default' };
+  }
+  return null;
+}
 
 export interface SlotEditability {
   grossEditable: boolean;
@@ -94,6 +199,32 @@ export const shouldAutoFillTare = shouldAutofillTare;
 
 export function isCaptureAllowed(stable: boolean, stableMode: boolean): boolean {
   return stable || stableMode;
+}
+
+/**
+ * Returns true when any weight saved on the current step has manual source.
+ */
+export function isManualWeightUsedOnCurrentStep(input: Omit<ManualReasonRuleInput, 'policy'>): boolean {
+  const uniqueSlots = Array.from(new Set(input.slotsOnStep));
+  for (const slot of uniqueSlots) {
+    if (slot === 'gross' && input.grossSource === 'manual') {
+      return true;
+    }
+    if (slot === 'tare' && input.tareSource === 'manual') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Checks if manual weight reason is mandatory on the current step.
+ */
+export function isManualWeightReasonRequiredOnCurrentStep(input: ManualReasonRuleInput): boolean {
+  if (input.policy !== 'required') {
+    return false;
+  }
+  return isManualWeightUsedOnCurrentStep(input);
 }
 
 /**

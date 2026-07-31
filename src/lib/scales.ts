@@ -1,5 +1,6 @@
 // Multi-device scale abstraction via Web Serial API.
 // Supports: Microsim M0601, Newton, CAS, Midl Mi VDA.
+import { parseReading } from './scale-adapters/registry';
 
 export interface ScaleReading {
   weight: number;
@@ -62,6 +63,16 @@ export const SCALE_DEVICES: Record<ScaleDeviceId, ScaleDeviceConfig> = {
 };
 
 export const SCALE_DEVICE_LIST = Object.values(SCALE_DEVICES);
+
+const DEFAULT_SCALE_DEVICE_ID: ScaleDeviceId = 'microsim-m0601';
+
+/** Valid ScaleDeviceId or default microsim-m0601. */
+export function normalizeScaleDeviceId(raw: string | null | undefined): ScaleDeviceId {
+  if (raw && Object.prototype.hasOwnProperty.call(SCALE_DEVICES, raw)) {
+    return raw as ScaleDeviceId;
+  }
+  return DEFAULT_SCALE_DEVICE_ID;
+}
 
 type ReadingListener = (reading: ScaleReading) => void;
 type StatusListener = (connected: boolean) => void;
@@ -173,56 +184,21 @@ export class ScaleConnection {
     }
   }
 
-  // Universal parser: extracts weight, sign, stability, and unit from
-  // common indicator output formats. Handles Microsim, Newton, CAS, Midl.
+  // Route frame parsing through adapter registry for built-in profiles.
   parseFrame(raw: string): ScaleReading | null {
-    const original = raw;
-    let s = raw;
-    let stable = true;
-    let negative = false;
-    const upper = s.toUpperCase();
-
-    // Stability prefixes: ST (stable), US (unstable), STB, MOT, etc.
-    if (/\b(US|MOT|UNST)\b/i.test(upper.slice(0, 6))) {
-      stable = false;
-      s = s.replace(/^[A-Z]{2,3}\s*,?\s*/i, '');
-    } else if (/\b(ST|STB|STABLE)\b/i.test(upper.slice(0, 8))) {
-      stable = true;
-      s = s.replace(/^[A-Z]{2,4}\s*,?\s*/i, '');
-    }
-
-    // Mode prefixes (GS/NT/NT/GROSS/NET) — strip
-    s = s.replace(/^(GS|NT|GROSS|NET)\s*,?\s*/i, '');
-
-    // Sign
-    if (s.includes('-')) {
-      negative = true;
-      s = s.replace('-', ' ');
-    }
-    s = s.replace(/\+/g, ' ').trim();
-
-    // Unit detection
-    let unit = 'kg';
-    const unitMatch = s.match(/(kg|g|t|lb|kn|n)$/i);
-    if (unitMatch) {
-      unit = unitMatch[1].toLowerCase();
-      s = s.slice(0, unitMatch.index).trim();
-    }
-
-    // Numeric extraction
-    const numMatch = s.match(/-?\d[\d.,\s]*\d|\d/);
-    if (!numMatch) return null;
-
-    const numStr = numMatch[0].replace(/\s/g, '').replace(',', '.');
-    const weight = parseFloat(numStr);
-    if (isNaN(weight)) return null;
-
+    if (!this.device) return null;
+    const parsed = parseReading(
+      this.device.id,
+      raw,
+      { transport: 'web_serial', device_id: this.device.id },
+    );
+    if (!parsed) return null;
     return {
-      weight: negative ? -Math.abs(weight) : weight,
-      unit,
-      stable,
-      negative,
-      raw: original,
+      weight: parsed.value,
+      unit: parsed.unit ?? 'kg',
+      stable: parsed.stable,
+      negative: parsed.negative ?? parsed.value < 0,
+      raw: parsed.raw,
     };
   }
 }
