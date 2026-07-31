@@ -28,10 +28,11 @@
 | Lock ротации года | `BD/.year_rotation.lock` |
 | Backup миграции и ротации | `backup/` (рядом с приложением; retention — внеоперационная процедура) |
 | Legacy (до миграции stage 6) | `BD/weighing.db` — только источник copy-on-write |
+| Фото / эталоны (stage 7) | `Photo/` рядом с приложением (не в `_MEIPASS`) |
 | Кэш браузера | `localStorage` (синхронизируется с сервером) |
 | Логи backend | `logs/app.log` (рядом с приложением; в dev также возможен `server/logs/`) |
 
-Постоянные данные **не** хранятся в PyInstaller `_MEIPASS`. Операционный runbook: [docs/yearly-db-archive-deploy.md](docs/yearly-db-archive-deploy.md).
+Постоянные данные **не** хранятся в PyInstaller `_MEIPASS` (`config.ini`, `BD/`, `backup/`, `logs/`, `Photo/` рядом с exe). Операционные runbook: [docs/yearly-db-archive-deploy.md](docs/yearly-db-archive-deploy.md) (stage 6), [docs/photo-capture-deploy.md](docs/photo-capture-deploy.md) (stage 7, dual basic/full).
 
 Stage-6 операционные события (миграция, ротация года, архив, archive-edit) пишутся в `logs/app.log` строками вида `stage6 {...}` через `server/stage6_logging.py`. Полный diff правки тикета остаётся в `ticket_audit` годовой БД, а не в operational log.
 
@@ -78,6 +79,15 @@ npm start
 6. Дополнительно: проверить `primary/spare` и ручной ввод (`manual_weight_reason`) — регрессия stage 5
 
 Полный операционный runbook: [docs/yearly-db-archive-deploy.md](docs/yearly-db-archive-deploy.md).
+
+Краткий порядок проверки фотофиксации (stage 7, dual setup):
+1. **Backup** — `config.ini` + `BD/weighing-ГГГГ.db` (+ `Photo/` при наличии) вне каталога приложения
+2. **Установка** — basic `WeighingSystem-Setup.exe` или full `WeighingSystem-Full-Setup.exe` (`npm run build:win` / `build:win:full`); данные рядом с exe сохраняются
+3. **Migration v7** — первый запуск создаёт `cameras` / `ticket_photos`, `PRAGMA user_version = 7`
+4. **Full** — Настройки → Видео → `video_enabled`, CRUD камер, проверка capture; при недоступной камере — degrade без блокировки веса
+5. **Smoke** — `npm run smoke:photo-capability` / `smoke:photo-capture-noop` / `smoke:photo-basic-import` / `smoke:photo-full-import`
+
+Полный runbook dual packaging и rollback: [docs/photo-capture-deploy.md](docs/photo-capture-deploy.md).
 
 Порядок smoke-проверки runtime API (`serial_backend`):
 
@@ -186,35 +196,43 @@ npm run dev
 |-----------|------------|
 | Node.js 18+ | `npm run build` |
 | Python 3.11/3.12 | PyInstaller, backend |
-| [Inno Setup 6](https://jrsoftware.org/isinfo.php) | создание `WeighingSystem-Setup.exe` (опционально) |
+| [Inno Setup 6](https://jrsoftware.org/isinfo.php) | создание `WeighingSystem-Setup.exe` / `WeighingSystem-Full-Setup.exe` (опционально) |
 
 ```powershell
 cd weighing-system
 npm install
+# Базовая поставка (без OpenCV)
 pip install -r server/requirements.txt -r server/requirements-build.txt
 npm run build:win
+
+# Полная поставка (камеры + opencv-python-headless)
+pip install -r server/requirements-full.txt -r server/requirements-build.txt
+npm run build:win:full
 ```
 
 Результат:
 
 | Файл / каталог | Описание |
 |----------------|----------|
-| `release/WeighingSystem-Setup.exe` | установщик (Program Files или выбранный каталог) |
+| `release/WeighingSystem-Setup.exe` | установщик basic (без OpenCV) |
+| `release/WeighingSystem-Full-Setup.exe` | установщик full (фотофиксация / RTSP) |
 | `dist/WeighingSystem/WeighingSystem.exe` | portable-версия без установки |
 
 Только exe без setup:
 
 ```powershell
 npm run build:win:exe
+npm run build:win:full:exe
 ```
 
+Capability в runtime (`GET /api/cameras/capability`) отличает сборки: basic — `available=false`; full — `available=true` при наличии OpenCV в бандле. Full без deps камер падает на этапе build/smoke, а не «тихо» становится basic.
 ### Установка у пользователя
 
 1. Запустить `WeighingSystem-Setup.exe`
 2. Выбрать каталог (по умолчанию `C:\Program Files\Система учёта взвешиваний`)
 3. Запустить **WeighingSystem.exe** — откроется браузер на `http://127.0.0.1:5001`
 
-Данные хранятся рядом с программой (не в `_MEIPASS`): `config.ini`, `BD/weighing-ГГГГ.db`, `backup/`, `BD/.year_rotation.lock`, `logs/`.
+Данные хранятся рядом с программой (не в `_MEIPASS`): `config.ini`, `BD/weighing-ГГГГ.db`, `backup/`, `BD/.year_rotation.lock`, `logs/`, `Photo/`.
 
 Smoke-порядок для упакованной версии:
 
@@ -308,6 +326,8 @@ JSON-файл для ручной отправки содержит пустые
 | [docs/api.md](docs/api.md) | Справочник HTTP API Flask |
 | [docs/yearly-db-archive-deploy.md](docs/yearly-db-archive-deploy.md) | Runbook выката stage 6: миграция, ротация, rollback, smoke |
 | [docs/reports/yearly-db-archive/release-checklist.md](docs/reports/yearly-db-archive/release-checklist.md) | Release checklist / gate stage 6 |
+| [docs/photo-capture-deploy.md](docs/photo-capture-deploy.md) | Runbook stage 7: dual basic/full, migration v7, capture/degrade, rollback |
+| [docs/reports/photo-capture/release-checklist.md](docs/reports/photo-capture/release-checklist.md) | Release checklist / gate stage 7 |
 | [docs/scale-adapters-deploy.md](docs/scale-adapters-deploy.md) | Runbook stage 5 (scale-adapters) |
 | [docs/project-for-agents.md](docs/project-for-agents.md) | Контекст проекта для мультиагентного пайплайна |
 | [docs/roadmap.md](docs/roadmap.md) | Roadmap развития |
@@ -390,15 +410,21 @@ weighing-system/
 ├── docs/                   # архитектура, API, задачи и артефакты пайплайна
 │   ├── tasks/              # постановки задач для оркестратора
 │   ├── yearly-db-archive-deploy.md
+│   ├── photo-capture-deploy.md  # runbook stage 7 (dual basic/full)
 │   └── implementation/     # черновики пайплайна (в .gitignore)
+├── Photo/                  # JPEG тикетов/эталонов (рядом с exe, runtime)
 ├── installer/
-│   ├── build.ps1           # сборка exe + setup
-│   ├── weighing-system.spec
-│   └── weighing-system.iss # Inno Setup
-├── release/                # WeighingSystem-Setup.exe (после сборки)
+│   ├── build.ps1                 # сборка exe + setup (-Full = полная поставка)
+│   ├── weighing-system.spec      # basic (exclude cv2)
+│   ├── weighing-system-full.spec # full (+ OpenCV / cameras)
+│   ├── weighing-system.iss       # WeighingSystem-Setup.exe
+│   └── weighing-system-full.iss  # WeighingSystem-Full-Setup.exe
+├── release/                # Setup.exe / Full-Setup.exe (после сборки)
 ├── server/
 │   ├── app.py              # Flask API + раздача dist/
 │   ├── launcher.py         # точка входа для exe
+│   ├── requirements.txt    # basic runtime (без OpenCV)
+│   ├── requirements-full.txt # full = basic + opencv-python-headless
 │   ├── persistence.py      # config.ini, backup INI
 │   ├── sqlite_store.py     # SQLite
 │   ├── dictionary_import.py

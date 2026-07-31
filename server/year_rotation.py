@@ -30,6 +30,7 @@ from sqlite_store import (
     count_stage6_tables,
     load_rotation_preview,
     migrate_schema_stage_6,
+    migrate_schema_stage_7,
     read_ticket_year_range,
     validate_new_year_database,
     validate_stage6_database,
@@ -232,6 +233,7 @@ def migrate_legacy_database(now: datetime | None = None) -> dict[str, Any]:
             tmp_conn.row_factory = sqlite3.Row
             tmp_conn.execute('BEGIN IMMEDIATE')
             migrate_schema_stage_6(tmp_conn)
+            migrate_schema_stage_7(tmp_conn)
             backfill_stage6_audit_columns(tmp_conn, migration_year)
             validation = validate_stage6_database(tmp_conn)
             if not validation.get('valid'):

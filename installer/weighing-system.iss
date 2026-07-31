@@ -39,6 +39,7 @@ Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 Name: "{app}\BD"; Permissions: users-modify
 Name: "{app}\backup"; Permissions: users-modify
 Name: "{app}\logs"; Permissions: users-modify
+Name: "{app}\Photo"; Permissions: users-modify
 
 [Icons]
 Name: "{group}\{#MyAppNameRu}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

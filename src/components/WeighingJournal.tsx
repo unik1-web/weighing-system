@@ -10,6 +10,7 @@ import {
   normalizeWeightSource,
 } from '@/lib/weighing-mode';
 import { printTicket } from './PrintAct';
+import { TicketPhotosPreview } from '@/components/TicketPhotosPreview';
 import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson, Eye, X } from 'lucide-react';
 
 /** Canonical weight-source label for card/CSV (WEIGHT_SOURCE_LABELS). */
@@ -489,6 +490,12 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
               <div className="col-span-2">
                 <dt className="text-xs text-slate-500">Оператор</dt>
                 <dd className="text-slate-800">{detailsTicket.operator_name || '—'}</dd>
+              </div>
+              <div className="col-span-2 mt-1">
+                <dt className="mb-1 text-xs text-slate-500">Фотофиксация</dt>
+                <dd>
+                  <TicketPhotosPreview ticketId={detailsTicket.id} />
+                </dd>
               </div>
             </dl>
           </div>

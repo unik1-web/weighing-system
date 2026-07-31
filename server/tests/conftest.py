@@ -32,6 +32,7 @@ def temp_app_root(tmp_path, monkeypatch):
     root = tmp_path / 'app'
     root.mkdir()
     (root / 'BD').mkdir()
+    (root / 'Photo').mkdir()
 
     monkeypatch.setattr(sqlite_store, 'get_app_root', lambda: str(root))
     monkeypatch.setattr(persistence, 'get_app_root', lambda: str(root))

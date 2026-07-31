@@ -12,6 +12,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILENAME = 'weighing.db'
 SCHEMA_VERSION_STAGE_5 = 5
 SCHEMA_VERSION_STAGE_6 = 6
+SCHEMA_VERSION_STAGE_7 = 7
 
 logger = logging.getLogger('weighing-system-api')
 
@@ -25,6 +26,8 @@ STORAGE_KEYS = {
     'scales': 'app_scales',
     'site_runtime': 'app_site_runtime',
     'scale_switch_journal': 'app_scale_switch_journal',
+    'cameras': 'app_cameras',
+    'ticket_photos': 'app_ticket_photos',
     'session': 'app_current_user',
     'vehicles': 'app_vehicles',
     'drivers': 'app_drivers',
@@ -84,6 +87,19 @@ SCALE_SWITCH_JOURNAL_COLUMNS = [
     'operator_name', 'operator_id', 'switched_at',
 ]
 
+CAMERA_COLUMNS = [
+    'id', 'site_id', 'name', 'role',
+    'http_snapshot_url', 'rtsp_url', 'enabled',
+    'roi_x', 'roi_y', 'roi_w', 'roi_h',
+    'etalon_primary_path', 'etalon_spare_path',
+    'sort_order', 'created_at', 'updated_at',
+]
+
+TICKET_PHOTO_COLUMNS = [
+    'id', 'ticket_id', 'camera_id', 'camera_role', 'event',
+    'file_path', 'status', 'error_code', 'captured_at', 'camera_mode',
+]
+
 TICKET_STUB_COLUMNS = (
     'plate_source',
     'site_id',
@@ -92,6 +108,40 @@ TICKET_STUB_COLUMNS = (
     'photo_entry_path',
     'photo_exit_path',
 )
+
+CAMERA_ROLES = frozenset({'entry', 'exit', 'overview'})
+MAX_CAMERAS_PER_SITE = 4
+CAMERA_ETALON_PATH_COLUMNS = ('etalon_primary_path', 'etalon_spare_path')
+TICKET_PHOTO_STUB_COLUMNS = ('photo_entry_path', 'photo_exit_path')
+# Capture-merge marker on a ticket object (from POST /api/cameras/capture).
+# When present and non-empty, client null for photo_* is accepted (fresh capture).
+# Without it, _replace_tickets preserves non-null SQLite stubs (defense-in-depth).
+TICKET_CAPTURE_TOKEN_KEY = 'capture_token'
+
+STAGE7_REQUIRED_INDEXES = frozenset(
+    {
+        'idx_cameras_site',
+        'idx_cameras_site_enabled',
+        'uq_ticket_photos_key',
+        'idx_ticket_photos_ticket',
+        'idx_ticket_photos_ticket_event',
+        'idx_ticket_photos_stub',
+    }
+)
+
+
+class StorageValidationError(Exception):
+    """
+    Server-side storage validation failure for POST /api/database payloads.
+
+    Mapped by Flask handlers to HTTP 400 with ``code`` / ``message``.
+    """
+
+    def __init__(self, code: str, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
 
 
 def get_app_root() -> str:
@@ -437,6 +487,114 @@ def migrate_schema_stage_6(connection: sqlite3.Connection) -> None:
             )
 
 
+def migrate_schema_stage_7(connection: sqlite3.Connection) -> None:
+    """
+    Apply add-only stage-7 migration: cameras / ticket_photos tables and indexes.
+
+    Idempotent: safe to call repeatedly; sets ``PRAGMA user_version = 7``.
+    """
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS cameras (
+            id TEXT PRIMARY KEY,
+            site_id TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            role TEXT NOT NULL,
+            http_snapshot_url TEXT,
+            rtsp_url TEXT,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            roi_x REAL,
+            roi_y REAL,
+            roi_w REAL,
+            roi_h REAL,
+            etalon_primary_path TEXT,
+            etalon_spare_path TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        '''
+    )
+    connection.execute(
+        'CREATE INDEX IF NOT EXISTS idx_cameras_site ON cameras(site_id)'
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_cameras_site_enabled
+            ON cameras(site_id, enabled)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS ticket_photos (
+            id TEXT PRIMARY KEY,
+            ticket_id TEXT NOT NULL,
+            camera_id TEXT NOT NULL,
+            camera_role TEXT NOT NULL,
+            event TEXT NOT NULL,
+            file_path TEXT,
+            status TEXT NOT NULL,
+            error_code TEXT,
+            captured_at TEXT NOT NULL,
+            camera_mode TEXT
+        )
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_ticket_photos_key
+            ON ticket_photos(ticket_id, camera_id, event)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_ticket_photos_ticket
+            ON ticket_photos(ticket_id)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_ticket_photos_ticket_event
+            ON ticket_photos(ticket_id, event)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_ticket_photos_stub
+            ON ticket_photos(ticket_id, camera_role, status, captured_at)
+        '''
+    )
+
+    current_version = _get_user_version(connection)
+    if current_version < SCHEMA_VERSION_STAGE_7:
+        connection.execute(f'PRAGMA user_version = {SCHEMA_VERSION_STAGE_7}')
+
+    post_version = _get_user_version(connection)
+    if post_version < SCHEMA_VERSION_STAGE_7:
+        raise RuntimeError('Stage-7 migration failed: PRAGMA user_version is not 7')
+    table_names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if 'cameras' not in table_names:
+        raise RuntimeError('Stage-7 migration failed: cameras table is missing')
+    if 'ticket_photos' not in table_names:
+        raise RuntimeError('Stage-7 migration failed: ticket_photos table is missing')
+    index_names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+        ).fetchall()
+    }
+    missing_indexes = sorted(STAGE7_REQUIRED_INDEXES - index_names)
+    if missing_indexes:
+        raise RuntimeError(
+            f'Stage-7 migration failed: missing indexes: {", ".join(missing_indexes)}'
+        )
+
+
 def read_ticket_year_range(connection: sqlite3.Connection) -> dict[str, Any]:
     """
     Read ticket year range from legacy date columns.
@@ -474,7 +632,12 @@ def read_ticket_year_range(connection: sqlite3.Connection) -> dict[str, Any]:
 
 
 def count_stage6_tables(connection: sqlite3.Connection) -> dict[str, int]:
-    """Count rows in key stage-6 tables."""
+    """
+    Count rows in key stage-6/7 tables for migration/rotation preview.
+
+    Includes ``cameras`` (copy-forward config). ``ticket_photos`` is intentionally
+    omitted here — it is validated only as forbidden-nonzero in a fresh year DB.
+    """
     table_names = (
         'users',
         'profiles',
@@ -486,6 +649,7 @@ def count_stage6_tables(connection: sqlite3.Connection) -> dict[str, int]:
         'scales',
         'site_runtime',
         'scale_switch_journal',
+        'cameras',
     )
     counts: dict[str, int] = {}
     for table in table_names:
@@ -732,6 +896,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
     )
     migrate_schema_stage_5(connection)
     migrate_schema_stage_6(connection)
+    migrate_schema_stage_7(connection)
 
 
 def _normalize_plate_for_lookup(value: str | None) -> str:
@@ -1013,6 +1178,9 @@ def copy_whitelist_data(
     copied['sites'] = _copy_table('sites')
     copied['scales'] = _copy_table('scales')
     copied['site_runtime'] = _copy_table('site_runtime')
+    # Stage-7: camera registry is site configuration — copy-forward like sites/scales.
+    # ticket_photos stay in the source year DB (journal data) and must not be copied.
+    copied['cameras'] = _copy_table('cameras')
     copied['dictionary_entries'] = _copy_table(
         'dictionary_entries',
         "category IN (?, ?, ?, ?, ?, ?)",
@@ -1044,8 +1212,16 @@ def validate_new_year_database(target_conn: sqlite3.Connection) -> dict[str, Any
     """Validate fresh year DB invariants after whitelist copy."""
     assert_no_forbidden_runtime_keys(target_conn)
     forbidden_nonzero: dict[str, int] = {}
-    for table_name in ('weighing_tickets', 'ticket_audit', 'scale_switch_journal'):
-        count = _table_count(target_conn, table_name)
+    for table_name in (
+        'weighing_tickets',
+        'ticket_audit',
+        'scale_switch_journal',
+        'ticket_photos',
+    ):
+        try:
+            count = _table_count(target_conn, table_name)
+        except sqlite3.Error:
+            count = 0
         if count > 0:
             forbidden_nonzero[table_name] = count
     return {
@@ -1440,6 +1616,30 @@ def _load_scale_switch_journal(connection: sqlite3.Connection) -> list[dict[str,
     return [{column: row[column] for column in SCALE_SWITCH_JOURNAL_COLUMNS} for row in rows]
 
 
+def _load_cameras(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Load camera registry rows for sync dump."""
+    rows = connection.execute(
+        f'''
+        SELECT {", ".join(CAMERA_COLUMNS)}
+        FROM cameras
+        ORDER BY sort_order ASC, created_at ASC
+        '''
+    ).fetchall()
+    return [{column: row[column] for column in CAMERA_COLUMNS} for row in rows]
+
+
+def _load_ticket_photos(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Load ticket photo metadata rows for sync dump."""
+    rows = connection.execute(
+        f'''
+        SELECT {", ".join(TICKET_PHOTO_COLUMNS)}
+        FROM ticket_photos
+        ORDER BY captured_at ASC
+        '''
+    ).fetchall()
+    return [{column: row[column] for column in TICKET_PHOTO_COLUMNS} for row in rows]
+
+
 def _load_dictionary(connection: sqlite3.Connection, category: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
@@ -1538,6 +1738,14 @@ def read_database(db_path: str | None = None) -> dict[str, str]:
                 scale_switch_journal, ensure_ascii=False
             )
 
+        cameras = _load_cameras(connection)
+        result[STORAGE_KEYS['cameras']] = json.dumps(cameras, ensure_ascii=False)
+
+        ticket_photos = _load_ticket_photos(connection)
+        result[STORAGE_KEYS['ticket_photos']] = json.dumps(
+            ticket_photos, ensure_ascii=False
+        )
+
         session = _load_session(connection)
         if session:
             result[STORAGE_KEYS['session']] = session
@@ -1604,10 +1812,33 @@ def _replace_profiles(connection: sqlite3.Connection, profiles: dict[str, Any]) 
 
 
 def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None:
+    """
+    Full-replace weighing_tickets with defense-in-depth for photo stubs.
+
+    Preserve-non-null for ``photo_entry_path`` / ``photo_exit_path``:
+    if the client sends ``null`` while SQLite already has a non-null value,
+    keep the DB value **unless** the ticket carries a fresh capture-merge
+    marker (``capture_token`` — see ``TICKET_CAPTURE_TOKEN_KEY``).
+    """
+    existing_photo_stubs: dict[str, dict[str, Any]] = {}
+    try:
+        for row in connection.execute(
+            'SELECT id, photo_entry_path, photo_exit_path FROM weighing_tickets'
+        ).fetchall():
+            existing_photo_stubs[str(row['id'])] = {
+                'photo_entry_path': row['photo_entry_path'],
+                'photo_exit_path': row['photo_exit_path'],
+            }
+    except sqlite3.Error:
+        existing_photo_stubs = {}
+
     connection.execute('DELETE FROM weighing_tickets')
     for ticket in tickets:
         if not isinstance(ticket, dict):
             continue
+        ticket_id = str(ticket.get('id', ''))
+        previous = existing_photo_stubs.get(ticket_id, {})
+        allow_null_overwrite = _ticket_allows_photo_null_overwrite(ticket)
         values = []
         for column in TICKET_COLUMNS:
             if column == 'weighing_mode':
@@ -1616,6 +1847,14 @@ def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None
                 values.append(ticket.get(column) if ticket.get(column) is not None else 1)
             elif column == 'auto_closed':
                 values.append(ticket.get(column) if ticket.get(column) is not None else 0)
+            elif column in TICKET_PHOTO_STUB_COLUMNS:
+                values.append(
+                    _resolve_preserved_nullable_path(
+                        ticket.get(column),
+                        previous.get(column),
+                        allow_null_overwrite=allow_null_overwrite,
+                    )
+                )
             else:
                 values.append(ticket.get(column))
         connection.execute(
@@ -1625,6 +1864,46 @@ def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None
             ''',
             values,
         )
+
+
+def _ticket_allows_photo_null_overwrite(ticket: dict[str, Any]) -> bool:
+    """
+    Return True when client null for photo_* must be written as-is.
+
+    Marker: non-empty ``capture_token`` on the ticket object (opaque value from
+    ``POST /api/cameras/capture``, merged by the client before the post-capture
+    flush). Absent/empty token → preserve-non-null defense-in-depth.
+    """
+    token = ticket.get(TICKET_CAPTURE_TOKEN_KEY)
+    if token is None:
+        return False
+    return str(token).strip() != ''
+
+
+def _resolve_preserved_nullable_path(
+    incoming: Any,
+    existing: Any,
+    *,
+    allow_null_overwrite: bool,
+) -> Any:
+    """
+    Resolve a nullable path field with preserve-non-null semantics.
+
+    Args:
+        incoming: Value from client payload (may be None).
+        existing: Current SQLite value (may be None).
+        allow_null_overwrite: When True, client None replaces existing non-null.
+
+    Returns:
+        Path to persist.
+    """
+    if incoming is not None:
+        return incoming
+    if allow_null_overwrite:
+        return None
+    if existing is not None and str(existing).strip() != '':
+        return existing
+    return None
 
 
 def _replace_ticket_audit(connection: sqlite3.Connection, events: list[Any]) -> None:
@@ -1777,6 +2056,213 @@ def _replace_scale_switch_journal(connection: sqlite3.Connection, rows: list[Any
         )
 
 
+def _coerce_enabled_flag(value: Any) -> int:
+    """Normalize enabled flag to 0/1 for cameras table."""
+    if value in (True, 1, '1', 'true', 'True'):
+        return 1
+    return 0
+
+
+def _camera_url_nonempty(value: Any) -> bool:
+    """Return True when a camera URL field is a non-empty string."""
+    return isinstance(value, str) and value.strip() != ''
+
+
+def _validate_camera_roi(row: dict[str, Any], camera_id: str) -> None:
+    """
+    Validate optional ROI fields as normalized [0..1] frame fractions.
+
+    Pixel-space coordinates (values > 1) are rejected.
+    """
+    roi_fields = ('roi_x', 'roi_y', 'roi_w', 'roi_h')
+    present = {name: row.get(name) for name in roi_fields if row.get(name) is not None}
+    if not present:
+        return
+
+    for name, raw in present.items():
+        try:
+            value = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise StorageValidationError(
+                'invalid_request',
+                f'Камера {camera_id}: поле {name} должно быть числом в диапазоне [0..1]',
+            ) from exc
+        if value < 0 or value > 1:
+            raise StorageValidationError(
+                'invalid_request',
+                f'Камера {camera_id}: ROI должен быть нормализован в [0..1] '
+                f'(пиксельный формат не допускается); поле {name}={value}',
+            )
+        if name in ('roi_w', 'roi_h') and value <= 0:
+            raise StorageValidationError(
+                'invalid_request',
+                f'Камера {camera_id}: {name} должен быть > 0',
+            )
+
+
+def _validate_cameras_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    """
+    Validate camera registry payload before mutating the cameras table.
+
+    Raises:
+        StorageValidationError: when per-site count, role, enabled⇒URL, or ROI fails.
+    """
+    cameras: list[dict[str, Any]] = [row for row in rows if isinstance(row, dict)]
+    per_site: dict[str, int] = {}
+    for row in cameras:
+        site_id = str(row.get('site_id', '') or '')
+        per_site[site_id] = per_site.get(site_id, 0) + 1
+    for site_id, count in per_site.items():
+        if count > MAX_CAMERAS_PER_SITE:
+            raise StorageValidationError(
+                'invalid_request',
+                f'На площадке допускается не более {MAX_CAMERAS_PER_SITE} камер '
+                f'(site_id={site_id!r}, получено {count})',
+            )
+
+    for row in cameras:
+        camera_id = str(row.get('id', '') or '')
+        role = str(row.get('role', '') or '')
+        if role not in CAMERA_ROLES:
+            raise StorageValidationError(
+                'invalid_request',
+                f'Камера {camera_id}: недопустимая роль {role!r}; '
+                f'ожидается одна из {sorted(CAMERA_ROLES)}',
+            )
+        enabled = _coerce_enabled_flag(row.get('enabled', 0))
+        if enabled and not (
+            _camera_url_nonempty(row.get('http_snapshot_url'))
+            or _camera_url_nonempty(row.get('rtsp_url'))
+        ):
+            raise StorageValidationError(
+                'invalid_request',
+                f'Камера {camera_id}: при enabled требуется http_snapshot_url или rtsp_url',
+            )
+        _validate_camera_roi(row, camera_id)
+    return cameras
+
+
+def _load_existing_camera_etalon_paths(
+    connection: sqlite3.Connection,
+) -> dict[str, dict[str, Any]]:
+    """Read current etalon paths keyed by camera id for preserve-non-null."""
+    try:
+        rows = connection.execute(
+            'SELECT id, etalon_primary_path, etalon_spare_path FROM cameras'
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        result[str(row['id'])] = {
+            'etalon_primary_path': row['etalon_primary_path'],
+            'etalon_spare_path': row['etalon_spare_path'],
+        }
+    return result
+
+
+def _replace_cameras(connection: sqlite3.Connection, rows: list[Any]) -> None:
+    """
+    Full-replace cameras table with server-side validation and etalon preserve.
+
+    Validation (MUST): ≤4 cameras per site_id; role ∈ {entry, exit, overview};
+    enabled ⇒ at least one non-empty URL; ROI normalized [0..1] with w/h > 0.
+
+    Preserve-non-null: if client sends null for ``etalon_*_path`` while SQLite
+    already has a non-null value, keep the DB value (stale client payload guard).
+
+    When a camera id disappears from the payload, best-effort delete
+    ``Photo/etalons/{id}/`` (does not touch ticket_photos).
+    """
+    cameras = _validate_cameras_rows(rows)
+    existing_etalons = _load_existing_camera_etalon_paths(connection)
+    previous_ids = set(existing_etalons.keys())
+    next_ids = {str(row.get('id', '') or '') for row in cameras}
+    removed_ids = previous_ids - next_ids
+
+    connection.execute('DELETE FROM cameras')
+    for row in cameras:
+        camera_id = str(row.get('id', ''))
+        previous = existing_etalons.get(camera_id, {})
+        etalon_primary = _resolve_preserved_nullable_path(
+            row.get('etalon_primary_path'),
+            previous.get('etalon_primary_path'),
+            allow_null_overwrite=False,
+        )
+        etalon_spare = _resolve_preserved_nullable_path(
+            row.get('etalon_spare_path'),
+            previous.get('etalon_spare_path'),
+            allow_null_overwrite=False,
+        )
+        connection.execute(
+            f'''
+            INSERT INTO cameras ({", ".join(CAMERA_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(CAMERA_COLUMNS))})
+            ''',
+            (
+                camera_id,
+                str(row.get('site_id', '')),
+                str(row.get('name', '')),
+                str(row.get('role', '')),
+                row.get('http_snapshot_url'),
+                row.get('rtsp_url'),
+                _coerce_enabled_flag(row.get('enabled', 0)),
+                row.get('roi_x'),
+                row.get('roi_y'),
+                row.get('roi_w'),
+                row.get('roi_h'),
+                etalon_primary,
+                etalon_spare,
+                int(row.get('sort_order') or 0),
+                str(row.get('created_at', '')),
+                str(row.get('updated_at', '')),
+            ),
+        )
+
+    if removed_ids:
+        try:
+            from photo_storage import PhotoStorage
+
+            storage = PhotoStorage()
+            for camera_id in removed_ids:
+                if camera_id:
+                    storage.remove_etalon_dir(camera_id)
+        except Exception:
+            logger.exception('Best-effort etalon cleanup failed for removed cameras')
+
+
+def _replace_ticket_photos(connection: sqlite3.Connection, rows: list[Any]) -> None:
+    """
+    Full-replace ticket_photos metadata table.
+
+    Accepts metadata rows only (paths/status/codes) — never binary image payloads.
+    Unknown binary-oriented keys on the dict are ignored; only ``TICKET_PHOTO_COLUMNS``
+    are persisted.
+    """
+    connection.execute('DELETE FROM ticket_photos')
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        connection.execute(
+            f'''
+            INSERT INTO ticket_photos ({", ".join(TICKET_PHOTO_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(TICKET_PHOTO_COLUMNS))})
+            ''',
+            (
+                str(row.get('id', '')),
+                str(row.get('ticket_id', '')),
+                str(row.get('camera_id', '')),
+                str(row.get('camera_role', '')),
+                str(row.get('event', '')),
+                row.get('file_path'),
+                str(row.get('status', '')),
+                row.get('error_code'),
+                str(row.get('captured_at', '')),
+                row.get('camera_mode'),
+            ),
+        )
+
+
 def _replace_dictionary(connection: sqlite3.Connection, category: str, items: list[Any]) -> None:
     connection.execute('DELETE FROM dictionary_entries WHERE category = ?', (category,))
     for item in items:
@@ -1913,6 +2399,38 @@ def write_database(data: dict[str, Any], db_path: str | None = None) -> None:
                 )
             except Exception:
                 logger.exception('Failed to replace scale_switch_journal')
+                raise
+
+        if STORAGE_KEYS['cameras'] in data:
+            try:
+                rows = json.loads(str(data[STORAGE_KEYS['cameras']]))
+                if isinstance(rows, list):
+                    _replace_cameras(connection, rows)
+            except json.JSONDecodeError:
+                logger.warning(
+                    'Invalid JSON for %s; cameras not replaced',
+                    STORAGE_KEYS['cameras'],
+                )
+            except StorageValidationError:
+                raise
+            except Exception:
+                logger.exception('Failed to replace cameras')
+                raise
+
+        if STORAGE_KEYS['ticket_photos'] in data:
+            try:
+                rows = json.loads(str(data[STORAGE_KEYS['ticket_photos']]))
+                if isinstance(rows, list):
+                    _replace_ticket_photos(connection, rows)
+            except json.JSONDecodeError:
+                logger.warning(
+                    'Invalid JSON for %s; ticket_photos not replaced',
+                    STORAGE_KEYS['ticket_photos'],
+                )
+            except StorageValidationError:
+                raise
+            except Exception:
+                logger.exception('Failed to replace ticket_photos')
                 raise
 
         if STORAGE_KEYS['session'] in data:

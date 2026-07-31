@@ -27,6 +27,8 @@ const RUNTIME_ERROR_DEBOUNCE_MS = 800;
 const REDACTED_IP = '***.***.***.***';
 const REDACTED_COM = 'COM***';
 const REDACTED_TTY = '/dev/tty***';
+/** Query keys whose values must never appear in client logs. */
+const SENSITIVE_URL_QUERY_KEYS = new Set(['password', 'pass', 'token', 'key']);
 
 const LEVEL_WEIGHT: Record<LogLevel, number> = {
   debug: 10,
@@ -80,8 +82,28 @@ type RuntimeDebounceState = {
 
 const runtimeErrorDebounceState = new Map<string, RuntimeDebounceState>();
 
+/**
+ * Mask password in URL userinfo and sensitive query params (no plaintext secrets).
+ * Mirrors server cameras.mask_url for client-side logs only.
+ */
+function redactUrlSecrets(value: string): string {
+  return value.replace(
+    /\b((?:https?|rtsp):\/\/)([^/\s"'`]*?)(:[^/\s"'`@]*)(@)/gi,
+    (_match, scheme: string, user: string, _password: string, at: string) =>
+      `${scheme}${user}:***${at}`,
+  ).replace(
+    /([?&])(password|pass|token|key)=([^&#\s"'`]*)/gi,
+    (_match, sep: string, key: string) => {
+      if (!SENSITIVE_URL_QUERY_KEYS.has(key.toLowerCase())) {
+        return `${sep}${key}=`;
+      }
+      return `${sep}${key}=***`;
+    },
+  );
+}
+
 function redactSensitiveString(value: string): string {
-  return value
+  return redactUrlSecrets(value)
     .replace(/\bCOM\d+\b/gi, REDACTED_COM)
     .replace(/\/dev\/tty[^\s"'`]+/gi, REDACTED_TTY)
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, REDACTED_IP);

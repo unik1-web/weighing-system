@@ -46,6 +46,11 @@ hiddenimports = [
     'text_encoding',
     'vescom',
     'wa',
+    # Stage-7 camera/photo modules are import-safe without cv2 (lazy OpenCV probe).
+    'cameras',
+    'camera_logging',
+    'photo_storage',
+    'ticket_photos',
     'flask',
     'flask_cors',
     'werkzeug',
@@ -60,6 +65,7 @@ hiddenimports = [
 ]
 hiddenimports += collect_submodules('pypxlib')
 
+# Basic delivery: documented exclude of OpenCV (EC-06). Capability gate reports basic.
 a = Analysis(
     [os.path.join(server_dir, 'launcher.py')],
     pathex=[server_dir],
@@ -69,7 +75,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[runtime_hook],
-    excludes=[],
+    excludes=['cv2', 'opencv'],
     noarchive=False,
     optimize=0,
 )

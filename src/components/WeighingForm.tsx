@@ -51,6 +51,10 @@ import {
   ticketScaleFieldsFromRuntime,
 } from '@/lib/site';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
+import { captureAfterWeightPersist } from '@/lib/photo-capture';
+import type { CaptureEvent } from '@/lib/cameras';
+import { TicketPhotosPreview } from '@/components/TicketPhotosPreview';
+import { ACTIVE_WRITE_BLOCKED_EVENT } from '@/lib/storage-sync';
 
 function resolveScaleDeviceLabel() {
   const active = getActiveScale(DEFAULT_SITE_ID);
@@ -121,6 +125,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [lastTicket, setLastTicket] = useState<WeighingTicket | null>(null);
+  const [photoWarning, setPhotoWarning] = useState<string | null>(null);
   const [unstableWarning, setUnstableWarning] = useState<string | null>(null);
   const [intervalWarnedForId, setIntervalWarnedForId] = useState<string | null>(null);
 
@@ -207,14 +212,28 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setScaleSetLabel(activeScaleSetIndicatorLabel());
       setActiveScale(getActiveScale(DEFAULT_SITE_ID));
     };
+    const onWriteBlocked = (event: Event) => {
+      const detail = (event as CustomEvent<{ message?: string }>).detail;
+      setPhotoWarning(
+        detail?.message
+          || 'Смена года не завершена: запись и съёмка временно недоступны.',
+      );
+    };
     window.addEventListener('focus', refreshSettings);
     document.addEventListener('visibilitychange', refreshSettings);
     window.addEventListener(SITE_RUNTIME_CHANGED_EVENT, onRuntimeChanged);
+    window.addEventListener(ACTIVE_WRITE_BLOCKED_EVENT, onWriteBlocked as EventListener);
     return () => {
       window.removeEventListener('focus', refreshSettings);
       document.removeEventListener('visibilitychange', refreshSettings);
       window.removeEventListener(SITE_RUNTIME_CHANGED_EVENT, onRuntimeChanged);
+      window.removeEventListener(ACTIVE_WRITE_BLOCKED_EVENT, onWriteBlocked as EventListener);
     };
+  }, []);
+
+  const appendPhotoWarning = useCallback((message: string | null) => {
+    if (!message) return;
+    setPhotoWarning((prev) => (prev ? `${prev} ${message}` : message));
   }, []);
 
   const setTareAutofillLockedSafe = useCallback((locked: boolean) => {
@@ -535,6 +554,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     const amount = calcTotalAmount(net, parseFloat(price) || 0);
     const plateKey = normalizeVehicleKey(vehicleNumber);
     try {
+      setPhotoWarning(null);
       logger.scaleRuntime.info(
         'Сохранение тикета с источниками веса',
         buildScaleRuntimeContext('save_single'),
@@ -578,15 +598,21 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         photo_exit_path: null,
       });
       onTicketCompletedLearning(ticket);
-      logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
-        id: ticket.id,
+      // Single gesture fixes both phases → capture gross then tare.
+      const grossCapture = await captureAfterWeightPersist(ticket.id, 'gross');
+      appendPhotoWarning(grossCapture.warning);
+      const tareCapture = await captureAfterWeightPersist(ticket.id, 'tare');
+      appendPhotoWarning(tareCapture.warning);
+      const refreshed = TicketStorage.getById(ticket.id) ?? ticket;
+      logger.info('weighing', `Создан тикет №${refreshed.ticket_number}`, {
+        id: refreshed.id,
         mode: 'single',
-        status: ticket.status,
+        status: refreshed.status,
       });
       setSaving(false);
-      setLastTicket(ticket);
+      setLastTicket(refreshed);
       setSuccess('Взвешивание завершено и сохранено.');
-      onSaved(ticket);
+      onSaved(refreshed);
       resetFormFields();
       setIncompleteRefresh((n) => n + 1);
     } catch (err: unknown) {
@@ -624,6 +650,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     const plateKey = normalizeVehicleKey(vehicleNumber);
     setSaving(true);
     try {
+      setPhotoWarning(null);
       logger.scaleRuntime.info(
         'Сохранение первого прохода с источниками веса',
         buildScaleRuntimeContext('save_dual_first'),
@@ -666,15 +693,19 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         photo_entry_path: null,
         photo_exit_path: null,
       });
-      logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
-        id: ticket.id,
+      const captureEvent: CaptureEvent = hasGross ? 'gross' : 'tare';
+      const captureResult = await captureAfterWeightPersist(ticket.id, captureEvent);
+      appendPhotoWarning(captureResult.warning);
+      const refreshed = TicketStorage.getById(ticket.id) ?? ticket;
+      logger.info('weighing', `Создан тикет №${refreshed.ticket_number}`, {
+        id: refreshed.id,
         mode: 'dual',
-        status: ticket.status,
+        status: refreshed.status,
       });
       setSaving(false);
-      setLastTicket(ticket);
+      setLastTicket(refreshed);
       setSuccess('Первый проход сохранён. Тикет в незавершённых.');
-      onSaved(ticket);
+      onSaved(refreshed);
       resetFormFields();
       setIncompleteRefresh((n) => n + 1);
     } catch (err: unknown) {
@@ -736,8 +767,6 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       net_weight: net,
       total_amount: amount,
       plate_source: resolvePlateSource(plateKey, vehicles.entries),
-      photo_entry_path: null,
-      photo_exit_path: null,
     };
     const manualReasonForStep = resolveManualReasonForStep(slotsOnStep);
     if (manualReasonForStep !== null) {
@@ -783,11 +812,13 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
 
     setSaving(true);
     try {
+      setPhotoWarning(null);
       logger.scaleRuntime.info(
         'Сохранение дозавершения с источниками веса',
         buildScaleRuntimeContext('save_dual_complete'),
         { gross_source: grossSource, tare_source: tareSource },
       );
+      // photo_* omitted from patch → TicketStorage.update preserves existing stubs.
       const ticket = TicketStorage.update(completingTicket.id, updates, {
         expectedVersion: completingTicket.version ?? 1,
       });
@@ -798,15 +829,24 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         return;
       }
       onTicketCompletedLearning(ticket);
-      logger.info('weighing', `Завершён тикет №${ticket.ticket_number}`, {
-        id: ticket.id,
-        mode: ticket.weighing_mode,
-        status: ticket.status,
+      // Capture only newly fixed phase(s) on this complete step.
+      const captureEvents: CaptureEvent[] = [];
+      if (editability.grossEditable) captureEvents.push('gross');
+      if (editability.tareEditable) captureEvents.push('tare');
+      for (const event of captureEvents) {
+        const captureResult = await captureAfterWeightPersist(ticket.id, event);
+        appendPhotoWarning(captureResult.warning);
+      }
+      const refreshed = TicketStorage.getById(ticket.id) ?? ticket;
+      logger.info('weighing', `Завершён тикет №${refreshed.ticket_number}`, {
+        id: refreshed.id,
+        mode: refreshed.weighing_mode,
+        status: refreshed.status,
       });
       setSaving(false);
-      setLastTicket(ticket);
+      setLastTicket(refreshed);
       setSuccess('Взвешивание завершено и сохранено.');
-      onSaved(ticket);
+      onSaved(refreshed);
       resetFormFields();
       exitCompletion();
       const settings = SettingsStorage.getAppSettings();
@@ -1183,9 +1223,20 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <AlertCircle size={18} className="mt-0.5 shrink-0" /> {unstableWarning}
           </div>
         )}
+        {photoWarning && (
+          <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-800">
+            <AlertCircle size={18} className="mt-0.5 shrink-0" /> {photoWarning}
+          </div>
+        )}
         {success && (
           <div className="flex items-start gap-2 rounded-lg bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm text-emerald-700">
             <CheckCircle2 size={18} className="mt-0.5 shrink-0" /> {success}
+          </div>
+        )}
+        {lastTicket && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-semibold text-slate-800 mb-2">Снимки талона</h3>
+            <TicketPhotosPreview ticketId={lastTicket.id} />
           </div>
         )}
 

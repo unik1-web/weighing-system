@@ -7,6 +7,9 @@ import { normalizeWeighingMode, normalizeWeightSource, type WeighingMode } from 
 import { normalizeScaleDeviceId, type ScaleDeviceId } from './scales';
 import { logger } from './logger';
 import type { ParserDraft, ScaleTransport, SerialDraft, TcpDraft } from './scale-adapters/contract';
+import type { Camera, CameraRole, CaptureEvent, TicketPhoto } from './cameras';
+
+export type { Camera, CameraRole, CaptureEvent, TicketPhoto } from './cameras';
 
 export type WeightSource = 'manual' | 'instrument' | 'dictionary' | 'default';
 export type TicketStatus = 'open' | 'completed';
@@ -121,6 +124,8 @@ export interface WeighingTicket {
   scale_role?: ScaleRole | null;
   photo_entry_path?: string | null;
   photo_exit_path?: string | null;
+  /** Transient capture-merge marker for post-capture flush (not a DB column). */
+  capture_token?: string | null;
   readonly year?: number;
 }
 
@@ -174,6 +179,8 @@ const STORAGE_KEYS = {
   SCALES: 'app_scales',
   SITE_RUNTIME: 'app_site_runtime',
   SCALE_SWITCH_JOURNAL: 'app_scale_switch_journal',
+  CAMERAS: 'app_cameras',
+  TICKET_PHOTOS: 'app_ticket_photos',
   VEHICLES: 'app_vehicles',
   DRIVERS: 'app_drivers',
   CARGOS: 'app_cargos',
@@ -574,12 +581,25 @@ export const TicketStorage = {
 
     const safeUpdates = { ...updates };
     delete safeUpdates.version;
+    // Do not force photo_* to null when the patch omits them.
+    if (!Object.prototype.hasOwnProperty.call(updates, 'photo_entry_path')) {
+      delete safeUpdates.photo_entry_path;
+    }
+    if (!Object.prototype.hasOwnProperty.call(updates, 'photo_exit_path')) {
+      delete safeUpdates.photo_exit_path;
+    }
     const wasCompleted = current.status === 'completed';
     const merged = normalizeTicket({
       ...current,
       ...safeUpdates,
       version: (current.version ?? 1) + 1,
     });
+    if (!Object.prototype.hasOwnProperty.call(updates, 'photo_entry_path')) {
+      merged.photo_entry_path = current.photo_entry_path ?? null;
+    }
+    if (!Object.prototype.hasOwnProperty.call(updates, 'photo_exit_path')) {
+      merged.photo_exit_path = current.photo_exit_path ?? null;
+    }
 
     tickets[index] = merged;
     persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
@@ -830,6 +850,12 @@ export interface AppSettings {
   scale_device_id: ScaleDeviceId;
   manual_weight_reason_policy: 'optional' | 'required';
   active_year?: number | null;
+  /** Video capture master switch (SoT: config.ini via SettingsStorage). */
+  video_enabled: boolean;
+  /** Hard timeout for camera capture, seconds (SoT: config.ini). */
+  camera_capture_timeout_sec: number;
+  /** JPEG quality 1–100 (SoT: config.ini). */
+  camera_jpeg_quality: number;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -866,6 +892,9 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   scale_device_id: 'microsim-m0601',
   manual_weight_reason_policy: 'optional',
   active_year: null,
+  video_enabled: false,
+  camera_capture_timeout_sec: 3,
+  camera_jpeg_quality: 80,
 };
 
 export const DRIVER_INPUT_MODE_LABELS: Record<DriverInputMode, string> = {
@@ -947,6 +976,15 @@ export const SettingsStorage = {
           : Number.isFinite(Number(stored.active_year))
             ? Number(stored.active_year)
             : null,
+      video_enabled: stored.video_enabled === 'true',
+      camera_capture_timeout_sec: parseNumber(
+        stored.camera_capture_timeout_sec,
+        DEFAULT_APP_SETTINGS.camera_capture_timeout_sec,
+      ),
+      camera_jpeg_quality: parseNumber(
+        stored.camera_jpeg_quality,
+        DEFAULT_APP_SETTINGS.camera_jpeg_quality,
+      ),
     };
   },
 
@@ -963,6 +1001,18 @@ export const SettingsStorage = {
       ),
       manual_weight_reason_policy:
         updates.manual_weight_reason_policy === 'required' ? 'required' : 'optional',
+      video_enabled:
+        updates.video_enabled !== undefined ? Boolean(updates.video_enabled) : current.video_enabled,
+      camera_capture_timeout_sec:
+        updates.camera_capture_timeout_sec !== undefined &&
+        Number.isFinite(Number(updates.camera_capture_timeout_sec))
+          ? Number(updates.camera_capture_timeout_sec)
+          : current.camera_capture_timeout_sec,
+      camera_jpeg_quality:
+        updates.camera_jpeg_quality !== undefined &&
+        Number.isFinite(Number(updates.camera_jpeg_quality))
+          ? Number(updates.camera_jpeg_quality)
+          : current.camera_jpeg_quality,
     };
     const flat: Record<string, string> = {
       org_name: next.org_name,
@@ -997,6 +1047,9 @@ export const SettingsStorage = {
       driver_input_mode: next.driver_input_mode,
       scale_device_id: next.scale_device_id,
       manual_weight_reason_policy: next.manual_weight_reason_policy,
+      video_enabled: String(next.video_enabled),
+      camera_capture_timeout_sec: String(next.camera_capture_timeout_sec),
+      camera_jpeg_quality: String(next.camera_jpeg_quality),
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
@@ -1462,6 +1515,185 @@ export const ScaleSwitchJournalStorage = {
     rows.push(entry);
     persist(STORAGE_KEYS.SCALE_SWITCH_JOURNAL, JSON.stringify(rows));
     return entry;
+  },
+};
+
+function normalizeCameraRole(raw: unknown): CameraRole | null {
+  if (raw === 'entry' || raw === 'exit' || raw === 'overview') return raw;
+  return null;
+}
+
+function normalizeCaptureEvent(raw: unknown): CaptureEvent | null {
+  if (raw === 'gross' || raw === 'tare') return raw;
+  return null;
+}
+
+function normalizeCamera(row: unknown): Camera | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const role = normalizeCameraRole(r.role);
+  if (typeof r.id !== 'string' || !r.id || typeof r.site_id !== 'string' || !role) {
+    return null;
+  }
+  const asNumOrNull = (v: unknown): number | null => {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    id: r.id,
+    site_id: r.site_id,
+    name: typeof r.name === 'string' ? r.name : '',
+    role,
+    http_snapshot_url: normalizeNullableString(r.http_snapshot_url),
+    rtsp_url: normalizeNullableString(r.rtsp_url),
+    enabled: r.enabled === true || r.enabled === 1 || r.enabled === '1' || r.enabled === 'true',
+    roi_x: asNumOrNull(r.roi_x),
+    roi_y: asNumOrNull(r.roi_y),
+    roi_w: asNumOrNull(r.roi_w),
+    roi_h: asNumOrNull(r.roi_h),
+    etalon_primary_path: normalizeNullableString(r.etalon_primary_path),
+    etalon_spare_path: normalizeNullableString(r.etalon_spare_path),
+    sort_order: Number.isFinite(Number(r.sort_order)) ? Number(r.sort_order) : 0,
+    created_at: typeof r.created_at === 'string' ? r.created_at : new Date().toISOString(),
+    updated_at: typeof r.updated_at === 'string' ? r.updated_at : new Date().toISOString(),
+  };
+}
+
+function normalizeTicketPhoto(row: unknown): TicketPhoto | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const cameraRole = normalizeCameraRole(r.camera_role);
+  const event = normalizeCaptureEvent(r.event);
+  if (
+    typeof r.id !== 'string' ||
+    !r.id ||
+    typeof r.ticket_id !== 'string' ||
+    typeof r.camera_id !== 'string' ||
+    !cameraRole ||
+    !event
+  ) {
+    return null;
+  }
+  const status = r.status === 'failed' ? 'failed' : r.status === 'success' ? 'success' : null;
+  if (!status) return null;
+  const cameraMode =
+    r.camera_mode === 'primary' || r.camera_mode === 'spare' ? r.camera_mode : null;
+  return {
+    id: r.id,
+    ticket_id: r.ticket_id,
+    camera_id: r.camera_id,
+    camera_role: cameraRole,
+    event,
+    file_path: normalizeNullableString(r.file_path),
+    status,
+    error_code: normalizeNullableString(r.error_code),
+    captured_at: typeof r.captured_at === 'string' ? r.captured_at : new Date().toISOString(),
+    camera_mode: cameraMode,
+  };
+}
+
+function ticketPhotoMatchKey(row: TicketPhoto): string {
+  return `${row.ticket_id}|${row.camera_id}|${row.event}`;
+}
+
+/**
+ * Merge capture response photos into the full local list.
+ * Upserts by id or UNIQUE (ticket_id, camera_id, event).
+ * Must not replace the whole collection with a single-ticket capture payload.
+ */
+export function upsertTicketPhotosFromCapture(
+  fullList: TicketPhoto[],
+  captureTicketPhotos: TicketPhoto[],
+): TicketPhoto[] {
+  const result = fullList.map((row) => ({ ...row }));
+  for (const incoming of captureTicketPhotos) {
+    const byId = result.findIndex((row) => row.id === incoming.id);
+    if (byId !== -1) {
+      result[byId] = incoming;
+      continue;
+    }
+    const key = ticketPhotoMatchKey(incoming);
+    const byKey = result.findIndex((row) => ticketPhotoMatchKey(row) === key);
+    if (byKey !== -1) {
+      result[byKey] = incoming;
+    } else {
+      result.push(incoming);
+    }
+  }
+  return result;
+}
+
+/** Cameras registry (sync: app_cameras). */
+export const CameraStorage = {
+  getAll(): Camera[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.CAMERAS);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map(normalizeCamera)
+        .filter((row): row is Camera => row !== null)
+        .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, 'ru'));
+    } catch {
+      return [];
+    }
+  },
+
+  getBySite(siteId: string): Camera[] {
+    return CameraStorage.getAll().filter((row) => row.site_id === siteId);
+  },
+
+  replaceAll(rows: Camera[]): Camera[] {
+    const normalized = rows
+      .map(normalizeCamera)
+      .filter((row): row is Camera => row !== null);
+    persist(STORAGE_KEYS.CAMERAS, JSON.stringify(normalized));
+    return normalized;
+  },
+
+  upsert(row: Camera): Camera {
+    const normalized = normalizeCamera(row);
+    if (!normalized) {
+      throw new Error('Invalid camera row');
+    }
+    const rows = CameraStorage.getAll();
+    const index = rows.findIndex((item) => item.id === normalized.id);
+    if (index === -1) rows.push(normalized);
+    else rows[index] = normalized;
+    persist(STORAGE_KEYS.CAMERAS, JSON.stringify(rows));
+    return normalized;
+  },
+
+  remove(id: string): void {
+    const rows = CameraStorage.getAll().filter((row) => row.id !== id);
+    persist(STORAGE_KEYS.CAMERAS, JSON.stringify(rows));
+  },
+};
+
+/** Ticket photos metadata (sync: app_ticket_photos). No replaceAll of full collection from capture. */
+export const TicketPhotoStorage = {
+  getAll(): TicketPhoto[] {
+    const stored = localStorage.getItem(STORAGE_KEYS.TICKET_PHOTOS);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeTicketPhoto).filter((row): row is TicketPhoto => row !== null);
+    } catch {
+      return [];
+    }
+  },
+
+  getByTicket(ticketId: string): TicketPhoto[] {
+    return TicketPhotoStorage.getAll().filter((row) => row.ticket_id === ticketId);
+  },
+
+  upsertMany(rows: TicketPhoto[]): TicketPhoto[] {
+    const merged = upsertTicketPhotosFromCapture(TicketPhotoStorage.getAll(), rows);
+    persist(STORAGE_KEYS.TICKET_PHOTOS, JSON.stringify(merged));
+    return merged;
   },
 };
 

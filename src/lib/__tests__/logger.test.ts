@@ -53,4 +53,22 @@ describe('logger scale runtime observability', () => {
     expect(JSON.stringify(entry)).toContain('/dev/tty***');
     expect(JSON.stringify(entry)).toContain('***.***.***.***');
   });
+
+  it('redacts URL userinfo password and sensitive query in camera logs', () => {
+    logger.warn('cameras', 'capture skipped: ticket_not_found', {
+      ticketId: 't-1',
+      event: 'gross',
+      debug_url: 'http://admin:s3cret@cam.local/snap?token=abc&password=p1',
+    });
+
+    const entry = logger.getEntries().find((item) => item.category === 'cameras');
+    expect(entry).toBeDefined();
+    const serialized = JSON.stringify(entry);
+    expect(serialized).not.toContain('s3cret');
+    expect(serialized).not.toContain('token=abc');
+    expect(serialized).not.toContain('password=p1');
+    expect(serialized).toContain(':***');
+    expect(serialized).toContain('token=***');
+    expect(serialized).toContain('password=***');
+  });
 });

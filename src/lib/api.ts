@@ -281,6 +281,8 @@ export interface ArchiveTicketDetails extends ArchiveTicketSummary {
   gross_datetime?: string | null;
   tare_datetime?: string | null;
   notes?: string | null;
+  photo_entry_path?: string | null;
+  photo_exit_path?: string | null;
 }
 
 export interface ArchiveTicketsResponse {
@@ -453,4 +455,88 @@ export async function commitYearRotation(
   body: RotationCommitRequest,
 ): Promise<RotationCommitResponse> {
   return apiPost<RotationCommitResponse>('/api/year/rotation/commit', body);
+}
+
+// --- Stage 7 camera / photo API stubs ---
+
+export type CaptureEvent = 'gross' | 'tare';
+
+export interface CameraCapabilityResponse {
+  success: true;
+  available: boolean;
+  build: 'basic' | 'full' | string;
+  opencv: boolean;
+  code?: string;
+}
+
+export interface CameraSnapshotResponse {
+  success: true;
+  preview_jpeg_base64: string;
+  content_type?: string;
+}
+
+export interface CameraEtalonResponse {
+  success: true;
+  path: string;
+  preview_jpeg_base64: string;
+  camera: Record<string, unknown>;
+}
+
+export interface CameraCaptureResultItem {
+  camera_id: string;
+  camera_role: string;
+  status: 'success' | 'failed' | string;
+  file_path: string | null;
+  error_code: string | null;
+}
+
+export interface CameraCaptureResponse {
+  success: true;
+  noop: boolean;
+  results: CameraCaptureResultItem[];
+  ticket_photos: Array<Record<string, unknown>>;
+  photo_entry_path: string | null;
+  photo_exit_path: string | null;
+  capture_token: string;
+}
+
+/** GET /api/cameras/capability — availability of OpenCV camera module. */
+export async function fetchCameraCapability(): Promise<CameraCapabilityResponse> {
+  return apiGet<CameraCapabilityResponse>('/api/cameras/capability');
+}
+
+/** POST /api/cameras/snapshot — live/preview frame (operator). */
+export async function postCameraSnapshot(body: {
+  camera_id?: string;
+  http_snapshot_url?: string | null;
+  rtsp_url?: string | null;
+  timeout_sec?: number;
+}): Promise<CameraSnapshotResponse> {
+  return apiPost<CameraSnapshotResponse>('/api/cameras/snapshot', body);
+}
+
+/** POST /api/cameras/test — admin-only alias of snapshot. */
+export async function postCameraTest(body: {
+  camera_id?: string;
+  http_snapshot_url?: string | null;
+  rtsp_url?: string | null;
+  timeout_sec?: number;
+}): Promise<CameraSnapshotResponse> {
+  return apiPost<CameraSnapshotResponse>('/api/cameras/test', body);
+}
+
+/** POST /api/cameras/etalon — capture etalon primary/spare (admin). */
+export async function postCameraEtalon(body: {
+  camera_id: string;
+  scale_set: 'primary' | 'spare';
+}): Promise<CameraEtalonResponse> {
+  return apiPost<CameraEtalonResponse>('/api/cameras/etalon', body);
+}
+
+/** POST /api/cameras/capture — ticket-phase capture after flush. */
+export async function postCameraCapture(body: {
+  ticket_id: string;
+  event: CaptureEvent;
+}): Promise<CameraCaptureResponse> {
+  return apiPost<CameraCaptureResponse>('/api/cameras/capture', body);
 }

@@ -1,5 +1,6 @@
 import logging
 import json
+import base64
 import os
 import re
 import sys
@@ -56,7 +57,22 @@ from reo_client import (
     post_reo_import,
 )
 from scale_api import invalidate_for_database_payload, register_scale_api
+from scale_api_guard import ScaleApiGuard
 from scale_registry_contract import validate_portable_regex
+from cameras import (
+    CameraCaptureService,
+    get_camera_build_label,
+    is_camera_module_available,
+    mask_url,
+)
+from camera_logging import (
+    log_etalon_result,
+    log_photo_io_error,
+    log_snapshot_result,
+    log_video_enabled_changed,
+)
+from photo_storage import PhotoStorage
+from ticket_photos import TicketPhotosService, run_phase_capture
 from archive_edit_service import apply_archive_edit
 from archive_service import get_archive_ticket, get_archive_tickets, list_archive_years
 from active_year_service import read_active_storage, write_active_storage
@@ -69,6 +85,7 @@ from year_context import (
     assert_active_db_write_allowed,
     validate_archive_year,
 )
+from sqlite_store import StorageValidationError
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, 'frozen', False):
@@ -297,6 +314,230 @@ def _validate_generic_regex_in_database_payload(data: dict[str, str]) -> tuple[b
 
 app.register_blueprint(register_scale_api(scale_error_response))
 register_runtime_invalidator(invalidate_for_database_payload)
+
+_CAMERA_GUARD = ScaleApiGuard(read_database)
+_CAMERA_CAPTURE = CameraCaptureService()
+_PHOTO_STORAGE = PhotoStorage()
+_TICKET_PHOTOS = TicketPhotosService()
+
+
+def camera_error_response(code: str, message: str, status: int):
+    """Return camera/photo API error payload with ``code``."""
+    logger.warning('Camera API error (%s %s): %s', status, code, message)
+    return jsonify({'success': False, 'code': code, 'message': message}), status
+
+
+def _require_camera_actor(allowed_roles: set[str]) -> dict[str, Any] | tuple[Any, int]:
+    """Validate origin + session role for camera mutation endpoints."""
+    from scale_runtime import RuntimeErrorPayload
+
+    try:
+        _CAMERA_GUARD.validate_origin(request)
+    except RuntimeErrorPayload as exc:
+        return camera_error_response(exc.code, exc.message, exc.http_status)
+    actor = _read_active_actor()
+    if actor is None:
+        return camera_error_response(
+            'auth_required',
+            'Требуется активная сессия оператора.',
+            401,
+        )
+    if actor.get('role') not in allowed_roles:
+        return camera_error_response(
+            'insufficient_permissions',
+            'Недостаточно прав для выполнения операции',
+            403,
+        )
+    return actor
+
+
+def _find_camera_row(camera_id: str) -> dict[str, Any] | None:
+    """Load a camera registry row by id from active storage."""
+    try:
+        data = read_active_storage()
+    except Exception:
+        data = read_database()
+    raw = data.get('app_cameras') if data else None
+    if not raw:
+        return None
+    try:
+        rows = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and str(row.get('id') or '') == camera_id:
+            return row
+    return None
+
+
+def _capture_error_response(error_code: str | None):
+    """Map CaptureResult.error_code to HTTP camera API error."""
+    code = (error_code or 'unreachable').strip()
+    if code == 'timeout':
+        return camera_error_response(
+            'camera_timeout',
+            'Таймаут захвата кадра с камеры',
+            504,
+        )
+    if code == 'capability_unavailable':
+        return camera_error_response(
+            'camera_module_unavailable',
+            'Модуль камер недоступен в этой сборке',
+            501,
+        )
+    if code == 'decode':
+        return camera_error_response(
+            'invalid_request',
+            'Не удалось декодировать кадр камеры',
+            400,
+        )
+    return camera_error_response(
+        'camera_unreachable',
+        'Камера недоступна',
+        503,
+    )
+
+
+def _camera_capture_timeout_and_quality(payload: dict[str, Any]) -> tuple[float, int]:
+    """Read capture timeout/quality from request payload and config.ini."""
+    config = read_config()
+    try:
+        timeout_sec = float(
+            payload.get('timeout_sec')
+            if payload.get('timeout_sec') is not None
+            else config.get('camera_capture_timeout_sec') or 3
+        )
+    except (TypeError, ValueError):
+        timeout_sec = 3.0
+    try:
+        jpeg_quality = int(config.get('camera_jpeg_quality') or 80)
+    except (TypeError, ValueError):
+        jpeg_quality = 80
+    return timeout_sec, jpeg_quality
+
+
+def _persist_camera_etalon_path(
+    camera_id: str,
+    scale_set: str,
+    path: str,
+) -> dict[str, Any]:
+    """
+    Update ``etalon_primary_path`` or ``etalon_spare_path`` for one camera in SQLite.
+
+    Loads the full ``app_cameras`` collection, patches the matching row, and writes
+    via ``write_active_storage`` (write-gate + preserve-non-null on replace).
+
+    Returns:
+        Updated camera row dict as stored after write.
+    """
+    try:
+        data = read_active_storage()
+    except Exception:
+        data = read_database()
+    raw = data.get('app_cameras') if data else None
+    try:
+        rows = json.loads(raw) if raw else []
+    except (TypeError, json.JSONDecodeError):
+        rows = []
+    if not isinstance(rows, list):
+        rows = []
+
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    updated: dict[str, Any] | None = None
+    next_rows: list[Any] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            next_rows.append(row)
+            continue
+        if str(row.get('id') or '') != camera_id:
+            next_rows.append(row)
+            continue
+        patched = dict(row)
+        if scale_set == 'spare':
+            patched['etalon_spare_path'] = path
+        else:
+            patched['etalon_primary_path'] = path
+        patched['updated_at'] = now
+        next_rows.append(patched)
+        updated = patched
+
+    if updated is None:
+        raise ValueError('camera_not_found')
+
+    write_active_storage(
+        {'app_cameras': json.dumps(next_rows, ensure_ascii=False)},
+        operation='POST /api/cameras/etalon',
+    )
+    # Re-read to return preserve-resolved values from SQLite.
+    refreshed = _find_camera_row(camera_id)
+    return refreshed if refreshed is not None else updated
+
+
+def _camera_snapshot_response():
+    """
+    Shared handler for snapshot/test: capture via CameraCaptureService.
+
+    Resolves URLs from body draft fields or from SQLite camera_id.
+    HTTP snapshot does not require OpenCV; RTSP does.
+    """
+    payload = request.get_json(silent=True) or {}
+    camera_id = str(payload.get('camera_id') or '').strip()
+    http_url = payload.get('http_snapshot_url')
+    rtsp_url = payload.get('rtsp_url')
+
+    if camera_id and not (http_url or rtsp_url):
+        row = _find_camera_row(camera_id)
+        if row is None:
+            return camera_error_response(
+                'invalid_request',
+                'Камера не найдена',
+                400,
+            )
+        http_url = row.get('http_snapshot_url')
+        rtsp_url = row.get('rtsp_url')
+
+    http_text = str(http_url).strip() if http_url else ''
+    rtsp_text = str(rtsp_url).strip() if rtsp_url else ''
+    if not http_text and not rtsp_text:
+        return camera_error_response(
+            'invalid_request',
+            'Укажите camera_id или URL снимка',
+            400,
+        )
+
+    timeout_sec, jpeg_quality = _camera_capture_timeout_and_quality(payload)
+
+    log_target = http_text or rtsp_text
+    masked = mask_url(log_target)
+    logger.info('Camera snapshot request url=%s', masked)
+
+    result = _CAMERA_CAPTURE.capture(http_text or None, rtsp_text or None, timeout_sec, jpeg_quality)
+    if not result.ok or not result.jpeg_bytes:
+        error_code = result.error_code or 'unreachable'
+        status = 'timeout' if error_code == 'timeout' else 'failed'
+        log_snapshot_result(
+            status=status,
+            camera_id=camera_id or None,
+            error_code=error_code,
+            masked_url=masked,
+        )
+        return _capture_error_response(result.error_code)
+
+    log_snapshot_result(
+        status='success',
+        camera_id=camera_id or None,
+        masked_url=masked,
+    )
+    preview = base64.b64encode(result.jpeg_bytes).decode('ascii')
+    return jsonify(
+        {
+            'success': True,
+            'preview_jpeg_base64': preview,
+            'content_type': 'image/jpeg',
+        }
+    )
 
 
 def frontend_available() -> bool:
@@ -591,6 +832,26 @@ def get_config():
         return error_response(f'Ошибка чтения config.ini: {exc}')
 
 
+_VIDEO_CONFIG_KEYS = (
+    'video_enabled',
+    'camera_capture_timeout_sec',
+    'camera_jpeg_quality',
+)
+
+
+def _video_config_keys_changing(incoming: dict[str, Any], current: dict[str, str]) -> list[str]:
+    """Return video_* keys whose values would change relative to current config."""
+    changing: list[str] = []
+    for key in _VIDEO_CONFIG_KEYS:
+        if key not in incoming:
+            continue
+        new_value = str(incoming[key])
+        old_value = str(current.get(key, ''))
+        if new_value != old_value:
+            changing.append(key)
+    return changing
+
+
 @app.post('/api/config')
 def save_config():
     body = request.get_json(silent=True) or {}
@@ -599,8 +860,50 @@ def save_config():
         return error_response('Некорректный формат config.ini')
 
     try:
+        current = read_config()
+        changing_video = _video_config_keys_changing(config, current)
+        if changing_video:
+            actor = _read_active_actor()
+            if actor is None:
+                return jsonify(
+                    {
+                        'success': False,
+                        'code': 'auth_required',
+                        'message': 'Требуется активная сессия оператора для изменения настроек видео.',
+                    }
+                ), 401
+            if actor.get('role') != 'admin':
+                return jsonify(
+                    {
+                        'success': False,
+                        'code': 'insufficient_permissions',
+                        'message': 'Изменение video_enabled / параметров камер доступно только администратору.',
+                    }
+                ), 403
+
         write_config(config)
-        logger.info('Config saved (%s keys)', len(config))
+        if changing_video:
+            logger.info(
+                'Config saved (%s keys); video keys changed: %s',
+                len(config),
+                ','.join(changing_video),
+            )
+            if 'video_enabled' in changing_video:
+                actor = _read_active_actor()
+                operator = None
+                if actor:
+                    operator = (
+                        actor.get('display_name')
+                        or actor.get('username')
+                        or actor.get('user_id')
+                    )
+                log_video_enabled_changed(
+                    current.get('video_enabled', ''),
+                    config.get('video_enabled', ''),
+                    operator=str(operator) if operator else None,
+                )
+        else:
+            logger.info('Config saved (%s keys)', len(config))
         return jsonify({'success': True})
     except Exception as exc:
         logger.exception('Config write failed')
@@ -642,6 +945,8 @@ def save_database():
         return jsonify({'success': True})
     except RotationContractError as exc:
         return stage6_error_response(exc.code, exc.message, exc.status)
+    except StorageValidationError as exc:
+        return camera_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Database write failed')
         return error_response(f'Ошибка сохранения BD/weighing.db: {exc}')
@@ -689,6 +994,8 @@ def save_storage():
         return error_response('Некорректный формат app_settings')
     except RotationContractError as exc:
         return stage6_error_response(exc.code, exc.message, exc.status)
+    except StorageValidationError as exc:
+        return camera_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Storage write failed')
         return error_response(f'Ошибка сохранения данных: {exc}')
@@ -1047,6 +1354,250 @@ def wa_import_dictionaries():
         logger.exception('WA dictionary import failed')
         return error_response(f'Ошибка импорта справочников WA: {exc}')
 
+
+@app.get('/api/cameras/capability')
+def cameras_capability():
+    """Report whether the camera module (OpenCV) is available in this build."""
+    available = is_camera_module_available()
+    payload: dict[str, Any] = {
+        'success': True,
+        'available': available,
+        'build': get_camera_build_label(),
+        'opencv': available,
+    }
+    if not available:
+        payload['code'] = 'camera_module_unavailable'
+    return jsonify(payload)
+
+
+@app.post('/api/cameras/snapshot')
+def cameras_snapshot():
+    """Live/preview capture for operator (user|admin) via HTTP or RTSP."""
+    actor_or_error = _require_camera_actor({'user', 'admin'})
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    return _camera_snapshot_response()
+
+
+@app.post('/api/cameras/test')
+def cameras_test():
+    """Admin-only alias of snapshot (same transport and semantics)."""
+    actor_or_error = _require_camera_actor({'admin'})
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    return _camera_snapshot_response()
+
+
+@app.post('/api/cameras/etalon')
+def cameras_etalon():
+    """
+    Capture etalon primary/spare JPEG (admin).
+
+    On capture failure the previous etalon file and DB path are left unchanged.
+    On success writes ``Photo/etalons/{camera_id}/{primary|spare}.jpg`` and updates
+    the matching ``etalon_*_path`` on the camera row in SQLite.
+    """
+    actor_or_error = _require_camera_actor({'admin'})
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+
+    payload = request.get_json(silent=True) or {}
+    camera_id = str(payload.get('camera_id') or '').strip()
+    scale_set = str(payload.get('scale_set') or '').strip()
+    if not camera_id:
+        return camera_error_response(
+            'invalid_request',
+            'Укажите camera_id',
+            400,
+        )
+    if scale_set not in ('primary', 'spare'):
+        return camera_error_response(
+            'invalid_request',
+            'scale_set должен быть primary или spare',
+            400,
+        )
+
+    row = _find_camera_row(camera_id)
+    if row is None:
+        return camera_error_response(
+            'invalid_request',
+            'Камера не найдена',
+            400,
+        )
+
+    http_url = row.get('http_snapshot_url')
+    rtsp_url = row.get('rtsp_url')
+    http_text = str(http_url).strip() if http_url else ''
+    rtsp_text = str(rtsp_url).strip() if rtsp_url else ''
+    if not http_text and not rtsp_text:
+        return camera_error_response(
+            'invalid_request',
+            'У камеры не задан URL снимка',
+            400,
+        )
+
+    timeout_sec, jpeg_quality = _camera_capture_timeout_and_quality(payload)
+    log_target = http_text or rtsp_text
+    masked = mask_url(log_target)
+    logger.info(
+        'Camera etalon request camera_id=%s scale_set=%s url=%s',
+        camera_id,
+        scale_set,
+        masked,
+    )
+
+    result = _CAMERA_CAPTURE.capture(
+        http_text or None,
+        rtsp_text or None,
+        timeout_sec,
+        jpeg_quality,
+    )
+    if not result.ok or not result.jpeg_bytes:
+        error_code = result.error_code or 'unreachable'
+        status = 'timeout' if error_code == 'timeout' else 'failed'
+        log_etalon_result(
+            camera_id,
+            scale_set,
+            status=status,
+            error_code=error_code,
+            masked_url=masked,
+        )
+        # Do not overwrite previous etalon file or path on failure.
+        return _capture_error_response(result.error_code)
+
+    try:
+        path = _PHOTO_STORAGE.write_etalon(camera_id, scale_set, result.jpeg_bytes)
+        updated_camera = _persist_camera_etalon_path(camera_id, scale_set, path)
+    except RotationContractError as exc:
+        return camera_error_response(exc.code, exc.message, exc.status)
+    except ValueError:
+        return camera_error_response(
+            'invalid_request',
+            'Камера не найдена',
+            400,
+        )
+    except OSError as exc:
+        log_photo_io_error(
+            operation='write_etalon',
+            camera_id=camera_id,
+            error=exc,
+            scale_set=scale_set,
+        )
+        log_etalon_result(
+            camera_id,
+            scale_set,
+            status='failed',
+            error_code='io_error',
+            masked_url=masked,
+        )
+        return camera_error_response(
+            'camera_unreachable',
+            f'Не удалось сохранить эталон: {exc}',
+            503,
+        )
+    except Exception as exc:
+        logger.exception('Etalon persist failed for camera_id=%s', camera_id)
+        log_etalon_result(
+            camera_id,
+            scale_set,
+            status='failed',
+            error_code='io_error',
+            masked_url=masked,
+        )
+        return camera_error_response(
+            'camera_unreachable',
+            f'Не удалось сохранить эталон: {exc}',
+            503,
+        )
+
+    log_etalon_result(
+        camera_id,
+        scale_set,
+        status='success',
+        masked_url=masked,
+        path=path,
+    )
+    preview = base64.b64encode(result.jpeg_bytes).decode('ascii')
+    return jsonify(
+        {
+            'success': True,
+            'path': path,
+            'preview_jpeg_base64': preview,
+            'camera': updated_camera,
+        }
+    )
+
+
+@app.post('/api/cameras/capture')
+def cameras_capture():
+    """
+    Capture all enabled cameras for a ticket phase (architecture §5.1).
+
+    Enabled cameras are read from SQLite only (never from request body).
+    Per-camera failures return HTTP 200 with mixed ``results``.
+    """
+    actor_or_error = _require_camera_actor({'user', 'admin'})
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+
+    payload = request.get_json(silent=True) or {}
+    ticket_id = str(payload.get('ticket_id') or '').strip()
+    event = str(payload.get('event') or '').strip()
+    config = read_config()
+
+    try:
+        result = run_phase_capture(
+            ticket_id,
+            event,
+            service=_TICKET_PHOTOS,
+            config=config,
+        )
+    except RotationContractError as exc:
+        return camera_error_response(exc.code, exc.message, exc.status)
+
+    error_code = result.get('error')
+    if error_code:
+        return camera_error_response(
+            str(error_code),
+            str(result.get('message') or error_code),
+            int(result.get('http_status') or 400),
+        )
+
+    return jsonify(
+        {
+            'success': True,
+            'noop': bool(result.get('noop')),
+            'results': result.get('results') or [],
+            'ticket_photos': result.get('ticket_photos') or [],
+            'photo_entry_path': result.get('photo_entry_path'),
+            'photo_exit_path': result.get('photo_exit_path'),
+            'capture_token': result.get('capture_token'),
+        }
+    )
+
+
+@app.get('/api/photos/<path:relpath>')
+def serve_photo(relpath: str):
+    """
+    Serve a JPEG under Photo/ for ``<img src>`` (UC-04).
+
+    Session is not required. Origin/Referer follows ``ScaleApiGuard.validate_origin``
+    (missing OK; present → allowlist). Path traversal → 400; missing file → 404.
+    """
+    from scale_runtime import RuntimeErrorPayload
+
+    try:
+        _CAMERA_GUARD.validate_origin(request)
+    except RuntimeErrorPayload as exc:
+        return camera_error_response(exc.code, exc.message, exc.http_status)
+    try:
+        absolute = _PHOTO_STORAGE.resolve(relpath)
+    except ValueError:
+        return camera_error_response('path_traversal', 'Некорректный путь к фото', 400)
+    if not os.path.isfile(absolute):
+        return camera_error_response('not_found', 'Файл фото не найден', 404)
+    directory, filename = os.path.split(absolute)
+    return send_from_directory(directory, filename, mimetype='image/jpeg')
 
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')

@@ -45,6 +45,40 @@
 
 Ошибки archive-read: `401 auth_required`, `400 invalid_archive_year`, `404 archive_year_not_found` / `archive_ticket_not_found`, `500 archive_open_failed`. Archive-операции не меняют `active_year` и не пишут в active DB.
 
+## Cameras & Photos
+
+Аддитивные маршруты фотофиксации (stage 7). Формат ошибок где уместно: `{ "success": false, "code": "...", "message": "..." }` (как `/api/scales/*`).
+
+Ключи `config` (через существующие `GET/POST /api/config`): `video_enabled`, `camera_capture_timeout_sec` (по умолчанию ≤ 3), `camera_jpeg_quality`. Изменение `video_enabled` / параметров камер — только `admin`.
+
+Sync-ключи `GET/POST /api/database`: `app_cameras`, `app_ticket_photos` (только метаданные/пути; JPEG/base64 в payload запрещены).
+
+ANPR и `GET /api/cameras/live` — вне скоупа этапа 7. Печать акта/талона не требует фото.
+
+| Метод | Путь | Роль | Описание |
+|-------|------|------|----------|
+| `GET` | `/api/cameras/capability` | любой | Доступность модуля камер в сборке → `{ success, available, build, opencv }` (+ `code: camera_module_unavailable` в basic) |
+| `POST` | `/api/cameras/snapshot` | `user` \| `admin` | Live/preview кадр (HTTP snapshot или RTSP) → `{ success, preview_jpeg_base64, content_type }` |
+| `POST` | `/api/cameras/test` | `admin` | Admin-алиас того же транспорта, что `snapshot` (кнопка «Проверить») |
+| `POST` | `/api/cameras/etalon` | `admin` | Съёмка эталона primary/spare → `{ success, path, preview_jpeg_base64, camera }`; при ошибке предыдущий эталон не перезаписывается |
+| `POST` | `/api/cameras/capture` | `user` \| `admin` | Захват всех enabled-камер фазы тикета (после flush); список камер из SQLite, не из body |
+| `GET` | `/api/photos/<path:relpath>` | session не требуется | Раздача JPEG из `Photo/` для `<img src>`; path traversal → 400; Origin/Referer как scale allowlist |
+
+### `POST /api/cameras/capture`
+
+- request: `{ ticket_id, event: "gross"|"tare" }`
+- noop (basic / `video_enabled=false` / 0 enabled): `{ success: true, noop: true, results: [], ticket_photos: [] }`
+- success / mixed degrade: `{ success: true, noop: false, results: [...], ticket_photos: [...], photo_entry_path, photo_exit_path, capture_token }`
+- ошибки оркестрации: `404 ticket_not_found`, `409 rotation_in_progress`, `400 invalid_request`; per-camera fail не даёт HTTP 5xx всего запроса
+
+Клиент **MUST** upsert `ticket_photos` / stubs в localStorage и повторно `flushDatabaseSync`; запрещено `app_ticket_photos = response.ticket_photos`.
+
+### `GET /api/photos/<path:relpath>`
+
+- `Content-Type: image/jpeg`
+- отсутствие Origin и Referer разрешено (типичный `<img>`); чужой Origin/Referer → `403 origin_not_allowed`
+- файл вне `Photo/` или `..` → `400 path_traversal`; нет файла → `404 not_found`
+
 ## Runtime весов `/api/scales/*`
 
 Runtime работает от `app_site_runtime.active_scale_set` + `app_scales`. При изменениях

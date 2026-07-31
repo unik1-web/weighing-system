@@ -26,6 +26,7 @@ import {
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 import { SiteScalesSettingsSection, type DraftErrors } from '@/components/SiteScalesSettingsSection';
+import { VideoSettingsSection } from '@/components/VideoSettingsSection';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 const NAV_TAB_OPTIONS: NavTabMode[] = ['full', 'compact'];
@@ -106,7 +107,16 @@ export function SettingsView({ onSaved }: Props) {
       setSettingsError('Порог тары, интервал и тара по умолчанию должны быть ≥ 0.');
       return;
     }
-    SettingsStorage.updateAppSettings(settings);
+    // video_* пишет VideoSettingsSection → config.ini; не затирать их общим Save.
+    const storedVideo = SettingsStorage.getAppSettings();
+    const nextSettings: AppSettings = {
+      ...settings,
+      video_enabled: storedVideo.video_enabled,
+      camera_capture_timeout_sec: storedVideo.camera_capture_timeout_sec,
+      camera_jpeg_quality: storedVideo.camera_jpeg_quality,
+    };
+    SettingsStorage.updateAppSettings(nextSettings);
+    setSettings(nextSettings);
     logger.info('settings', 'Сохранены настройки режимов взвешивания', {
       weighing_mode_default: settings.weighing_mode_default,
       stable_mode: settings.stable_mode,
@@ -449,6 +459,7 @@ export function SettingsView({ onSaved }: Props) {
       </div>
 
       <SiteScalesSettingsSection onDraftErrorsChange={setScaleDraftErrors} />
+      <VideoSettingsSection />
       {(scaleDraftErrors.primary.length > 0 || scaleDraftErrors.spare.length > 0) && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           {scaleDraftErrors.primary.length > 0 && (

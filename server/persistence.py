@@ -30,6 +30,9 @@ BACKUP_VERSION = 3
 LEGACY_CONFIG_JSON = 'config.json'
 CONFIG_INI = 'config.ini'
 DEFAULT_MANUAL_WEIGHT_REASON_POLICY = 'optional'
+DEFAULT_VIDEO_ENABLED = 'false'
+DEFAULT_CAMERA_CAPTURE_TIMEOUT_SEC = '3'
+DEFAULT_CAMERA_JPEG_QUALITY = '80'
 _RUNTIME_CRITICAL_KEYS = {'app_scales', 'app_site_runtime', 'app_current_user'}
 _runtime_invalidator: Callable[[set[str]], None] | None = None
 STAGE5_CONFIG_BACKUP = 'config.stage5.bak.ini'
@@ -382,6 +385,12 @@ def read_config() -> dict[str, str]:
     config = read_ini_section(get_config_path(), CONFIG_SECTION)
     if 'manual_weight_reason_policy' not in config:
         config['manual_weight_reason_policy'] = DEFAULT_MANUAL_WEIGHT_REASON_POLICY
+    if 'video_enabled' not in config:
+        config['video_enabled'] = DEFAULT_VIDEO_ENABLED
+    if 'camera_capture_timeout_sec' not in config:
+        config['camera_capture_timeout_sec'] = DEFAULT_CAMERA_CAPTURE_TIMEOUT_SEC
+    if 'camera_jpeg_quality' not in config:
+        config['camera_jpeg_quality'] = DEFAULT_CAMERA_JPEG_QUALITY
     return config
 
 

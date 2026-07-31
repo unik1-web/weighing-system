@@ -104,19 +104,21 @@ def test_readme_stage6_quick_check_and_storage():
 
 
 def test_installer_layout_keeps_bd_backup_logs_outside_meipass():
-    """Installer package layout continues to create/use BD/, backup/, logs/ next to app."""
+    """Installer package layout continues to create/use BD/, backup/, logs/, Photo/ next to app."""
     iss = _read(ISS_PATH)
     build_ps1 = _read(BUILD_PS1)
 
     assert r'{app}\BD' in iss
     assert r'{app}\backup' in iss
     assert r'{app}\logs' in iss
+    assert r'{app}\Photo' in iss
     assert "_MEIPASS" not in iss
 
     assert "Assert-StorageLayoutDirectories" in build_ps1
     assert r'{app}\BD' in build_ps1
     assert r'{app}\backup' in build_ps1
     assert r'{app}\logs' in build_ps1
+    assert r'{app}\Photo' in build_ps1
     assert "smoke_yearly_archive.py --scenario active" in build_ps1
     assert "smoke_yearly_archive.py --scenario archive" in build_ps1
 

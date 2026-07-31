@@ -1,4 +1,5 @@
 import type { ArchiveTicketDetails, ArchiveWarning } from '@/lib/api';
+import { mapArchiveStubPreviews } from '@/lib/ticket-photos-preview';
 import type { WeighingTicket } from '@/lib/storage';
 import { printTicket } from './PrintAct';
 
@@ -56,6 +57,10 @@ export function archiveTicketToWeighingTicket(
     weighing_mode: (ticket.weighing_mode as WeighingTicket['weighing_mode']) || 'single',
     version: typeof ticket.version === 'number' ? ticket.version : 1,
     year: archiveYear,
+    photo_entry_path:
+      typeof ticket.photo_entry_path === 'string' ? ticket.photo_entry_path : null,
+    photo_exit_path:
+      typeof ticket.photo_exit_path === 'string' ? ticket.photo_exit_path : null,
   };
 }
 
@@ -75,6 +80,7 @@ export function ArchiveTicketCard({
   onEdit,
 }: ArchiveTicketCardProps) {
   const canPrint = ticket.status === 'completed';
+  const archiveStubs = mapArchiveStubPreviews(ticket.photo_entry_path, ticket.photo_exit_path);
 
   const handlePrint = () => {
     const printable = archiveTicketToWeighingTicket(ticket, archiveYear);
@@ -96,6 +102,22 @@ export function ArchiveTicketCard({
       <div>Брутто: {asText(ticket.gross_weight)}</div>
       <div>Тара: {asText(ticket.tare_weight)}</div>
       <div>Нетто: {asText(ticket.net_weight)}</div>
+
+      {archiveStubs.length > 0 && (
+        <div className="space-y-2 pt-1">
+          <div className="text-xs font-medium text-slate-600">Фото (stubs архива)</div>
+          <div className="flex flex-wrap gap-2">
+            {archiveStubs.map((stub) => (
+              <img
+                key={`${stub.role}:${stub.path}`}
+                src={stub.src}
+                alt={stub.label}
+                className="h-20 w-28 rounded border border-slate-200 object-cover bg-slate-100"
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {warning && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-800">

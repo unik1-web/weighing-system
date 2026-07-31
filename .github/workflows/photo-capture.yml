@@ -1,0 +1,307 @@
+name: Photo Capture Gate
+
+on:
+  pull_request:
+    paths:
+      - "docs/api.md"
+      - "docs/photo-capture-deploy.md"
+      - "docs/reports/photo-capture/**"
+      - "server/**"
+      - "src/**"
+      - "scripts/smoke_photo_capture.py"
+      - "installer/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/photo-capture.yml"
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "docs/api.md"
+      - "docs/photo-capture-deploy.md"
+      - "docs/reports/photo-capture/**"
+      - "server/**"
+      - "src/**"
+      - "scripts/smoke_photo_capture.py"
+      - "installer/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/photo-capture.yml"
+  workflow_dispatch:
+
+jobs:
+  frontend-tests:
+    name: frontend-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run full frontend test suite
+        run: npm test
+
+      - name: Run stage-7 frontend subset
+        run: npm run test:stage7-frontend
+
+  backend-tests:
+    name: backend-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python3 -m pip install -r server/requirements.txt
+
+      - name: Run full backend test suite
+        run: python3 -m pytest server/tests -q
+
+      - name: Run stage-7 backend subset
+        run: npm run test:stage7-backend
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    needs:
+      - frontend-tests
+      - backend-tests
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+  import-smoke-basic:
+    name: import-smoke-basic
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install basic backend dependencies
+        run: python3 -m pip install -r server/requirements.txt
+
+      - name: Smoke basic-import (no OpenCV required)
+        run: npm run smoke:photo-basic-import
+
+      - name: Guard — opencv must not be importable in basic job
+        run: |
+          set -euo pipefail
+          if python3 -c "import cv2" 2>/dev/null; then
+            echo "Unexpected: cv2 importable in basic-import job"
+            exit 1
+          fi
+          echo "basic-import job confirmed without cv2"
+
+  import-smoke-full:
+    name: import-smoke-full
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install full backend dependencies
+        run: python3 -m pip install -r server/requirements-full.txt
+
+      - name: Smoke full-import (OpenCV required)
+        run: npm run smoke:photo-full-import
+
+      - name: Guard — opencv must be importable in full job
+        run: |
+          set -euo pipefail
+          python3 -c "import cv2; print('cv2 ok', getattr(cv2, '__version__', ''))"
+
+  windows-package:
+    name: windows-package
+    runs-on: windows-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install basic packaging dependencies
+        run: |
+          npm ci
+          python -m pip install -r server/requirements.txt -r server/requirements-build.txt
+
+      - name: Build Windows basic exe and validate storage layout
+        run: npm run build:win:exe
+
+      - name: Smoke-check basic package layout (Photo next to exe)
+        shell: pwsh
+        run: |
+          $exeRoot = "dist\WeighingSystem"
+          $exePath = Join-Path $exeRoot "WeighingSystem.exe"
+          if (-not (Test-Path $exePath)) {
+            throw "Missing packaged exe: $exePath"
+          }
+
+          $iss = Get-Content -Raw "installer\weighing-system.iss"
+          foreach ($token in @('{app}\BD', '{app}\backup', '{app}\logs', '{app}\Photo')) {
+            if ($iss -notmatch [regex]::Escape($token)) {
+              throw "Basic installer missing storage directory token: $token"
+            }
+          }
+          if ($iss -match '_MEIPASS') {
+            throw "Installer must not place persistent storage under _MEIPASS"
+          }
+
+          Write-Host "Basic Windows package keeps BD/backup/logs/Photo next to exe"
+
+      - name: Install full packaging dependencies
+        run: python -m pip install -r server/requirements-full.txt -r server/requirements-build.txt
+
+      - name: Build Windows full exe
+        run: npm run build:win:full:exe
+
+      - name: Smoke-check full package tokens
+        shell: pwsh
+        run: |
+          $fullIss = Get-Content -Raw "installer\weighing-system-full.iss"
+          if ($fullIss -notmatch 'OutputBaseFilename=WeighingSystem-Full-Setup') {
+            throw "Full installer OutputBaseFilename mismatch"
+          }
+          foreach ($token in @('{app}\BD', '{app}\backup', '{app}\logs', '{app}\Photo')) {
+            if ($fullIss -notmatch [regex]::Escape($token)) {
+              throw "Full installer missing storage directory token: $token"
+            }
+          }
+          if ($fullIss -match '_MEIPASS') {
+            throw "Full installer must not place persistent storage under _MEIPASS"
+          }
+          Write-Host "Full Windows package tokens OK (basic/full dual packaging)"
+
+  evidence-gate:
+    name: evidence-gate
+    runs-on: ubuntu-latest
+    needs:
+      - import-smoke-basic
+      - import-smoke-full
+      - windows-package
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: python3 -m pip install -r server/requirements.txt
+
+      - name: Validate stage-7 release gate anchors
+        run: python3 -m pytest server/tests/test_stage7_release_gate.py server/tests/test_stage7_packaging_tokens.py server/tests/test_photo_capture_deploy_docs.py -q
+
+      - name: Validate evidence files, secrets checklist and acceptance
+        run: |
+          set -euo pipefail
+          reports_dir="docs/reports/photo-capture"
+          acceptance_report="$reports_dir/photo-capture-acceptance.md"
+          release_checklist="$reports_dir/release-checklist.md"
+          deploy_doc="docs/photo-capture-deploy.md"
+
+          required_files=(
+            "$deploy_doc"
+            "$acceptance_report"
+            "$release_checklist"
+            "server/requirements-full.txt"
+            "installer/weighing-system-full.spec"
+            "installer/weighing-system-full.iss"
+            "scripts/smoke_photo_capture.py"
+          )
+          for path in "${required_files[@]}"; do
+            test -s "$path" || (echo "Missing evidence artifact: $path" && exit 1)
+          done
+
+          for ec_id in EC-01 EC-02 EC-03 EC-04 EC-05 EC-06 EC-07 EC-08 EC-09 EC-10 EC-11 EC-12; do
+            rg -n "^\|[[:space:]]*${ec_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
+              || (echo "Missing or malformed row for ${ec_id}" && exit 1)
+          done
+
+          if rg -n "^\|[[:space:]]*(EC-[0-9]+)[[:space:]]*\|[[:space:]]*FAIL[[:space:]]*\|" "$acceptance_report"; then
+            echo "Acceptance report contains FAIL status."
+            exit 1
+          fi
+
+          rg -ni "migration v7|user_version.*7|schema v7" "$deploy_doc"
+          rg -ni "degrade" "$deploy_doc" "$acceptance_report" "$release_checklist"
+          rg -n "Photo/" "$deploy_doc"
+          rg -ni "basic-import|full-import" "$release_checklist"
+          rg -ni "requirements-full|WeighingSystem-Full-Setup" "$release_checklist"
+          rg -ni "секрет|RTSP|бинарник|не коммитить|FORBIDDEN" "$deploy_doc" "$release_checklist"
+
+          # Secrets / photo binaries must not live under evidence templates
+          if rg -n "rtsp://[^\"'\s]+:[^\"'\s]+@" "$reports_dir" "$deploy_doc" 2>/dev/null; then
+            echo "Possible RTSP credentials found in docs — reject"
+            exit 1
+          fi
+          if find "$reports_dir" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) | grep -q .; then
+            echo "Photo binaries must not be committed under docs/reports/photo-capture/"
+            exit 1
+          fi
+
+      - name: Upload stage-7 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: photo-capture-evidence
+          path: |
+            docs/photo-capture-deploy.md
+            docs/reports/photo-capture/photo-capture-acceptance.md
+            docs/reports/photo-capture/release-checklist.md

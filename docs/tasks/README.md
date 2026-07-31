@@ -14,8 +14,8 @@
 | 04 | [04-site-primary-spare.md](04-site-primary-spare.md) | 4. Площадка primary/spare | 01–03 | Реализовано |
 | 05 | [05-scale-adapters.md](05-scale-adapters.md) | 5. Адаптеры терминалов | 04 | Реализовано (см. `docs/scale-adapters-deploy.md`) |
 | 06 | [06-yearly-db-archive.md](06-yearly-db-archive.md) | 6. Годовая БД / архив | 01–03 | Реализовано (см. `docs/yearly-db-archive-deploy.md`) |
-| 07 | [07-photo-capture.md](07-photo-capture.md) | 7. Фотофиксация | 04 (+05) | Следующий приоритет |
-| 08 | [08-anpr.md](08-anpr.md) | 8. ANPR | 07 + `anpr_mode` из 04 | Порог релиза ≥ 50% |
+| 07 | [07-photo-capture.md](07-photo-capture.md) | 7. Фотофиксация | 04 (+05) | Реализовано (см. `docs/photo-capture-deploy.md`) |
+| 08 | [08-anpr.md](08-anpr.md) | 8. ANPR | 07 + `anpr_mode` из 04 | Следующий приоритет (порог релиза ≥ 50%) |
 | 09 | [09-audit-reports-security.md](09-audit-reports-security.md) | 9. Аудит / отчёты / пароли | 01–08 по факту | Финальный контур |
 
 ```text
