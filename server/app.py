@@ -8,6 +8,7 @@ import time
 import webbrowser
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
+from typing import Any
 
 import requests
 from flask import Flask, g, jsonify, request, send_from_directory
@@ -35,13 +36,11 @@ from persistence import (
     get_storage_paths,
     import_backup,
     import_backup_file,
-    read_combined_storage,
+    read_active_year,
     read_config,
     read_database,
     register_runtime_invalidator,
-    write_combined_storage,
     write_config,
-    write_database,
 )
 from vescom import connect_vescom, fetch_vescom_dictionaries, fetch_vescom_weighings
 from wa import (
@@ -58,6 +57,18 @@ from reo_client import (
 )
 from scale_api import invalidate_for_database_payload, register_scale_api
 from scale_registry_contract import validate_portable_regex
+from archive_edit_service import apply_archive_edit
+from archive_service import get_archive_ticket, get_archive_tickets, list_archive_years
+from active_year_service import read_active_storage, write_active_storage
+from stage6_logging import log_stage6_event
+from year_rotation import commit_rotation, preview_rotation
+from year_rotation import ensure_stage6_storage_bootstrap
+from year_context import (
+    ArchiveContractError,
+    RotationContractError,
+    assert_active_db_write_allowed,
+    validate_archive_year,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, 'frozen', False):
@@ -154,6 +165,98 @@ def scale_error_response(code: str, message: str, status: int):
     return jsonify({'success': False, 'code': code, 'message': message}), status
 
 
+def stage6_error_response(code: str, message: str, status: int):
+    """Return stage-6 contract error payload and emit structured log."""
+    logger.warning('Stage6 API error (%s %s): %s', status, code, message)
+    log_stage6_event(
+        'api_error',
+        'error',
+        reason=code,
+        http_status=status,
+        path=request.path if request else None,
+        method=request.method if request else None,
+        message=message,
+    )
+    return jsonify({'success': False, 'code': code, 'message': message}), status
+
+
+def _stage6_request_actor_fields(actor: dict[str, Any] | None) -> dict[str, Any]:
+    """Map session actor to stage-6 log operator fields."""
+    if not isinstance(actor, dict):
+        return {}
+    return {
+        'operator_id': actor.get('id'),
+        'operator_name': actor.get('display_name') or actor.get('username'),
+    }
+
+
+def _read_active_actor() -> dict[str, Any] | None:
+    """Read active session actor from persisted `app_current_user` payload."""
+    try:
+        data = read_active_storage()
+    except Exception:
+        return None
+    raw_session = data.get('app_current_user')
+    if (not isinstance(raw_session, str) or not raw_session.strip()):
+        try:
+            # Backward-compatible fallback for tests/legacy flows that persisted
+            # session before active_year was configured.
+            raw_session = read_database().get('app_current_user')
+        except Exception:
+            raw_session = None
+    if not isinstance(raw_session, str) or not raw_session.strip():
+        return None
+    try:
+        parsed = json.loads(raw_session)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    user = parsed.get('user') if isinstance(parsed.get('user'), dict) else {}
+    profile = parsed.get('profile') if isinstance(parsed.get('profile'), dict) else {}
+    role = profile.get('role')
+    if role not in ('user', 'admin'):
+        return None
+    return {
+        'id': user.get('id'),
+        'username': profile.get('username') or user.get('username'),
+        'display_name': profile.get('display_name'),
+        'role': role,
+    }
+
+
+def _require_rotation_actor() -> dict[str, Any] | tuple[Any, int]:
+    """Validate session for year-rotation endpoints."""
+    actor = _read_active_actor()
+    if actor is None:
+        return stage6_error_response(
+            'auth_required',
+            'Требуется активная сессия пользователя',
+            401,
+        )
+    if actor.get('role') not in ('user', 'admin'):
+        return stage6_error_response(
+            'insufficient_permissions',
+            'Недостаточно прав для выполнения операции',
+            403,
+        )
+    return actor
+
+
+def _require_archive_actor() -> dict[str, Any] | tuple[Any, int]:
+    """Validate session for archive read/edit endpoints."""
+    return _require_rotation_actor()
+
+
+def _parse_archive_year() -> int:
+    """Parse and validate archive year query/body parameter."""
+    raw_year = request.args.get('year')
+    if raw_year is None and request.is_json:
+        body = request.get_json(silent=True) or {}
+        raw_year = body.get('year')
+    return validate_archive_year(raw_year)
+
+
 def _validate_generic_regex_in_database_payload(data: dict[str, str]) -> tuple[bool, str | None]:
     scales_blob = data.get('app_scales')
     if not isinstance(scales_blob, str):
@@ -242,10 +345,247 @@ def storage_paths():
     return jsonify({'success': True, **get_storage_paths()})
 
 
+@app.get('/api/archive/years')
+def archive_years():
+    actor_or_error = _require_archive_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    log_stage6_event(
+        'api_archive_years',
+        'start',
+        path=request.path,
+        method=request.method,
+        **_stage6_request_actor_fields(actor),
+    )
+    years = list_archive_years(read_active_year())
+    log_stage6_event(
+        'api_archive_years',
+        'success',
+        path=request.path,
+        method=request.method,
+        year_count=len(years),
+        **_stage6_request_actor_fields(actor),
+    )
+    return jsonify({'success': True, 'years': years})
+
+
+@app.get('/api/archive/tickets')
+def archive_tickets():
+    actor_or_error = _require_archive_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    try:
+        year = _parse_archive_year()
+        log_stage6_event(
+            'api_archive_tickets',
+            'start',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            **_stage6_request_actor_fields(actor),
+        )
+        filters = {
+            key: value
+            for key, value in request.args.items()
+            if key != 'year'
+        }
+        payload = get_archive_tickets(year, filters=filters)
+        log_stage6_event(
+            'api_archive_tickets',
+            'success',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_count=len(payload.get('tickets') or []),
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except ArchiveContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
+@app.get('/api/archive/tickets/<ticket_id>')
+def archive_ticket(ticket_id: str):
+    actor_or_error = _require_archive_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    try:
+        year = _parse_archive_year()
+        log_stage6_event(
+            'api_archive_ticket',
+            'start',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_id=ticket_id,
+            **_stage6_request_actor_fields(actor),
+        )
+        payload = get_archive_ticket(year, ticket_id)
+        log_stage6_event(
+            'api_archive_ticket',
+            'success',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_id=ticket_id,
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except ArchiveContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
+@app.patch('/api/archive/tickets/<ticket_id>')
+def archive_ticket_patch(ticket_id: str):
+    actor_or_error = _require_archive_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    if actor.get('role') != 'admin':
+        return stage6_error_response(
+            'insufficient_permissions',
+            'Недостаточно прав для выполнения операции',
+            403,
+        )
+    body = request.get_json(silent=True) or {}
+    try:
+        year = _parse_archive_year()
+        patch = body.get('patch')
+        if not isinstance(patch, dict):
+            log_stage6_event(
+                'api_archive_edit',
+                'forbidden',
+                source_year=year,
+                path=request.path,
+                method=request.method,
+                ticket_id=ticket_id,
+                reason='archive_edit_forbidden_field',
+                **_stage6_request_actor_fields(actor),
+            )
+            return stage6_error_response(
+                'archive_edit_forbidden_field',
+                'Некорректный формат patch',
+                422,
+            )
+        acknowledge = bool(body.get('acknowledge_reo_sent_warning'))
+        log_stage6_event(
+            'api_archive_edit',
+            'start',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_id=ticket_id,
+            **_stage6_request_actor_fields(actor),
+        )
+        payload = apply_archive_edit(
+            year,
+            ticket_id,
+            patch,
+            actor,
+            acknowledge,
+        )
+        log_stage6_event(
+            'api_archive_edit',
+            'success',
+            source_year=year,
+            path=request.path,
+            method=request.method,
+            ticket_id=ticket_id,
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except ArchiveContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
+@app.post('/api/year/rotation/preview')
+def year_rotation_preview():
+    actor_or_error = _require_rotation_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    body = request.get_json(silent=True) or {}
+    body = {**body, 'actor': actor}
+    log_stage6_event(
+        'api_rotation_preview',
+        'start',
+        path=request.path,
+        method=request.method,
+        source_year=body.get('source_year'),
+        target_year=body.get('target_year'),
+        **_stage6_request_actor_fields(actor),
+    )
+    try:
+        payload = preview_rotation(body)
+        log_stage6_event(
+            'api_rotation_preview',
+            'success',
+            path=request.path,
+            method=request.method,
+            source_year=payload.get('source_year'),
+            target_year=payload.get('target_year'),
+            open_count=len(payload.get('open_candidates') or []),
+            pending_reo_count=payload.get('pending_reo_count'),
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
+@app.post('/api/year/rotation/commit')
+def year_rotation_commit():
+    actor_or_error = _require_rotation_actor()
+    if isinstance(actor_or_error, tuple):
+        return actor_or_error
+    actor = actor_or_error
+    body = request.get_json(silent=True) or {}
+    body = {**body, 'actor': actor}
+    log_stage6_event(
+        'api_rotation_commit',
+        'start',
+        path=request.path,
+        method=request.method,
+        source_year=body.get('source_year'),
+        target_year=body.get('target_year'),
+        **_stage6_request_actor_fields(actor),
+    )
+    try:
+        payload = commit_rotation(body)
+        log_stage6_event(
+            'api_rotation_commit',
+            'success',
+            path=request.path,
+            method=request.method,
+            source_year=payload.get('source_year'),
+            target_year=payload.get('target_year'),
+            auto_closed_count=payload.get('auto_closed_count'),
+            backup_path=payload.get('backup_path'),
+            db_path=payload.get('new_db_path'),
+            **_stage6_request_actor_fields(actor),
+        )
+        return jsonify(payload)
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
+
+
 @app.get('/api/config')
 def get_config():
     try:
-        return jsonify({'success': True, 'config': read_config()})
+        bootstrap = ensure_stage6_storage_bootstrap()
+        if bootstrap.get('status') == 'error':
+            return jsonify(
+                {
+                    'success': False,
+                    'code': bootstrap.get('code', 'migration_failed'),
+                    'message': bootstrap.get('message', 'Ошибка миграции годовой БД'),
+                    'bootstrap': bootstrap,
+                }
+            ), 500
+        return jsonify({'success': True, 'config': read_config(), 'bootstrap': bootstrap})
     except Exception as exc:
         logger.exception('Config read failed')
         return error_response(f'Ошибка чтения config.ini: {exc}')
@@ -270,7 +610,17 @@ def save_config():
 @app.get('/api/database')
 def get_database():
     try:
-        return jsonify({'success': True, 'data': read_database()})
+        bootstrap = ensure_stage6_storage_bootstrap()
+        if bootstrap.get('status') == 'error':
+            return jsonify(
+                {
+                    'success': False,
+                    'code': bootstrap.get('code', 'migration_failed'),
+                    'message': bootstrap.get('message', 'Ошибка миграции годовой БД'),
+                    'bootstrap': bootstrap,
+                }
+            ), 500
+        return jsonify({'success': True, 'data': read_active_storage()})
     except Exception as exc:
         logger.exception('Database read failed')
         return error_response(f'Ошибка чтения BD/weighing.db: {exc}')
@@ -287,9 +637,11 @@ def save_database():
         valid_payload, validation_message = _validate_generic_regex_in_database_payload(data)
         if not valid_payload:
             return scale_error_response('invalid_connection_config', validation_message or 'Некорректная конфигурация', 422)
-        write_database(data)
+        write_active_storage(data, operation='POST /api/database')
         logger.info('Database saved (%s keys)', len(data))
         return jsonify({'success': True})
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Database write failed')
         return error_response(f'Ошибка сохранения BD/weighing.db: {exc}')
@@ -298,7 +650,12 @@ def save_database():
 @app.get('/api/storage')
 def get_storage():
     try:
-        return jsonify({'success': True, 'data': read_combined_storage()})
+        combined: dict[str, str] = {}
+        config = read_config()
+        if config:
+            combined['app_settings'] = json.dumps(config, ensure_ascii=False)
+        combined.update(read_active_storage())
+        return jsonify({'success': True, 'data': combined})
     except Exception as exc:
         logger.exception('Storage read failed')
         return error_response(f'Ошибка чтения данных: {exc}')
@@ -318,9 +675,20 @@ def save_storage():
     }
 
     try:
-        write_combined_storage(safe_data)
+        config_raw = safe_data.get('app_settings')
+        if isinstance(config_raw, str) and config_raw.strip():
+            parsed_config = json.loads(config_raw)
+            if isinstance(parsed_config, dict):
+                write_config({str(key): str(value) for key, value in parsed_config.items()})
+
+        db_payload = {key: value for key, value in safe_data.items() if key != 'app_settings'}
+        write_active_storage(db_payload, operation='POST /api/storage')
         logger.info('Storage saved (%s keys)', len(safe_data))
         return jsonify({'success': True})
+    except json.JSONDecodeError:
+        return error_response('Некорректный формат app_settings')
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Storage write failed')
         return error_response(f'Ошибка сохранения данных: {exc}')
@@ -345,6 +713,7 @@ def import_storage():
     content = body.get('content')
 
     try:
+        assert_active_db_write_allowed('POST /api/storage/import')
         if isinstance(content, str) and content.strip():
             combined = import_backup_file(content, filename=str(body.get('filename') or ''))
         elif isinstance(backup, dict):
@@ -354,6 +723,8 @@ def import_storage():
 
         logger.info('Storage imported (%s keys)', len(combined))
         return jsonify({'success': True, 'data': combined})
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except ValueError as exc:
         return error_response(str(exc))
     except Exception as exc:
@@ -423,6 +794,7 @@ def reo_send():
 
     count = len(payload.get('weightControls') or payload.get('WeightControls') or [])
     try:
+        assert_active_db_write_allowed('POST /api/reo/send')
         logger.info('REO send request to %s (%s records)', object_url, count)
         filename = f'data_{datetime.now().strftime("%Y-%m-%d")}.json'
         response = post_reo_import(object_url, payload, filename=filename)
@@ -503,6 +875,7 @@ def vescom_import_dictionaries():
         return error_response('Не указан путь к базе данных Vescom')
 
     try:
+        assert_active_db_write_allowed('POST /api/vescom/import_dictionaries')
         dictionaries = fetch_vescom_dictionaries(db_path, user, password)
         added = merge_dictionaries(dictionaries)
         fetched_total = sum(len(values) for values in dictionaries.values())
@@ -513,8 +886,10 @@ def vescom_import_dictionaries():
             'message': message,
             'fetched': {key: len(values) for key, values in dictionaries.items()},
             'added': added,
-            'data': read_database(),
+            'data': read_active_storage(),
         })
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Vescom dictionary import failed')
         return error_response(f'Ошибка импорта справочников Vescom: {exc}')
@@ -576,6 +951,7 @@ def metra_import_dictionaries():
         return error_response('Не указан путь к базе Metra')
 
     try:
+        assert_active_db_write_allowed('POST /api/metra/import_dictionaries')
         dictionaries = fetch_metra_dictionary_names(db_path)
         added = merge_dictionaries(dictionaries)
         logger.info('Metra dictionaries imported: %s new entries', sum(added.values()))
@@ -584,8 +960,10 @@ def metra_import_dictionaries():
             'message': format_import_message('Metra', dictionaries, added),
             'fetched': {key: len(values) for key, values in dictionaries.items()},
             'added': added,
-            'data': read_database(),
+            'data': read_active_storage(),
         })
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('Metra dictionary import failed')
         return error_response(f'Ошибка импорта справочников Metra: {exc}')
@@ -652,6 +1030,7 @@ def wa_import_dictionaries():
         return error_response('Не указан путь к базе WA')
 
     try:
+        assert_active_db_write_allowed('POST /api/wa/import_dictionaries')
         dictionaries = fetch_wa_dictionary_names(db_path, user, password)
         added = merge_dictionaries(dictionaries)
         logger.info('WA dictionaries imported: %s new entries', sum(added.values()))
@@ -660,8 +1039,10 @@ def wa_import_dictionaries():
             'message': format_import_message('WA', dictionaries, added),
             'fetched': {key: len(values) for key, values in dictionaries.items()},
             'added': added,
-            'data': read_database(),
+            'data': read_active_storage(),
         })
+    except RotationContractError as exc:
+        return stage6_error_response(exc.code, exc.message, exc.status)
     except Exception as exc:
         logger.exception('WA dictionary import failed')
         return error_response(f'Ошибка импорта справочников WA: {exc}')

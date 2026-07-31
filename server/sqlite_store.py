@@ -3,12 +3,15 @@ import logging
 import os
 import sqlite3
 import sys
+import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILENAME = 'weighing.db'
 SCHEMA_VERSION_STAGE_5 = 5
+SCHEMA_VERSION_STAGE_6 = 6
 
 logger = logging.getLogger('weighing-system-api')
 
@@ -46,6 +49,7 @@ TICKET_COLUMNS = [
     'price', 'vat_rate', 'gross_weight', 'tare_weight', 'net_weight', 'total_amount',
     'gross_source', 'tare_source', 'gross_raw', 'tare_raw', 'gross_datetime', 'tare_datetime',
     'scale_device', 'manual_weight_reason', 'operator_id', 'operator_name', 'status', 'reo_status', 'reo_sent_at',
+    'auto_closed',
     'notes', 'created_at', 'completed_at',
     'weighing_mode', 'version',
     'plate_source', 'site_id', 'scale_id', 'scale_role', 'photo_entry_path', 'photo_exit_path',
@@ -53,6 +57,7 @@ TICKET_COLUMNS = [
 
 AUDIT_COLUMNS = [
     'id', 'ticket_id', 'action', 'at', 'operator_name', 'operator_id',
+    'event_type', 'source_year', 'changed_fields_json', 'old_values_json', 'new_values_json', 'reo_divergence_warning',
 ]
 
 VEHICLE_DRIVER_COLUMNS = [
@@ -107,14 +112,22 @@ def ensure_storage_dirs() -> None:
     os.makedirs(get_bd_dir(), exist_ok=True)
 
 
-def get_sqlite_path() -> str:
-    return os.path.join(get_bd_dir(), DB_FILENAME)
+def get_sqlite_path(year: int | None = None, *, suffix: str = "") -> str:
+    if year is None:
+        filename = DB_FILENAME
+    else:
+        filename = f'weighing-{year}.db'
+    return os.path.join(get_bd_dir(), f'{filename}{suffix}')
 
 
 @contextmanager
-def connect():
+def connect(db_path: str | None = None, *, read_only: bool = False):
     ensure_storage_dirs()
-    connection = sqlite3.connect(get_sqlite_path())
+    selected_path = db_path or get_sqlite_path()
+    if read_only:
+        connection = sqlite3.connect(f'file:{selected_path}?mode=ro', uri=True)
+    else:
+        connection = sqlite3.connect(selected_path)
     connection.row_factory = sqlite3.Row
     try:
         yield connection
@@ -276,6 +289,11 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
                 'ALTER TABLE weighing_tickets ADD COLUMN manual_weight_reason TEXT NULL'
             )
 
+        if 'auto_closed' not in existing:
+            connection.execute(
+                'ALTER TABLE weighing_tickets ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0'
+            )
+
         if column_weighing_mode_added:
             # One-shot backfill: only right after ADD COLUMN weighing_mode.
             connection.execute(
@@ -323,6 +341,233 @@ def migrate_schema_stage_5(connection: sqlite3.Connection) -> None:
         raise RuntimeError(
             'Stage-5 migration failed: manual_weight_reason column is missing'
         )
+
+
+def migrate_schema_stage_6(connection: sqlite3.Connection) -> None:
+    """Apply add-only stage-6 migration and validate post-conditions."""
+    ensure_ticket_schema(connection)
+
+    ticket_columns = _get_table_columns(connection, 'weighing_tickets')
+    if 'auto_closed' not in ticket_columns:
+        connection.execute(
+            'ALTER TABLE weighing_tickets ADD COLUMN auto_closed INTEGER NOT NULL DEFAULT 0'
+        )
+        ticket_columns = _get_table_columns(connection, 'weighing_tickets')
+
+    audit_columns = _get_table_columns(connection, 'ticket_audit')
+    audit_additions: tuple[tuple[str, str], ...] = (
+        ('event_type', "TEXT NOT NULL DEFAULT ''"),
+        ('source_year', 'INTEGER'),
+        ('changed_fields_json', 'TEXT'),
+        ('old_values_json', 'TEXT'),
+        ('new_values_json', 'TEXT'),
+        ('reo_divergence_warning', 'INTEGER NOT NULL DEFAULT 0'),
+    )
+    for column_name, column_sql in audit_additions:
+        if column_name in audit_columns:
+            continue
+        connection.execute(f'ALTER TABLE ticket_audit ADD COLUMN {column_name} {column_sql}')
+    audit_columns = _get_table_columns(connection, 'ticket_audit')
+
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_ticket_audit_event_year
+            ON ticket_audit(event_type, source_year)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_audit_autoclose_once
+            ON ticket_audit(ticket_id, event_type)
+            WHERE event_type = 'auto_close'
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE UNIQUE INDEX IF NOT EXISTS tickets_number_uq
+            ON weighing_tickets(ticket_number)
+            WHERE ticket_number IS NOT NULL
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS tickets_status_created_idx
+            ON weighing_tickets(status, created_at DESC)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS tickets_reo_status_idx
+            ON weighing_tickets(reo_status, created_at DESC)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS tickets_vehicle_number_idx
+            ON weighing_tickets(vehicle_number)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket_at
+            ON ticket_audit(ticket_id, at ASC)
+        '''
+    )
+
+    current_version = _get_user_version(connection)
+    if current_version < SCHEMA_VERSION_STAGE_6:
+        connection.execute(f'PRAGMA user_version = {SCHEMA_VERSION_STAGE_6}')
+
+    post_version = _get_user_version(connection)
+    if post_version < SCHEMA_VERSION_STAGE_6:
+        raise RuntimeError('Stage-6 migration failed: PRAGMA user_version is not 6')
+    if 'auto_closed' not in ticket_columns:
+        raise RuntimeError('Stage-6 migration failed: auto_closed column is missing')
+    for required_column in (
+        'event_type',
+        'source_year',
+        'changed_fields_json',
+        'old_values_json',
+        'new_values_json',
+        'reo_divergence_warning',
+    ):
+        if required_column not in audit_columns:
+            raise RuntimeError(
+                f'Stage-6 migration failed: {required_column} in ticket_audit is missing'
+            )
+
+
+def read_ticket_year_range(connection: sqlite3.Connection) -> dict[str, Any]:
+    """
+    Read ticket year range from legacy date columns.
+
+    Returns:
+        Dictionary with min/max year and unique years list.
+    """
+    cursor = connection.execute(
+        '''
+        SELECT created_at, gross_datetime, completed_at
+        FROM weighing_tickets
+        '''
+    )
+    years: set[int] = set()
+    for row in cursor.fetchall():
+        for column in ('created_at', 'gross_datetime', 'completed_at'):
+            raw = row[column]
+            if not raw:
+                continue
+            text = str(raw)
+            year = None
+            try:
+                year = int(text[:4])
+            except (TypeError, ValueError):
+                year = None
+            if year is not None and 1900 <= year <= 2100:
+                years.add(year)
+    sorted_years = sorted(years)
+    return {
+        'min_year': sorted_years[0] if sorted_years else None,
+        'max_year': sorted_years[-1] if sorted_years else None,
+        'years': sorted_years,
+        'is_mixed': len(sorted_years) > 1,
+    }
+
+
+def count_stage6_tables(connection: sqlite3.Connection) -> dict[str, int]:
+    """Count rows in key stage-6 tables."""
+    table_names = (
+        'users',
+        'profiles',
+        'weighing_tickets',
+        'ticket_audit',
+        'dictionary_entries',
+        'vehicle_drivers',
+        'sites',
+        'scales',
+        'site_runtime',
+        'scale_switch_journal',
+    )
+    counts: dict[str, int] = {}
+    for table in table_names:
+        try:
+            counts[table] = _table_count(connection, table)
+        except sqlite3.Error:
+            counts[table] = 0
+    return counts
+
+
+def backfill_stage6_audit_columns(connection: sqlite3.Connection, source_year: int) -> None:
+    """
+    Backfill stage-6 audit columns for legacy rows.
+
+    Existing `ticket_audit` rows are enriched without changing their original
+    semantic values. JSON diff columns stay NULL for legacy events.
+    """
+    connection.execute(
+        '''
+        UPDATE ticket_audit
+        SET
+            event_type = COALESCE(NULLIF(event_type, ''), action),
+            source_year = COALESCE(source_year, ?),
+            changed_fields_json = NULL,
+            old_values_json = NULL,
+            new_values_json = NULL,
+            reo_divergence_warning = COALESCE(reo_divergence_warning, 0)
+        ''',
+        (int(source_year),),
+    )
+
+
+def validate_stage6_database(connection: sqlite3.Connection) -> dict[str, Any]:
+    """
+    Validate stage-6 migration post-conditions.
+
+    Returns:
+        Validation payload with `valid` flag and diagnostics.
+    """
+    ticket_columns = _get_table_columns(connection, 'weighing_tickets')
+    audit_columns = _get_table_columns(connection, 'ticket_audit')
+    required_ticket_columns = {'auto_closed'}
+    required_audit_columns = {
+        'event_type',
+        'source_year',
+        'changed_fields_json',
+        'old_values_json',
+        'new_values_json',
+        'reo_divergence_warning',
+    }
+    indexes = {
+        row['name']
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    required_indexes = {
+        'tickets_number_uq',
+        'tickets_status_created_idx',
+        'tickets_reo_status_idx',
+        'tickets_vehicle_number_idx',
+        'idx_ticket_audit_ticket_at',
+        'idx_ticket_audit_event_year',
+        'idx_ticket_audit_autoclose_once',
+    }
+    missing_ticket_columns = sorted(required_ticket_columns - ticket_columns)
+    missing_audit_columns = sorted(required_audit_columns - audit_columns)
+    missing_indexes = sorted(required_indexes - indexes)
+    version = _get_user_version(connection)
+    valid = (
+        version >= SCHEMA_VERSION_STAGE_6
+        and not missing_ticket_columns
+        and not missing_audit_columns
+        and not missing_indexes
+    )
+    return {
+        'valid': valid,
+        'schema_version': version,
+        'missing_ticket_columns': missing_ticket_columns,
+        'missing_audit_columns': missing_audit_columns,
+        'missing_indexes': missing_indexes,
+    }
 
 
 def init_schema(connection: sqlite3.Connection) -> None:
@@ -374,6 +619,7 @@ def init_schema(connection: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'open',
             reo_status TEXT NOT NULL DEFAULT 'pending',
             reo_sent_at TEXT,
+            auto_closed INTEGER NOT NULL DEFAULT 0,
             notes TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             completed_at TEXT,
@@ -410,7 +656,13 @@ def init_schema(connection: sqlite3.Connection) -> None:
             action TEXT NOT NULL,
             at TEXT NOT NULL,
             operator_name TEXT NOT NULL DEFAULT '',
-            operator_id TEXT
+            operator_id TEXT,
+            event_type TEXT NOT NULL DEFAULT '',
+            source_year INTEGER,
+            changed_fields_json TEXT,
+            old_values_json TEXT,
+            new_values_json TEXT,
+            reo_divergence_warning INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket
@@ -479,6 +731,555 @@ def init_schema(connection: sqlite3.Connection) -> None:
         '''
     )
     migrate_schema_stage_5(connection)
+    migrate_schema_stage_6(connection)
+
+
+def _normalize_plate_for_lookup(value: str | None) -> str:
+    """Normalize vehicle plate for dictionary lookup."""
+    raw = (value or '').upper()
+    return ''.join(char for char in raw if char.isalnum())
+
+
+def _read_vehicle_tare_map(connection: sqlite3.Connection) -> dict[str, float]:
+    """Build map `normalized_plate -> default_tare_weight` from vehicles dictionary."""
+    rows = connection.execute(
+        """
+        SELECT name, payload
+        FROM dictionary_entries
+        WHERE category = 'vehicles'
+        """
+    ).fetchall()
+    tare_map: dict[str, float] = {}
+    for row in rows:
+        payload_text = row['payload'] or '{}'
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
+            continue
+        plate = payload.get('vehicle_number') or row['name']
+        normalized_plate = _normalize_plate_for_lookup(str(plate or ''))
+        if not normalized_plate:
+            continue
+        tare_value = payload.get('default_tare_weight')
+        try:
+            tare_float = float(tare_value)
+        except (TypeError, ValueError):
+            continue
+        tare_map[normalized_plate] = tare_float
+    return tare_map
+
+
+def _build_source_db_fingerprint(path: str) -> str:
+    """Generate deterministic source DB fingerprint from file metadata."""
+    stat = os.stat(path)
+    mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat().replace('+00:00', 'Z')
+    return f"size:{stat.st_size};mtime:{mtime}"
+
+
+def load_rotation_preview(
+    source_db_path: str,
+    source_year: int,
+    target_year: int,
+) -> dict[str, Any]:
+    """Load open ticket candidates and source fingerprint for rotation preview."""
+    if not os.path.isfile(source_db_path):
+        raise FileNotFoundError(f'Active year database is missing: {source_db_path}')
+
+    with sqlite3.connect(source_db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        tare_map = _read_vehicle_tare_map(connection)
+        pending_reo_count_row = connection.execute(
+            "SELECT COUNT(*) AS count FROM weighing_tickets WHERE reo_status = 'pending'"
+        ).fetchone()
+        pending_reo_count = int(pending_reo_count_row['count']) if pending_reo_count_row else 0
+
+        open_rows = connection.execute(
+            """
+            SELECT
+                id,
+                ticket_number,
+                vehicle_number,
+                gross_weight,
+                tare_weight,
+                net_weight,
+                total_amount,
+                price,
+                vat_rate,
+                created_at,
+                operator_id,
+                operator_name
+            FROM weighing_tickets
+            WHERE status = 'open'
+            ORDER BY created_at ASC, ticket_number ASC
+            """
+        ).fetchall()
+
+    open_candidates: list[dict[str, Any]] = []
+    blocking_tickets: list[dict[str, Any]] = []
+    for row in open_rows:
+        normalized_plate = _normalize_plate_for_lookup(row['vehicle_number'])
+        tare_from_dictionary = tare_map.get(normalized_plate)
+        candidate = {
+            'ticket_id': row['id'],
+            'ticket_number': row['ticket_number'],
+            'vehicle_number': row['vehicle_number'],
+            'normalized_plate': normalized_plate,
+            'gross_weight': row['gross_weight'],
+            'price': row['price'],
+            'vat_rate': row['vat_rate'],
+            'operator_id': row['operator_id'],
+            'operator_name': row['operator_name'],
+            'tare_from_dictionary': tare_from_dictionary,
+            'source_year': int(source_year),
+            'target_year': int(target_year),
+        }
+        open_candidates.append(candidate)
+        if tare_from_dictionary is None:
+            blocking_tickets.append(
+                {
+                    'ticket_id': row['id'],
+                    'ticket_number': row['ticket_number'],
+                    'vehicle_number': row['vehicle_number'],
+                    'reason': 'missing_tare_dictionary_and_default',
+                }
+            )
+
+    return {
+        'source_db_path': source_db_path,
+        'source_year': int(source_year),
+        'target_year': int(target_year),
+        'source_db_fingerprint': _build_source_db_fingerprint(source_db_path),
+        'open_candidates': open_candidates,
+        'pending_reo_count': pending_reo_count,
+        'blocking_tickets': blocking_tickets,
+    }
+
+
+def apply_auto_close_plan(
+    connection: sqlite3.Connection | None,
+    plan: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Apply auto-close plan and write idempotent `ticket_audit.auto_close` events."""
+    from ticket_audit_stage6 import build_auto_close_audit_event
+
+    if connection is None:
+        raise ValueError('Active DB connection is required for auto-close plan')
+
+    applied_ids: list[str] = []
+    now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    for candidate in plan:
+        ticket_id = str(candidate.get('ticket_id') or '').strip()
+        if not ticket_id:
+            continue
+
+        already_applied = connection.execute(
+            """
+            SELECT 1
+            FROM ticket_audit
+            WHERE ticket_id = ? AND event_type = 'auto_close'
+            LIMIT 1
+            """,
+            (ticket_id,),
+        ).fetchone()
+        if already_applied:
+            continue
+
+        ticket_row = connection.execute(
+            """
+            SELECT
+                id,
+                status,
+                auto_closed,
+                tare_weight,
+                tare_source,
+                net_weight,
+                total_amount,
+                gross_weight,
+                price,
+                vat_rate
+            FROM weighing_tickets
+            WHERE id = ?
+            """,
+            (ticket_id,),
+        ).fetchone()
+        if ticket_row is None:
+            continue
+
+        tare_weight = candidate.get('tare_weight')
+        gross_weight = ticket_row['gross_weight']
+        price = ticket_row['price'] or 0
+        vat_rate = ticket_row['vat_rate'] or 0
+
+        next_net_weight: float | None = None
+        next_total_amount: float | None = None
+        if gross_weight is not None and tare_weight is not None:
+            next_net_weight = float(gross_weight) - float(tare_weight)
+            next_total_amount = round(next_net_weight * float(price) * (1 + float(vat_rate) / 100), 2)
+
+        next_status = str(candidate.get('status') or 'completed')
+        next_tare_source = str(candidate.get('tare_source') or 'default')
+        connection.execute(
+            """
+            UPDATE weighing_tickets
+            SET
+                status = ?,
+                auto_closed = 1,
+                tare_weight = ?,
+                tare_source = ?,
+                net_weight = ?,
+                total_amount = ?,
+                completed_at = COALESCE(completed_at, ?)
+            WHERE id = ?
+            """,
+            (
+                next_status,
+                tare_weight,
+                next_tare_source,
+                next_net_weight,
+                next_total_amount,
+                now_iso,
+                ticket_id,
+            ),
+        )
+
+        old_values = {
+            'status': ticket_row['status'],
+            'auto_closed': bool(ticket_row['auto_closed']),
+            'tare_weight': ticket_row['tare_weight'],
+            'tare_source': ticket_row['tare_source'],
+            'net_weight': ticket_row['net_weight'],
+            'total_amount': ticket_row['total_amount'],
+        }
+        new_values = {
+            'status': next_status,
+            'auto_closed': True,
+            'tare_weight': tare_weight,
+            'tare_source': next_tare_source,
+            'net_weight': next_net_weight,
+            'total_amount': next_total_amount,
+        }
+        audit_event = build_auto_close_audit_event(
+            ticket_id=ticket_id,
+            source_year=candidate.get('source_year'),
+            old_values=old_values,
+            new_values=new_values,
+            actor={
+                'id': candidate.get('actor_id'),
+                'display_name': str(candidate.get('actor_name') or 'system'),
+            },
+            timestamp=now_iso,
+        )
+        insert_ticket_audit_event(connection, audit_event)
+        applied_ids.append(ticket_id)
+
+    return {
+        'status': 'ok',
+        'auto_closed_count': len(applied_ids),
+        'applied_ids': applied_ids,
+    }
+
+
+def copy_whitelist_data(
+    source_conn: sqlite3.Connection,
+    target_conn: sqlite3.Connection,
+) -> dict[str, int]:
+    """Copy stage-6 whitelist entities from source DB to target DB."""
+    source_conn.row_factory = sqlite3.Row
+    target_conn.row_factory = sqlite3.Row
+
+    copied: dict[str, int] = {}
+
+    def _copy_table(table: str, where_sql: str = '', params: tuple[Any, ...] = ()) -> int:
+        columns = [row['name'] for row in source_conn.execute(f'PRAGMA table_info({table})').fetchall()]
+        if not columns:
+            return 0
+        query = f"SELECT {', '.join(columns)} FROM {table}"
+        if where_sql:
+            query += f' WHERE {where_sql}'
+        rows = source_conn.execute(query, params).fetchall()
+        if rows:
+            placeholders = ', '.join(['?'] * len(columns))
+            target_conn.executemany(
+                f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+                [tuple(row[column] for column in columns) for row in rows],
+            )
+        return len(rows)
+
+    copied['users'] = _copy_table('users')
+    copied['profiles'] = _copy_table('profiles')
+    copied['vehicle_drivers'] = _copy_table('vehicle_drivers')
+    copied['sites'] = _copy_table('sites')
+    copied['scales'] = _copy_table('scales')
+    copied['site_runtime'] = _copy_table('site_runtime')
+    copied['dictionary_entries'] = _copy_table(
+        'dictionary_entries',
+        "category IN (?, ?, ?, ?, ?, ?)",
+        ('vehicles', 'drivers', 'cargos', 'shippers', 'receivers', 'carriers'),
+    )
+
+    target_conn.execute('DELETE FROM app_sessions')
+    return copied
+
+
+def assert_no_forbidden_runtime_keys(target_conn: sqlite3.Connection) -> None:
+    """Validate deny-by-default absence of session/runtime app_* rows."""
+    target_conn.row_factory = sqlite3.Row
+    app_tables = [
+        row['name']
+        for row in target_conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'app_%'"
+        ).fetchall()
+    ]
+    for table_name in app_tables:
+        count = _table_count(target_conn, table_name)
+        if count > 0:
+            raise RuntimeError(
+                f'Target DB contains forbidden runtime/session data in table {table_name}'
+            )
+
+
+def validate_new_year_database(target_conn: sqlite3.Connection) -> dict[str, Any]:
+    """Validate fresh year DB invariants after whitelist copy."""
+    assert_no_forbidden_runtime_keys(target_conn)
+    forbidden_nonzero: dict[str, int] = {}
+    for table_name in ('weighing_tickets', 'ticket_audit', 'scale_switch_journal'):
+        count = _table_count(target_conn, table_name)
+        if count > 0:
+            forbidden_nonzero[table_name] = count
+    return {
+        'valid': len(forbidden_nonzero) == 0,
+        'forbidden_nonzero': forbidden_nonzero,
+    }
+
+
+def _archive_ticket_matches_filters(ticket: dict[str, Any], filters: dict[str, Any]) -> bool:
+    """Apply optional archive journal filters to a mapped ticket."""
+    status = filters.get('status')
+    if status not in (None, '', 'all') and str(ticket.get('status') or '') != str(status):
+        return False
+
+    reo_status = filters.get('reo_status')
+    if reo_status not in (None, '', 'all') and str(ticket.get('reo_status') or '') != str(reo_status):
+        return False
+
+    query = str(filters.get('q') or '').strip().lower()
+    if not query:
+        return True
+
+    haystack = ' '.join(
+        [
+            str(ticket.get('ticket_number') or ''),
+            str(ticket.get('vehicle_number') or ''),
+            str(ticket.get('driver_name') or ''),
+            str(ticket.get('cargo_name') or ''),
+            str(ticket.get('status') or ''),
+            str(ticket.get('reo_status') or ''),
+        ]
+    ).lower()
+    return query in haystack
+
+
+def read_archive_tickets(db_path: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """
+    Read tickets from an archive DB in read-only mode.
+
+    Args:
+        db_path: Absolute path to yearly archive SQLite file.
+        filters: Optional journal filters (`q`, `status`, `reo_status`).
+
+    Returns:
+        Mapped ticket dictionaries ordered by created_at DESC.
+    """
+    selected_filters = filters or {}
+    with connect(db_path=db_path, read_only=True) as connection:
+        tickets = _load_tickets(connection)
+    return [
+        ticket
+        for ticket in tickets
+        if _archive_ticket_matches_filters(ticket, selected_filters)
+    ]
+
+
+def read_archive_ticket(db_path: str, ticket_id: str) -> dict[str, Any] | None:
+    """
+    Read one archive ticket by id from a yearly DB in read-only mode.
+
+    Args:
+        db_path: Absolute path to yearly archive SQLite file.
+        ticket_id: Ticket identifier.
+
+    Returns:
+        Mapped ticket dict or None when the ticket is absent.
+    """
+    with connect(db_path=db_path, read_only=True) as connection:
+        row = connection.execute(
+            f'SELECT {", ".join(TICKET_COLUMNS)} FROM weighing_tickets WHERE id = ?',
+            (ticket_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return map_ticket_row(row)
+
+
+def read_archive_ticket_rows(db_path: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+    """Backward-compatible alias for `read_archive_tickets`."""
+    return read_archive_tickets(db_path, filters)
+
+
+def update_archive_ticket(db_path: str, ticket_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+    """Return stage-6 stub patched ticket payload (legacy helper for early stubs)."""
+    _ = db_path
+    ticket: dict[str, Any] = {
+        'id': ticket_id,
+        'ticket_number': 0,
+        'status': 'completed',
+        'reo_status': 'pending',
+        'auto_closed': False,
+    }
+    ticket.update(patch)
+    return ticket
+
+
+ARCHIVE_EDIT_PERSIST_FIELDS: tuple[str, ...] = (
+    'vehicle_number',
+    'vehicle_brand',
+    'trailer_number',
+    'driver_name',
+    'cargo_name',
+    'shipper_name',
+    'receiver_name',
+    'carrier_name',
+    'gross_weight',
+    'tare_weight',
+    'net_weight',
+    'total_amount',
+    'notes',
+)
+
+
+def read_archive_ticket_for_update(
+    connection: sqlite3.Connection,
+    ticket_id: str,
+) -> dict[str, Any] | None:
+    """
+    Read a weighing ticket inside an open archive write transaction.
+
+    Args:
+        connection: Writable SQLite connection to the archive year DB.
+        ticket_id: Ticket identifier.
+
+    Returns:
+        Mapped ticket dict or None when missing.
+    """
+    row = connection.execute(
+        f'SELECT {", ".join(TICKET_COLUMNS)} FROM weighing_tickets WHERE id = ?',
+        (ticket_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return map_ticket_row(row)
+
+
+def save_archive_ticket_edit(
+    connection: sqlite3.Connection,
+    ticket_id: str,
+    updated_ticket: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Persist allowlisted archive-edit fields and derived totals.
+
+    Does not modify `reo_status`, identifiers, or other denylisted columns.
+
+    Args:
+        connection: Writable archive DB connection (same transaction as audit).
+        ticket_id: Ticket identifier.
+        updated_ticket: Full ticket dict after patch + recalculation.
+
+    Returns:
+        Fresh ticket row after UPDATE.
+
+    Raises:
+        ValueError: when the ticket row is missing after update.
+    """
+    assignments = ', '.join(f'{column} = ?' for column in ARCHIVE_EDIT_PERSIST_FIELDS)
+    values = [updated_ticket.get(column) for column in ARCHIVE_EDIT_PERSIST_FIELDS]
+    values.append(ticket_id)
+    connection.execute(
+        f'UPDATE weighing_tickets SET {assignments} WHERE id = ?',
+        values,
+    )
+    saved = read_archive_ticket_for_update(connection, ticket_id)
+    if saved is None:
+        raise ValueError(f'Archive ticket disappeared during edit: {ticket_id}')
+    return saved
+
+
+def insert_ticket_audit_event(
+    connection: sqlite3.Connection,
+    event: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Insert a stage-6 audit event into existing `ticket_audit` table.
+
+    Args:
+        connection: Writable SQLite connection.
+        event: Logical audit payload from `ticket_audit_stage6` builders.
+
+    Returns:
+        The persisted logical event (same shape, with generated id if needed).
+    """
+    event_id = str(event.get('id') or uuid.uuid4())
+    event_type = str(event.get('event_type') or event.get('action') or '')
+    timestamp = str(event.get('timestamp') or event.get('at') or '')
+    actor_id = event.get('actor_id') if event.get('actor_id') is not None else event.get('operator_id')
+    actor_name = (
+        event.get('actor_name')
+        if event.get('actor_name') is not None
+        else event.get('operator_name')
+    )
+    changed_fields = event.get('changed_fields') or []
+    old_values = event.get('old_values') or {}
+    new_values = event.get('new_values') or {}
+    reo_warning = 1 if event.get('reo_divergence_warning') else 0
+
+    connection.execute(
+        f'''
+        INSERT INTO ticket_audit ({", ".join(AUDIT_COLUMNS)})
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            event_id,
+            event.get('ticket_id'),
+            event_type,
+            timestamp,
+            actor_name,
+            actor_id,
+            event_type,
+            event.get('source_year'),
+            json.dumps(changed_fields, ensure_ascii=False),
+            json.dumps(old_values, ensure_ascii=False),
+            json.dumps(new_values, ensure_ascii=False),
+            reo_warning,
+        ),
+    )
+    return {
+        **event,
+        'id': event_id,
+        'action': event_type,
+        'event_type': event_type,
+        'at': timestamp,
+        'timestamp': timestamp,
+        'actor_id': actor_id,
+        'actor_name': actor_name,
+        'operator_id': actor_id,
+        'operator_name': actor_name,
+        'changed_fields': list(changed_fields),
+        'old_values': dict(old_values),
+        'new_values': dict(new_values),
+        'reo_divergence_warning': bool(reo_warning),
+    }
 
 
 def _table_count(connection: sqlite3.Connection, table: str) -> int:
@@ -548,15 +1349,22 @@ def _load_profiles(connection: sqlite3.Connection) -> dict[str, dict[str, str]]:
     }
 
 
+def map_ticket_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    """
+    Map a weighing_tickets row to the shared ticket dict contract.
+
+    Reused by active storage reads and archive read helpers.
+    """
+    ticket = {column: row[column] for column in TICKET_COLUMNS}
+    ticket['auto_closed'] = bool(ticket.get('auto_closed') or False)
+    return ticket
+
+
 def _load_tickets(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = connection.execute(
         f'SELECT {", ".join(TICKET_COLUMNS)} FROM weighing_tickets ORDER BY created_at DESC'
     ).fetchall()
-    tickets: list[dict[str, Any]] = []
-    for row in rows:
-        ticket = {column: row[column] for column in TICKET_COLUMNS}
-        tickets.append(ticket)
-    return tickets
+    return [map_ticket_row(row) for row in rows]
 
 
 def _load_ticket_audit(connection: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -665,11 +1473,27 @@ def _load_session(connection: sqlite3.Connection) -> str | None:
     return row['payload'] if row else None
 
 
-def read_database() -> dict[str, str]:
-    migrate_json_database_if_needed()
+def next_ticket_number(connection: sqlite3.Connection) -> int:
+    """
+    Calculate next ticket number inside current SQLite database file.
+
+    Numbering is year-local because each yearly DB is an isolated container.
+    """
+    row = connection.execute(
+        'SELECT MAX(ticket_number) AS max_ticket_number FROM weighing_tickets'
+    ).fetchone()
+    max_ticket_number = 0
+    if row and row['max_ticket_number'] is not None:
+        max_ticket_number = int(row['max_ticket_number'])
+    return max_ticket_number + 1
+
+
+def read_database(db_path: str | None = None) -> dict[str, str]:
+    if db_path is None:
+        migrate_json_database_if_needed()
     result: dict[str, str] = {}
 
-    with connect() as connection:
+    with connect(db_path=db_path) as connection:
         init_schema(connection)
 
         users = _load_users(connection)
@@ -726,10 +1550,11 @@ def read_database() -> dict[str, str]:
     return result
 
 
-def read_runtime_snapshot() -> dict[str, Any]:
+def read_runtime_snapshot(db_path: str | None = None) -> dict[str, Any]:
     """Read runtime-critical storage blobs as one SQLite snapshot."""
-    migrate_json_database_if_needed()
-    with connect() as connection:
+    if db_path is None:
+        migrate_json_database_if_needed()
+    with connect(db_path=db_path) as connection:
         init_schema(connection)
         return {
             'sites': _load_sites(connection),
@@ -789,6 +1614,8 @@ def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None
                 values.append(ticket.get(column) if ticket.get(column) is not None else 'single')
             elif column == 'version':
                 values.append(ticket.get(column) if ticket.get(column) is not None else 1)
+            elif column == 'auto_closed':
+                values.append(ticket.get(column) if ticket.get(column) is not None else 0)
             else:
                 values.append(ticket.get(column))
         connection.execute(
@@ -817,6 +1644,12 @@ def _replace_ticket_audit(connection: sqlite3.Connection, events: list[Any]) -> 
                 str(event.get('at', '')),
                 str(event.get('operator_name', '')),
                 event.get('operator_id'),
+                str(event.get('event_type', event.get('action', ''))),
+                event.get('source_year'),
+                event.get('changed_fields_json'),
+                event.get('old_values_json'),
+                event.get('new_values_json'),
+                event.get('reo_divergence_warning', 0),
             ),
         )
 
@@ -975,8 +1808,8 @@ def _replace_session(connection: sqlite3.Connection, payload: str) -> None:
     )
 
 
-def write_database(data: dict[str, Any]) -> None:
-    with connect() as connection:
+def write_database(data: dict[str, Any], db_path: str | None = None) -> None:
+    with connect(db_path=db_path) as connection:
         init_schema(connection)
 
         if STORAGE_KEYS['users'] in data:

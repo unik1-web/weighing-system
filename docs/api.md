@@ -17,18 +17,33 @@
 
 | Метод | Путь | Тело / параметры | Описание |
 |-------|------|------------------|----------|
-| `GET` | `/api/config` | — | Настройки из `config.ini` → `{ config }` |
+| `GET` | `/api/config` | — | Настройки из `config.ini` + bootstrap миграции stage 6 → `{ config, bootstrap }` |
 | `POST` | `/api/config` | `{ "config": { ... } }` | Сохранить настройки |
-| `GET` | `/api/database` | — | Данные SQLite → `{ data }` (ключи `app_*`) |
-| `POST` | `/api/database` | `{ "data": { ... } }` | Сохранить БД |
+| `GET` | `/api/database` | — | Данные SQLite активного года → `{ data }` (ключи `app_*`) |
+| `POST` | `/api/database` | `{ "data": { ... } }` | Сохранить активную БД (под write-gate ротации) |
 
 Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` \| `all` \| `free`), `scale_device_id`, `manual_weight_reason_policy` (`optional` \| `required`).
 
 В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version` и nullable поля `plate_source`, `site_id`, `scale_id`, `scale_role`, `photo_entry_path`, `photo_exit_path`; audit — `app_ticket_audit`; история водителей — `app_vehicle_drivers`; площадка — `app_sites`, `app_scales`, `app_site_runtime`, `app_scale_switch_journal` (частичный POST без соответствующего ключа таблицу не очищает). `scale_device_id` в config — зеркало device активного комплекта.
-| `GET` | `/api/storage` | — | Объединённое чтение config + database |
-| `POST` | `/api/storage` | `{ "data": { "app_...": "..." } }` | Сохранить; принимаются только строковые `app_*` |
+| `GET` | `/api/storage` | — | Объединённое чтение `config.ini` + active-year database |
+| `POST` | `/api/storage` | `{ "data": { "app_...": "..." } }` | Сохранить `app_settings` + active-year `app_*`, запись под write-gate |
 | `GET` | `/api/storage/export` | — | Резервная копия INI (`format: "ini"`, `content`, `backup`) |
 | `POST` | `/api/storage/import` | `{ "content" }` или `{ "backup" }` | Восстановление; INI или legacy JSON |
+
+`GET /api/config` и `GET /api/database` перед чтением данных запускают bootstrap первичной миграции legacy `BD/weighing.db` в `BD/weighing-YYYY.db`. При ошибке bootstrap возвращается `{ success: false, code, message, bootstrap }` c HTTP 500.
+
+## Stage 6 (yearly archive)
+
+| Метод | Путь | Тело / параметры | Описание |
+|-------|------|------------------|----------|
+| `GET` | `/api/archive/years` | — | Список архивных лет по именам `weighing-ГГГГ.db` (без active year / `.tmp`) |
+| `GET` | `/api/archive/tickets` | `year` (+ опц. фильтры) | Read-only журнал выбранного архивного года, optional mixed legacy warning |
+| `GET` | `/api/archive/tickets/:id` | `year` | Карточка архивного тикета + optional mixed legacy warning |
+| `PATCH` | `/api/archive/tickets/:id` | `{ year, patch, acknowledge_reo_sent_warning? }` | Admin-правка архивного тикета (whitelist, backend-пересчёт, `ticket_audit`) |
+| `POST` | `/api/year/rotation/preview` | `{ ... }` | Preview ротации года |
+| `POST` | `/api/year/rotation/commit` | `{ ... }` | Commit ротации года |
+
+Ошибки archive-read: `401 auth_required`, `400 invalid_archive_year`, `404 archive_year_not_found` / `archive_ticket_not_found`, `500 archive_open_failed`. Archive-операции не меняют `active_year` и не пишут в active DB.
 
 ## Runtime весов `/api/scales/*`
 

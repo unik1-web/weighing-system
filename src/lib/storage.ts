@@ -109,6 +109,7 @@ export interface WeighingTicket {
   status: TicketStatus;
   reo_status: ReoStatus;
   reo_sent_at: string | null;
+  auto_closed?: boolean;
   notes: string;
   created_at: string;
   completed_at: string | null;
@@ -120,6 +121,7 @@ export interface WeighingTicket {
   scale_role?: ScaleRole | null;
   photo_entry_path?: string | null;
   photo_exit_path?: string | null;
+  readonly year?: number;
 }
 
 export interface VehicleDriverRecord {
@@ -133,7 +135,13 @@ export interface VehicleDriverRecord {
 export interface TicketAuditEvent {
   id: string;
   ticket_id: string;
-  action: 'created' | 'completed';
+  action: 'created' | 'completed' | 'auto_close' | 'archive_edit';
+  event_type?: 'created' | 'completed' | 'auto_close' | 'archive_edit';
+  source_year?: number;
+  changed_fields?: string[];
+  old_values?: Record<string, unknown> | null;
+  new_values?: Record<string, unknown> | null;
+  reo_divergence_warning?: boolean;
   at: string;
   operator_name: string;
   operator_id: string | null;
@@ -342,10 +350,15 @@ function normalizeNullableString(raw: unknown): string | null {
 }
 
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
+  const inferredYear =
+    typeof ticket.created_at === 'string' && ticket.created_at.length >= 4
+      ? Number.parseInt(ticket.created_at.slice(0, 4), 10)
+      : NaN;
   const next: WeighingTicket = {
     ...ticket,
     reo_status: ticket.reo_status ?? 'pending',
     reo_sent_at: ticket.reo_sent_at ?? null,
+    auto_closed: ticket.auto_closed ?? false,
     gross_source: normalizeWeightSource(ticket.gross_source as string),
     tare_source: normalizeWeightSource(ticket.tare_source as string),
     plate_source: normalizePlateSource(ticket.plate_source),
@@ -361,6 +374,12 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
       ticket.photo_exit_path === undefined || ticket.photo_exit_path === null
         ? null
         : String(ticket.photo_exit_path),
+    year:
+      typeof ticket.year === 'number'
+        ? ticket.year
+        : Number.isFinite(inferredYear)
+          ? inferredYear
+          : undefined,
   };
   if (ticket.weighing_mode === undefined) {
     next.weighing_mode = normalizeWeighingMode(ticket);
@@ -369,6 +388,65 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     next.version = 1;
   }
   return next;
+}
+
+function resolveActiveYear(): number | null {
+  const { active_year } = SettingsStorage.getAppSettings();
+  return typeof active_year === 'number' ? active_year : null;
+}
+
+function ticketMatchesActiveYear(ticket: WeighingTicket, activeYear: number | null): boolean {
+  if (activeYear === null) return true;
+  if (typeof ticket.year === 'number') return ticket.year === activeYear;
+  if (typeof ticket.created_at === 'string' && ticket.created_at.length >= 4) {
+    const parsedYear = Number.parseInt(ticket.created_at.slice(0, 4), 10);
+    return Number.isFinite(parsedYear) && parsedYear === activeYear;
+  }
+  return false;
+}
+
+function normalizeAuditEvent(raw: unknown): TicketAuditEvent | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const source = raw as Record<string, unknown>;
+  const eventType = source.event_type;
+  const actionRaw = source.action;
+  const action =
+    actionRaw === 'created' || actionRaw === 'completed' || actionRaw === 'auto_close' || actionRaw === 'archive_edit'
+      ? actionRaw
+      : eventType === 'created' || eventType === 'completed' || eventType === 'auto_close' || eventType === 'archive_edit'
+        ? eventType
+        : null;
+  if (!action || typeof source.ticket_id !== 'string' || typeof source.at !== 'string') {
+    return null;
+  }
+  return {
+    id: typeof source.id === 'string' ? source.id : crypto.randomUUID(),
+    ticket_id: source.ticket_id,
+    action,
+    event_type:
+      eventType === 'created' || eventType === 'completed' || eventType === 'auto_close' || eventType === 'archive_edit'
+        ? eventType
+        : undefined,
+    source_year: typeof source.source_year === 'number' ? source.source_year : undefined,
+    changed_fields: Array.isArray(source.changed_fields)
+      ? source.changed_fields.filter((item): item is string => typeof item === 'string')
+      : undefined,
+    old_values:
+      source.old_values && typeof source.old_values === 'object'
+        ? (source.old_values as Record<string, unknown>)
+        : null,
+    new_values:
+      source.new_values && typeof source.new_values === 'object'
+        ? (source.new_values as Record<string, unknown>)
+        : null,
+    reo_divergence_warning: source.reo_divergence_warning === true,
+    at: source.at,
+    operator_name: typeof source.operator_name === 'string' ? source.operator_name : '',
+    operator_id:
+      source.operator_id === null || source.operator_id === undefined || source.operator_id === ''
+        ? null
+        : String(source.operator_id),
+  };
 }
 
 // Weighing tickets storage
@@ -388,9 +466,14 @@ export const TicketStorage = {
   ): WeighingTicket[] => {
     if (tickets.length === 0) return [];
 
-    const stored = getAllTickets();
+    const activeYear = resolveActiveYear();
+    const stored = getAllTickets().filter((ticket) => ticketMatchesActiveYear(ticket, activeYear));
     let maxNumber = Math.max(0, ...stored.map((ticket) => ticket.ticket_number || 0));
     const createdAt = new Date().toISOString();
+    const parsedCreatedYear = Number.parseInt(createdAt.slice(0, 4), 10);
+    const currentYear =
+      activeYear
+      ?? (Number.isFinite(parsedCreatedYear) ? parsedCreatedYear : new Date().getFullYear());
     const created: WeighingTicket[] = tickets.map((ticket) => {
       maxNumber += 1;
       const weighingMode =
@@ -405,6 +488,7 @@ export const TicketStorage = {
         ...ticket,
         weighing_mode: weighingMode,
         version: 1,
+        year: currentYear,
       });
     });
 
@@ -434,8 +518,10 @@ export const TicketStorage = {
   },
 
   getAll: (): WeighingTicket[] => {
+    const activeYear = resolveActiveYear();
     return getAllTickets()
       .map(normalizeTicket)
+      .filter((ticket) => ticketMatchesActiveYear(ticket, activeYear))
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   },
 
@@ -452,7 +538,10 @@ export const TicketStorage = {
   },
 
   getById: (id: string): WeighingTicket | null => {
-    const ticket = getAllTickets().find(t => t.id === id);
+    const activeYear = resolveActiveYear();
+    const ticket = getAllTickets().find(
+      (item) => item.id === id && ticketMatchesActiveYear(item, activeYear),
+    );
     return ticket ? normalizeTicket(ticket) : null;
   },
 
@@ -542,6 +631,7 @@ export const TicketAuditStorage = {
     events.push({
       id: crypto.randomUUID(),
       ...event,
+      event_type: event.event_type ?? event.action,
     });
     persist(STORAGE_KEYS.TICKET_AUDIT, JSON.stringify(events));
   },
@@ -552,7 +642,10 @@ export const TicketAuditStorage = {
     if (!stored) return [];
     try {
       const parsed = JSON.parse(stored);
-      return Array.isArray(parsed) ? parsed : [];
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map(normalizeAuditEvent)
+        .filter((event): event is TicketAuditEvent => event !== null);
     } catch {
       return [];
     }
@@ -736,6 +829,7 @@ export interface AppSettings {
   driver_input_mode: DriverInputMode;
   scale_device_id: ScaleDeviceId;
   manual_weight_reason_policy: 'optional' | 'required';
+  active_year?: number | null;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -771,6 +865,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   driver_input_mode: 'vehicle',
   scale_device_id: 'microsim-m0601',
   manual_weight_reason_policy: 'optional',
+  active_year: null,
 };
 
 export const DRIVER_INPUT_MODE_LABELS: Record<DriverInputMode, string> = {
@@ -846,6 +941,12 @@ export const SettingsStorage = {
       scale_device_id: normalizeScaleDeviceId(stored.scale_device_id),
       manual_weight_reason_policy:
         stored.manual_weight_reason_policy === 'required' ? 'required' : 'optional',
+      active_year:
+        stored.active_year === undefined || stored.active_year === ''
+          ? null
+          : Number.isFinite(Number(stored.active_year))
+            ? Number(stored.active_year)
+            : null,
     };
   },
 

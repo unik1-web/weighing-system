@@ -24,6 +24,8 @@ interface AuthContextValue {
   username: string;
   role: UserRole;
   isAdmin: boolean;
+  activeYear: number | null;
+  rotationCheckRequested: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -32,12 +34,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<LocalSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [activeYear, setActiveYear] = useState<number | null>(null);
+  const [rotationCheckRequested, setRotationCheckRequested] = useState(false);
 
   useEffect(() => {
     let active = true;
 
     void (async () => {
-      await loadStorageFromServer();
+      const loadedFromServer = await loadStorageFromServer();
       if (!active) return;
 
       if (normalizeVehicleDictionaryPlates()) {
@@ -47,7 +51,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       initializeStorage();
 
       try {
-        ensureDefaultSiteAndScales(SettingsStorage.getAppSettings());
+        const settings = SettingsStorage.getAppSettings();
+        ensureDefaultSiteAndScales(settings);
+        setActiveYear(settings.active_year ?? null);
+        // Stage-6 stub: prepare a trigger point for useYearRotation bootstrap.
+        setRotationCheckRequested(loadedFromServer || settings.active_year !== null);
       } catch (err) {
         logger.error('site', 'Не удалось инициализировать площадку при старте', err);
       }
@@ -143,6 +151,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         username,
         role,
         isAdmin,
+        activeYear,
+        rotationCheckRequested,
       }}
     >
       {children}

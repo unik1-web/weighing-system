@@ -8,8 +8,9 @@
 Браузер (localStorage, ключи app_*)
         │  load / debounce-save
         ▼
-Flask API  ──►  config.ini          (настройки)
-           ──►  BD/weighing.db      (журнал, справочники, пользователи)
+Flask API  ──►  config.ini              (настройки + active_year)
+           ──►  BD/weighing-YYYY.db     (активный год: журнал, справочники, пользователи)
+           ──►  backup/                 (миграции и ротации)
            ──►  logs/app.log        (ротация 2 МБ × 5)
 ```
 
@@ -24,8 +25,14 @@ Flask API  ──►  config.ini          (настройки)
 |------|------------|
 | `app.py` | HTTP API, раздача `dist/`, логирование |
 | `launcher.py` | Точка входа PyInstaller-сборки |
-| `persistence.py` | Пути, backup INI, миграция legacy |
-| `sqlite_store.py` | Схема и CRUD SQLite |
+| `persistence.py` | Пути, backup INI, миграция legacy, stage-6 path helpers |
+| `sqlite_store.py` | Схема и CRUD SQLite, add-only migration stage 6, `next_ticket_number` |
+| `active_year_service.py` | Active-year read/write слой с selector + write-gate |
+| `year_context.py` | Selector active/archive year DB context, `validate_archive_year` |
+| `year_rotation.py` | Первичная миграция и preview/commit ротации года |
+| `archive_service.py` | Каталог архивных лет, read-only журнал/карточка, mixed legacy warning |
+| `archive_edit_service.py` | Admin-правка архивного тикета: whitelist, пересчёт, diff-аудит |
+| `ticket_audit_stage6.py` | Формирование stage-6 audit (`archive_edit` / `auto_close`) |
 | `config_ini.py` | Чтение/запись секций INI |
 | `vescom.py` | Firebird: взвешивания и справочники |
 | `metra.py` | Paradox `TWeights.db` и словари |
@@ -50,7 +57,9 @@ Flask API  ──►  config.ini          (настройки)
 | `lib/vehicle-plate.ts` | Нормализация госномеров |
 | `lib/import-keys.ts` | Ключ дедупликации импорта |
 | `components/*ImportView.tsx` | Импорт Vescom / Metra / WA |
-| `components/PrintAct.tsx` | Макеты «акт» и «талон» |
+| `components/PrintAct.tsx` | Макеты «акт» и «талон»; archive reprint без записи в active storage |
+| `components/ArchiveView.tsx` | Каталог архивных лет и журнал выбранного года |
+| `components/ArchiveTicketCard.tsx` | Readonly-карточка архивного тикета и печать |
 | `components/SettingsView.tsx` | Организация, РЭО, импорт, UI, режимы, площадка/комплекты (wizard переключения) |
 | `components/SiteScalesSettingsSection.tsx` | Секция площадки, journal, вход в переключение |
 | `components/ScaleSetSwitchWizard.tsx` | Wizard spare / диалог primary |
@@ -89,6 +98,7 @@ Flask API  ──►  config.ini          (настройки)
 - Audit: ключ sync `app_ticket_audit` / таблица SQLite `ticket_audit` (`created` / `completed`).
 - Настройки (`config.ini` / `AppSettings`): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`.
 - Миграция и деплой: `docs/weighing-modes-deploy.md`.
+- Stage 6 (годовые БД / архив) runbook: `docs/yearly-db-archive-deploy.md`.
 
 ## Автоподстановка по номеру и водители (этап 3)
 
@@ -110,6 +120,12 @@ Flask API  ──►  config.ini          (настройки)
 ## Весы (Web Serial)
 
 Клиентский код, без backend. Браузер: Chrome / Edge. Модели: Микросим М0601, Ньютон, CAS, Мидл Ми ВДА (`src/lib/scales.ts`).
+
+## Smoke stage 6 (yearly archive)
+
+`scripts/smoke_yearly_archive.py` — production-like HTTP smoke против `npm start`:
+- `--scenario active|archive|fail-retry|parallel-lock`
+- evidence: `docs/reports/yearly-db-archive/`
 
 ## Переменные окружения
 

@@ -9,7 +9,7 @@ import {
   type VescomWeighingItem,
 } from '@/lib/api';
 import { ticketImportKey } from '@/lib/import-keys';
-import { pauseDatabaseSync, resumeDatabaseSync } from '@/lib/storage-sync';
+import { ACTIVE_WRITE_BLOCKED_EVENT, pauseDatabaseSync, resumeDatabaseSync } from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 import {
   AlertCircle,
@@ -184,6 +184,22 @@ export function VescomImportView({ onImported }: Props) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleWriteBlocked = (event: Event) => {
+      const detail = (event as CustomEvent<{ code?: string; message?: string }>).detail;
+      dispatch({
+        type: 'import_error',
+        error:
+          detail?.message
+          || 'Смена года не завершена: импорт данных недоступен до завершения ротации.',
+      });
+    };
+    window.addEventListener(ACTIVE_WRITE_BLOCKED_EVENT, handleWriteBlocked as EventListener);
+    return () => {
+      window.removeEventListener(ACTIVE_WRITE_BLOCKED_EVENT, handleWriteBlocked as EventListener);
     };
   }, []);
 

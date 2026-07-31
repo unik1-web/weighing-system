@@ -10,7 +10,12 @@ import {
   ticketImportKey,
   type MetraWeighingItem,
 } from '@/lib/api';
-import { flushDatabaseSync, pauseDatabaseSync, resumeDatabaseSync } from '@/lib/storage-sync';
+import {
+  ACTIVE_WRITE_BLOCKED_EVENT,
+  flushDatabaseSync,
+  pauseDatabaseSync,
+  resumeDatabaseSync,
+} from '@/lib/storage-sync';
 import { logger } from '@/lib/logger';
 import {
   AlertCircle,
@@ -188,6 +193,22 @@ export function MetraImportView({ onImported }: Props) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleWriteBlocked = (event: Event) => {
+      const detail = (event as CustomEvent<{ code?: string; message?: string }>).detail;
+      dispatch({
+        type: 'import_error',
+        error:
+          detail?.message
+          || 'Смена года не завершена: импорт данных недоступен до завершения ротации.',
+      });
+    };
+    window.addEventListener(ACTIVE_WRITE_BLOCKED_EVENT, handleWriteBlocked as EventListener);
+    return () => {
+      window.removeEventListener(ACTIVE_WRITE_BLOCKED_EVENT, handleWriteBlocked as EventListener);
     };
   }, []);
 

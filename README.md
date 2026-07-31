@@ -22,10 +22,18 @@
 
 | Что | Где |
 |-----|-----|
-| Настройки | `config.ini` в каталоге приложения |
-| Журнал, справочники, пользователи | `BD/weighing.db` (SQLite) |
+| Настройки | `config.ini` в каталоге приложения (`[settings].active_year`) |
+| Журнал, справочники, пользователи | `BD/weighing-ГГГГ.db` (SQLite активного года) |
+| Архивные годы | `BD/weighing-ГГГГ.db` предыдущих лет (read-only журнал / печать) |
+| Lock ротации года | `BD/.year_rotation.lock` |
+| Backup миграции и ротации | `backup/` (рядом с приложением; retention — внеоперационная процедура) |
+| Legacy (до миграции stage 6) | `BD/weighing.db` — только источник copy-on-write |
 | Кэш браузера | `localStorage` (синхронизируется с сервером) |
-| Логи backend | `server/logs/app.log` |
+| Логи backend | `logs/app.log` (рядом с приложением; в dev также возможен `server/logs/`) |
+
+Постоянные данные **не** хранятся в PyInstaller `_MEIPASS`. Операционный runbook: [docs/yearly-db-archive-deploy.md](docs/yearly-db-archive-deploy.md).
+
+Stage-6 операционные события (миграция, ротация года, архив, archive-edit) пишутся в `logs/app.log` строками вида `stage6 {...}` через `server/stage6_logging.py`. Полный diff правки тикета остаётся в `ticket_audit` годовой БД, а не в operational log.
 
 > Для постоянной работы используйте **`npm start`** после **`npm run build`** — открывайте **`http://127.0.0.1:5001`**. Адреса `localhost:5173` и `127.0.0.1:5001` имеют разный `localStorage`.
 
@@ -61,11 +69,15 @@ npm start
 Откроется `http://127.0.0.1:5001` — один процесс Flask раздаёт интерфейс и API.  
 Отключить автозапуск браузера: `OPEN_BROWSER=0`.
 
-Краткий порядок проверки после обновления:
-1. Сделать резервную копию пары `config.ini` + `BD/weighing.db`
-2. Запустить приложение (`npm start`) и дождаться автоматической миграции stage 5
-3. Проверить, что `primary/spare` читаются из настроек площадки
-4. Проверить ручной ввод и сохранение причины (`manual_weight_reason`) в сценариях fallback
+Краткий порядок проверки после обновления (stage 6):
+1. **Backup legacy / активного года** — согласованная пара `config.ini` + `BD/weighing.db` (если ещё legacy) или `BD/weighing-ГГГГ.db` активного года; копии хранить вне каталога приложения
+2. **Первый запуск после релиза** — `npm run build && npm start` (или `WeighingSystem.exe`); дождаться bootstrap миграции legacy → `BD/weighing-ГГГГ.db` и записи `active_year`
+3. **Проверка результата миграции** — в `config.ini` есть `active_year`; в `BD/` есть `weighing-ГГГГ.db`; в `backup/` есть `*.legacy-before-stage6*.bak` (для первичной миграции); при mixed legacy — warning `mixed_legacy_year_mismatch`
+4. **Smoke активного года** — `python scripts/smoke_yearly_archive.py --scenario active --base-url http://127.0.0.1:5001 --origin http://127.0.0.1:5001`
+5. **Smoke архива** — `python scripts/smoke_yearly_archive.py --scenario archive --base-url http://127.0.0.1:5001 --origin http://127.0.0.1:5001`
+6. Дополнительно: проверить `primary/spare` и ручной ввод (`manual_weight_reason`) — регрессия stage 5
+
+Полный операционный runbook: [docs/yearly-db-archive-deploy.md](docs/yearly-db-archive-deploy.md).
 
 Порядок smoke-проверки runtime API (`serial_backend`):
 
@@ -80,6 +92,71 @@ python scripts/smoke_scale_api.py \
 ```
 
 Проверка `serial_backend` обязательна отдельно от Chromium Web Serial browser-пути.
+
+### Smoke / acceptance stage 6 (yearly archive)
+
+Production-like проверка выполняется против реального entrypoint (`npm run build && npm start`), не против Vite dev server.
+
+```bash
+# терминал 1 — production-like entrypoint
+npm run build && npm start
+
+# терминал 2 — сценарии stage 6
+python scripts/smoke_yearly_archive.py --scenario active \
+  --base-url http://127.0.0.1:5001 \
+  --origin http://127.0.0.1:5001 \
+  --write-markdown docs/reports/yearly-db-archive/yearly-archive-smoke.md \
+  --write-json docs/reports/yearly-db-archive/yearly-archive-smoke.json
+
+python scripts/smoke_yearly_archive.py --scenario archive \
+  --base-url http://127.0.0.1:5001 \
+  --origin http://127.0.0.1:5001
+
+python scripts/smoke_yearly_archive.py --scenario fail-retry \
+  --write-markdown docs/reports/yearly-db-archive/yearly-archive-fail-retry.md \
+  --write-json docs/reports/yearly-db-archive/yearly-archive-fail-retry.json
+
+python scripts/smoke_yearly_archive.py --scenario parallel-lock
+```
+
+Сценарии:
+- `active` — `active_year` из `/api/config`, session seed, rotation preview;
+- `archive` — список лет, журнал, карточка, forbidden-field PATCH, sent-REO ветка;
+- `fail-retry` — inject failure after backup + безопасный retry (изолированный HTTP server);
+- `parallel-lock` — вторая сессия получает `409 rotation_in_progress`.
+
+Обязательные ручные проверки UI (после `npm start`):
+- вход оператора, вкладки `single` / `dual`, журнал, печать, РЭО, импорты Vescom/Metra/WA;
+- авто-диалог ротации при `active_year <` календарного года: blocking tickets, ack pending REO, logout после commit;
+- Архив: список лет → журнал → карточка → печать без записи в active year;
+- admin: правка архива; user: control «Редактировать» скрыт;
+- sent-REO: warning + подтверждение; forbidden field отклоняется.
+
+Acceptance report: `docs/reports/yearly-db-archive/yearly-archive-acceptance.md`.  
+Release checklist: `docs/reports/yearly-db-archive/release-checklist.md`.
+
+### CI/CD и release gate (stage 6)
+
+Отдельный GitHub Actions workflow [`.github/workflows/yearly-db-archive.yml`](.github/workflows/yearly-db-archive.yml) (не зависит от stage-5 `scale-adapters.yml`) обязателен перед merge изменений годового архива.
+
+| Job | Что проверяет |
+|-----|----------------|
+| `frontend-tests` | `npm test` + `npm run test:stage6-frontend` |
+| `backend-tests` | `pytest server/tests` + `npm run test:stage6-backend` |
+| `build` | `npm run build` |
+| `production-smoke` | `npm start` + smoke `active` / `archive` / `fail-retry` / `parallel-lock` |
+| `windows-package` | `npm run build:win:exe` + layout `BD/` / `backup/` / `logs/` вне `_MEIPASS` |
+| `evidence-gate` | наличие reports + acceptance без `FAIL` + `release-checklist.md` |
+
+Локальные команды (списки файлов не дублировать в workflow — только через `package.json`):
+
+```bash
+npm run test:stage6
+npm run smoke:stage6
+npm run smoke:stage6-archive
+```
+
+Перед релизом: runbook [docs/yearly-db-archive-deploy.md](docs/yearly-db-archive-deploy.md), checklist и evidence в `docs/reports/yearly-db-archive/`.
 
 ### Разработка
 
@@ -137,14 +214,15 @@ npm run build:win:exe
 2. Выбрать каталог (по умолчанию `C:\Program Files\Система учёта взвешиваний`)
 3. Запустить **WeighingSystem.exe** — откроется браузер на `http://127.0.0.1:5001`
 
-Данные хранятся рядом с программой: `config.ini`, каталог `BD/`, логи `logs/`.
+Данные хранятся рядом с программой (не в `_MEIPASS`): `config.ini`, `BD/weighing-ГГГГ.db`, `backup/`, `BD/.year_rotation.lock`, `logs/`.
 
 Smoke-порядок для упакованной версии:
 
 1. Запустить `dist/WeighingSystem/WeighingSystem.exe`
 2. Открыть `http://127.0.0.1:5001`
-3. Проверить сценарий `serial_backend` (`connect -> status -> read -> disconnect`) через `scripts/smoke_scale_api.py` или checklist из `docs/implementation/reports/scale-adapters-exe-checklist.md`
-4. Отдельно зафиксировать, что это backend-path (не Web Serial)
+3. Проверить stage 6: `active_year`, наличие DB, smoke `active` / `archive` (`scripts/smoke_yearly_archive.py`)
+4. Проверить сценарий `serial_backend` (`connect -> status -> read -> disconnect`) через `scripts/smoke_scale_api.py` или checklist из `docs/implementation/reports/scale-adapters-exe-checklist.md`
+5. Отдельно зафиксировать, что это backend-path (не Web Serial)
 
 > Для Vescom нужен Firebird client на компьютере (как и при обычном запуске).  
 > Сборка exe выполняется через **Python 3.11**: `py -3.11 -m pip install pypxlib` (нужен для Metra).
@@ -228,6 +306,9 @@ JSON-файл для ручной отправки содержит пустые
 |----------|------------|
 | [docs/architecture.md](docs/architecture.md) | Потоки данных, модули, нормализация, печать, env |
 | [docs/api.md](docs/api.md) | Справочник HTTP API Flask |
+| [docs/yearly-db-archive-deploy.md](docs/yearly-db-archive-deploy.md) | Runbook выката stage 6: миграция, ротация, rollback, smoke |
+| [docs/reports/yearly-db-archive/release-checklist.md](docs/reports/yearly-db-archive/release-checklist.md) | Release checklist / gate stage 6 |
+| [docs/scale-adapters-deploy.md](docs/scale-adapters-deploy.md) | Runbook stage 5 (scale-adapters) |
 | [docs/project-for-agents.md](docs/project-for-agents.md) | Контекст проекта для мультиагентного пайплайна |
 | [docs/roadmap.md](docs/roadmap.md) | Roadmap развития |
 
@@ -303,9 +384,12 @@ weighing-system/
 ├── agents/                 # промпты мультиагентного пайплайна (submodule)
 ├── config.ini              # настройки (создаётся при работе)
 ├── BD/
-│   └── weighing.db         # SQLite
+│   ├── weighing-YYYY.db    # SQLite активного / архивных лет
+│   └── .year_rotation.lock # single-flight lock ротации (runtime)
+├── backup/                 # backup миграции и ротации
 ├── docs/                   # архитектура, API, задачи и артефакты пайплайна
 │   ├── tasks/              # постановки задач для оркестратора
+│   ├── yearly-db-archive-deploy.md
 │   └── implementation/     # черновики пайплайна (в .gitignore)
 ├── installer/
 │   ├── build.ps1           # сборка exe + setup

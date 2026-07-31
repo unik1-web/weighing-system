@@ -12,7 +12,7 @@
 |------|------------|
 | Frontend | React 18, TypeScript, Vite, Tailwind CSS |
 | Backend | Python 3.11/3.12, Flask на `127.0.0.1:5001` |
-| Данные | SQLite (`BD/weighing.db`), `config.ini` |
+| Данные | SQLite (`BD/weighing-ГГГГ.db`), `config.ini` (`active_year`), `backup/`, `BD/.year_rotation.lock` |
 | UI-кэш | `localStorage` (ключи `app_*`), синхронизация с API |
 | Сборка Windows | PyInstaller + Inno Setup (`installer/`) |
 
@@ -22,8 +22,9 @@
 Браузер (React + localStorage)
         │  /api/*
         ▼
-Flask (server/app.py)  ──►  config.ini
-                       ──►  BD/weighing.db
+Flask (server/app.py)  ──►  config.ini (+ active_year)
+                       ──►  BD/weighing-ГГГГ.db
+                       ──►  backup/
                        ──►  logs/app.log
 ```
 
@@ -32,11 +33,17 @@ Flask (server/app.py)  ──►  config.ini
 
 ## Ключевые модули
 
-**Backend (`server/`):** `app.py`, `scale_api.py`, `scale_api_guard.py`, `scale_runtime.py`, `scale_transports/serial_backend.py`, `persistence.py`, `sqlite_store.py`, `config_ini.py`, `vescom.py`, `metra.py`, `wa.py`, `dictionary_import.py`, `reo_client.py`, `browse.py`, `scale_registry.py`, `scale_registry_contract.py`.
+**Backend (`server/`):** `app.py`, `scale_api.py`, `scale_api_guard.py`, `scale_runtime.py`, `scale_transports/serial_backend.py`, `persistence.py`, `sqlite_store.py`, `config_ini.py`, `year_context.py`, `year_rotation.py`, `archive_service.py`, `archive_edit_service.py`, `ticket_audit_stage6.py`, `stage6_logging.py`, `vescom.py`, `metra.py`, `wa.py`, `dictionary_import.py`, `reo_client.py`, `browse.py`, `scale_registry.py`, `scale_registry_contract.py`.
 
-**Frontend (`src/`):** `lib/storage.ts`, `lib/storage-sync.ts`, `lib/api.ts`, `lib/reo.ts`, `lib/scales.ts`, `lib/scale-runtime-client.ts`, `lib/scale-adapters/*`, `hooks/useScale.ts`, `components/ScalePanel.tsx`, `components/WeighingForm.tsx`, `components/SiteScalesSettingsSection.tsx`, `components/ScaleConnectionFields.tsx`, `components/SettingsView.tsx`, `components/*ImportView.tsx`, `components/PrintAct.tsx`.
+**Frontend (`src/`):** `lib/storage.ts`, `lib/storage-sync.ts`, `lib/api.ts`, `lib/reo.ts`, `lib/scales.ts`, `lib/scale-runtime-client.ts`, `lib/scale-adapters/*`, `hooks/useScale.ts`, `components/ScalePanel.tsx`, `components/WeighingForm.tsx`, `components/SiteScalesSettingsSection.tsx`, `components/ScaleConnectionFields.tsx`, `components/SettingsView.tsx`, `components/ArchiveView.tsx`, `components/ArchiveTicketCard.tsx`, `components/*ImportView.tsx`, `components/PrintAct.tsx`.
 
-**Runtime smoke (`scripts/`):** `smoke_scale_api.py` (production-like smoke `/api/scales/*`), `run_05_resume.sh` (служебный скрипт пайплайна).
+**Runtime smoke (`scripts/`):** `smoke_scale_api.py` (production-like smoke `/api/scales/*`), `smoke_yearly_archive.py` (сценарии `active` / `archive` / `fail-retry` / `parallel-lock` для stage-6 yearly archive; wrapper-команды `npm run smoke:stage6*`), `run_05_resume.sh` (служебный скрипт пайплайна).
+
+**Stage-6 test scripts (`package.json`):** `test:stage6-backend` (pytest suite миграции/ротации/архива + release-gate), `test:stage6-frontend` (vitest stage-6 включая `year-rotation-flow` / `archive-flow`), `test:stage6` (оба агрегата), `smoke:stage6` / `smoke:stage6-archive` / `smoke:stage6-fail-retry` / `smoke:stage6-parallel-lock`.
+
+**Stage-6 CI:** `.github/workflows/yearly-db-archive.yml` — jobs `frontend-tests`, `backend-tests`, `build`, `production-smoke`, `windows-package`, `evidence-gate` (отдельно от stage-5 `scale-adapters.yml`).
+
+**Stage-6 evidence (`docs/reports/yearly-db-archive/`):** `yearly-archive-smoke.md`, `yearly-archive-archive.md`, `yearly-archive-fail-retry.md`, `yearly-archive-parallel-lock.md`, `yearly-archive-acceptance.md`, `release-checklist.md`.
 
 ## Ограничения и правила
 
@@ -54,6 +61,7 @@ Flask (server/app.py)  ──►  config.ini
 | `agents/` | Промпты ролей (submodule [rdudov/agents](https://github.com/rdudov/agents)) |
 | `docs/project-for-agents.md` | Этот файл — описание проекта |
 | `docs/scale-adapters-deploy.md` | Runbook обновления/rollback stage 5 для scale-adapters |
+| `docs/yearly-db-archive-deploy.md` | Runbook выката stage 6: миграция, ротация, rollback, smoke |
 | `docs/tasks/` | Постановки задач (вход оркестратора) |
 | `docs/implementation/` | ТЗ, архитектура, план, статус пайплайна (не коммитить) |
 

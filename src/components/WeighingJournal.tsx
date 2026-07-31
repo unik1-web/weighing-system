@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { type WeighingTicket, type WeightSource, TicketStorage, REO_STATUS_LABELS, SettingsStorage } from '@/lib/storage';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import { logger } from '@/lib/logger';
+import { ACTIVE_WRITE_BLOCKED_EVENT } from '@/lib/storage-sync';
 import {
   ticketMatchesWeightSource,
   WEIGHT_SOURCE_LABELS,
@@ -26,6 +27,10 @@ interface Props {
   onCompleteOpen?: (ticketId: string) => void;
 }
 
+/**
+ * Журнал активного года.
+ * Архивный просмотр реализован отдельным компонентом ArchiveView.
+ */
 export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const reoEnabled = SettingsStorage.getAppSettings().reo_enabled;
   const [tickets, setTickets] = useState<WeighingTicket[]>([]);
@@ -57,6 +62,20 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   }, [statusFilter, reoFilter, reoEnabled]);
 
   useEffect(() => { load(); }, [load, refreshKey]);
+
+  useEffect(() => {
+    const handleWriteBlocked = (event: Event) => {
+      const detail = (event as CustomEvent<{ code?: string; message?: string }>).detail;
+      const message =
+        detail?.message
+        || 'Смена года не завершена: операции записи временно недоступны.';
+      setError(message);
+    };
+    window.addEventListener(ACTIVE_WRITE_BLOCKED_EVENT, handleWriteBlocked as EventListener);
+    return () => {
+      window.removeEventListener(ACTIVE_WRITE_BLOCKED_EVENT, handleWriteBlocked as EventListener);
+    };
+  }, []);
 
   const reoSendState = reoEnabled ? getReoSendState(TicketStorage.getAll()) : { eligibleTickets: [], disabledReason: null };
   const { eligibleTickets, disabledReason } = reoSendState;

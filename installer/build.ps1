@@ -29,6 +29,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 $SmokeDir = Join-Path $Root 'dist\WeighingSystem\smoke'
 $SpecPath = Join-Path $Root 'installer\weighing-system.spec'
 $RequirementsPath = Join-Path $Root 'server\requirements.txt'
+$IssPath = Join-Path $Root 'installer\weighing-system.iss'
 
 function Assert-RequiredPackagingTokens {
     param(
@@ -66,6 +67,33 @@ function Assert-RequiredPackagingTokens {
     }
 }
 
+function Assert-StorageLayoutDirectories {
+    param(
+        [string]$IssPath
+    )
+
+    if (-not (Test-Path $IssPath)) {
+        throw "Inno Setup script not found: $IssPath"
+    }
+
+    $issText = Get-Content -Path $IssPath -Raw
+    $requiredDirs = @(
+        '{app}\BD',
+        '{app}\backup',
+        '{app}\logs'
+    )
+    foreach ($dirToken in $requiredDirs) {
+        if ($issText -notmatch [regex]::Escape($dirToken)) {
+            throw "Inno Setup [Dirs] missing storage layout directory: $dirToken"
+        }
+    }
+
+    # Storage must stay next to the executable, never inside PyInstaller _MEIPASS.
+    if ($issText -match '_MEIPASS') {
+        throw 'Inno Setup must not place persistent storage under _MEIPASS'
+    }
+}
+
 function Find-InnoSetup {
     $candidates = @(
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -80,6 +108,8 @@ function Find-InnoSetup {
 Write-Host "==> Project root: $Root"
 Write-Host "==> Validating runtime dependencies for packaging..."
 Assert-RequiredPackagingTokens -SpecPath $SpecPath -RequirementsPath $RequirementsPath
+Write-Host "==> Validating storage layout directories (BD/, backup/, logs/)..."
+Assert-StorageLayoutDirectories -IssPath $IssPath
 
 $pythonVersion = (py -3.11 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null)
 if (-not $pythonVersion) {
@@ -124,14 +154,24 @@ Write-Host "==> Preparing smoke instructions..."
 New-Item -ItemType Directory -Path $SmokeDir -Force | Out-Null
 $smokeGuidePath = Join-Path $SmokeDir 'README-smoke.txt'
 $smokeGuide = @"
-Scale adapters smoke (non-interactive checklist)
+WeighingSystem packaged smoke (non-interactive checklist)
+
+Storage next to WeighingSystem.exe (not _MEIPASS):
+- config.ini with [settings].active_year
+- BD\weighing-YYYY.db
+- BD\.year_rotation.lock (created at runtime during year rotation)
+- backup\
+- logs\
 
 1) Start dist\WeighingSystem\WeighingSystem.exe
 2) Open http://127.0.0.1:5001 in browser
-3) Run runtime smoke:
+3) Stage 6 yearly archive smoke:
+   py -3.11 scripts\smoke_yearly_archive.py --scenario active --base-url http://127.0.0.1:5001 --origin http://127.0.0.1:5001
+   py -3.11 scripts\smoke_yearly_archive.py --scenario archive --base-url http://127.0.0.1:5001 --origin http://127.0.0.1:5001
+4) Scale adapters runtime smoke:
    py -3.11 scripts\smoke_scale_api.py --base-url http://127.0.0.1:5001 --origin http://127.0.0.1:5001 --expected-site-id default-site --expected-scale-id scale-primary --expected-scale-role primary
-4) Validate connect -> status -> read -> disconnect for serial_backend path
-5) Save evidence in docs\implementation\reports\scale-adapters-smoke.md and scale-adapters-exe-checklist.md
+5) Validate connect -> status -> read -> disconnect for serial_backend path
+6) Save evidence in docs\reports\yearly-db-archive\ and docs\implementation\reports\
 "@
 $smokeGuide | Set-Content -Path $smokeGuidePath -Encoding UTF8
 Write-Host "==> Smoke guide ready: $smokeGuidePath"

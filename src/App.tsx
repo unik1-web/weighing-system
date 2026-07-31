@@ -1,8 +1,9 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AuthProvider, useAuth } from '@/hooks/useAuth';
 import { LoginPage } from '@/components/LoginPage';
 import { WeighingForm } from '@/components/WeighingForm';
 import { WeighingJournal } from '@/components/WeighingJournal';
+import { ArchiveView } from '@/components/ArchiveView';
 import { DictionariesView } from '@/components/DictionariesView';
 import { ReportsView } from '@/components/ReportsView';
 import { SettingsView } from '@/components/SettingsView';
@@ -10,22 +11,28 @@ import { VescomImportView } from '@/components/VescomImportView';
 import { MetraImportView } from '@/components/MetraImportView';
 import { WaImportView } from '@/components/WaImportView';
 import { printTicket } from '@/components/PrintAct';
+import { YearRotationDialog } from '@/components/YearRotationDialog';
 import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
+import { useYearRotation } from '@/hooks/useYearRotation';
 import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive, Server } from 'lucide-react';
 import { exitApplication } from '@/lib/api';
 import { logger } from '@/lib/logger';
 
-type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
+type Tab = 'weighing' | 'journal' | 'archive' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
 
 function MainApp() {
-  const { displayName, signOut, isAdmin } = useAuth();
+  const { displayName, signOut, isAdmin, activeYear, rotationCheckRequested } = useAuth();
   const [tab, setTab] = useState<Tab>('weighing');
   const [journalKey, setJournalKey] = useState(0);
   const [settingsKey, setSettingsKey] = useState(0);
   const [completionTicketId, setCompletionTicketId] = useState<string | null>(null);
 
   const [exiting, setExiting] = useState(false);
+  const yearRotation = useYearRotation(async () => {
+    await signOut();
+  });
+  const rotationPreviewRequestedRef = useRef(false);
 
   const handleExitApplication = useCallback(async () => {
     if (exiting) return;
@@ -85,9 +92,22 @@ function MainApp() {
     }
   }, [tab, appSettings.vescom_enabled, appSettings.metra_enabled, appSettings.wa_enabled]);
 
+  useEffect(() => {
+    if (!rotationCheckRequested || rotationPreviewRequestedRef.current) return;
+    rotationPreviewRequestedRef.current = true;
+    void yearRotation.requestPreview(
+      activeYear !== null
+        ? {
+          source_year: activeYear,
+        }
+        : undefined,
+    );
+  }, [activeYear, rotationCheckRequested, yearRotation.requestPreview]);
+
   const tabs: { id: Tab; label: string; icon: typeof Scale }[] = [
     { id: 'weighing', label: 'Взвешивание', icon: Scale },
     { id: 'journal', label: 'Журнал', icon: BookOpen },
+    { id: 'archive', label: 'Архив', icon: BookOpen },
     { id: 'reports', label: 'Отчёты', icon: BarChart3 },
     { id: 'dictionaries', label: 'Справочники', icon: Library },
     ...(appSettings.vescom_enabled
@@ -181,6 +201,7 @@ function MainApp() {
         {tab === 'journal' && (
           <WeighingJournal refreshKey={journalKey} onCompleteOpen={handleCompleteOpen} />
         )}
+        {tab === 'archive' && <ArchiveView />}
         {tab === 'reports' && <ReportsView />}
         {tab === 'dictionaries' && <DictionariesView />}
         {tab === 'vescom' && appSettings.vescom_enabled && (
@@ -201,6 +222,24 @@ function MainApp() {
           <span className="ml-2 text-slate-300">· сборка {__APP_BUILD_ID__}</span>
         </div>
       </footer>
+
+      <YearRotationDialog
+        open={yearRotation.rotationRequired}
+        preview={yearRotation.preview}
+        committing={yearRotation.submitting}
+        error={yearRotation.error}
+        blockingTickets={yearRotation.blockingTickets}
+        pendingReoCount={yearRotation.pendingReoCount}
+        onClose={yearRotation.submitting ? undefined : yearRotation.reset}
+        onConfirm={async () => {
+          try {
+            const result = await yearRotation.commit(true);
+            window.alert(`Ротация завершена. Новый активный год: ${result.target_year ?? '—'}. Выполните повторный вход.`);
+          } catch (error) {
+            window.alert(error instanceof Error ? error.message : 'Не удалось выполнить ротацию');
+          }
+        }}
+      />
     </div>
   );
 }

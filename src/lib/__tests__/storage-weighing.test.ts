@@ -198,3 +198,59 @@ describe('TicketStorage normalize / create / CAS', () => {
     warn.mockRestore();
   });
 });
+
+describe('TC-UNIT-03: stage-6 model extensions', () => {
+  it('keeps backward compatibility for ticket without auto_closed', () => {
+    localStorage.setItem(
+      'app_weighing_tickets',
+      JSON.stringify([
+        {
+          ...baseTicket(),
+          id: 'legacy-ticket',
+          ticket_number: 10,
+          created_at: '2026-01-01T00:00:00',
+          reo_status: 'pending',
+          reo_sent_at: null,
+        },
+      ]),
+    );
+    const ticket = TicketStorage.getById('legacy-ticket');
+    expect(ticket?.auto_closed).toBe(false);
+  });
+
+  it('preserves stage-6 audit fields and normalizes legacy shape', () => {
+    localStorage.setItem(
+      'app_ticket_audit',
+      JSON.stringify([
+        {
+          id: 'event-legacy',
+          ticket_id: 'legacy-ticket',
+          action: 'created',
+          at: '2026-01-01T00:00:00Z',
+          operator_name: 'Оператор',
+          operator_id: null,
+        },
+        {
+          id: 'event-stage6',
+          ticket_id: 'legacy-ticket',
+          event_type: 'archive_edit',
+          source_year: 2025,
+          changed_fields: ['driver_name'],
+          old_values: { driver_name: 'Иванов' },
+          new_values: { driver_name: 'Петров' },
+          reo_divergence_warning: true,
+          at: '2026-01-01T01:00:00Z',
+          operator_name: 'Админ',
+          operator_id: 'u-1',
+        },
+      ]),
+    );
+    const events = TicketAuditStorage.getByTicketId('legacy-ticket');
+    expect(events).toHaveLength(2);
+    expect(events[0].action).toBe('created');
+    expect(events[1].action).toBe('archive_edit');
+    expect(events[1].event_type).toBe('archive_edit');
+    expect(events[1].source_year).toBe(2025);
+    expect(events[1].reo_divergence_warning).toBe(true);
+  });
+});
