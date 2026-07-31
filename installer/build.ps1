@@ -179,7 +179,8 @@ function Assert-FullOpenCvAvailable {
       Fail the full build when OpenCV is not importable (no silent basic).
     #>
     Write-Host "==> Asserting OpenCV (cv2) is available for full packaging..."
-    $probe = @'
+    $probeFile = Join-Path ([System.IO.Path]::GetTempPath()) ("opencv_probe_{0}.py" -f [guid]::NewGuid().ToString('N'))
+    @'
 import sys
 try:
     import cv2
@@ -187,16 +188,20 @@ except ImportError as exc:
     print(f"FULL_BUILD_FAIL: opencv missing: {exc}", file=sys.stderr)
     raise SystemExit(2)
 print(getattr(cv2, "__version__", "unknown"))
-'@
-    $probeResult = & py -3.11 -c $probe 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw @"
+'@ | Set-Content -Path $probeFile -Encoding UTF8
+    try {
+        $probeResult = & py -3.11 $probeFile 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw @"
 Full packaging requires opencv-python-headless (cv2).
 Install: py -3.11 -m pip install -r server\requirements-full.txt
 Probe output: $probeResult
 "@
+        }
+        Write-Host "==> OpenCV available: $probeResult"
+    } finally {
+        Remove-Item -Force $probeFile -ErrorAction SilentlyContinue
     }
-    Write-Host "==> OpenCV available: $probeResult"
 }
 
 function Invoke-ImportSmoke {

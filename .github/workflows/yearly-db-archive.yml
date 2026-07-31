@@ -128,6 +128,33 @@ jobs:
           npm ci
           python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
 
+      - name: Seed stage-6 yearly fixtures for live smoke
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, "server")
+          sys.path.insert(0, "server/tests")
+          from stage6_fixtures import build_stage6_active_year_db, build_stage6_archive_db
+
+          calendar_year = datetime.now(timezone.utc).year
+          active_year = calendar_year - 1
+          Path("BD").mkdir(exist_ok=True)
+          Path("backup").mkdir(exist_ok=True)
+          Path("config.ini").write_text(
+              "[settings]\n"
+              f"active_year = {active_year}\n"
+              "tara_default = 900\n",
+              encoding="utf-8",
+          )
+          build_stage6_active_year_db(Path("BD") / f"weighing-{active_year}.db")
+          build_stage6_archive_db(Path("BD") / f"weighing-{active_year - 1}.db")
+          print(f"seeded active_year={active_year} calendar={calendar_year}")
+          PY
+
       - name: Build frontend for production entrypoint
         run: npm run build
 
