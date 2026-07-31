@@ -249,13 +249,30 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     reo_status: ticket.reo_status ?? 'pending',
     reo_sent_at: ticket.reo_sent_at ?? null,
   };
-  if (ticket.weighing_mode === undefined) {
-    next.weighing_mode = normalizeWeighingMode(ticket);
+  const mode = normalizeWeighingMode(ticket);
+  if (ticket.weighing_mode !== mode) {
+    next.weighing_mode = mode;
   }
   if (ticket.version === undefined) {
     next.version = 1;
   }
   return next;
+}
+
+/** Persist normalized mode/version so sync does not re-default open tickets to single. */
+function persistNormalizedTicketsIfNeeded(tickets: WeighingTicket[]): WeighingTicket[] {
+  let dirty = false;
+  const normalized = tickets.map((ticket) => {
+    const next = normalizeTicket(ticket);
+    if (ticket.weighing_mode !== next.weighing_mode || ticket.version !== next.version) {
+      dirty = true;
+    }
+    return next;
+  });
+  if (dirty) {
+    persist(STORAGE_KEYS.TICKETS, JSON.stringify(normalized));
+  }
+  return normalized;
 }
 
 // Weighing tickets storage
@@ -321,9 +338,9 @@ export const TicketStorage = {
   },
 
   getAll: (): WeighingTicket[] => {
-    return getAllTickets()
-      .map(normalizeTicket)
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    return persistNormalizedTicketsIfNeeded(getAllTickets()).sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    );
   },
 
   getImportKeys: (): Set<string> => {
@@ -339,8 +356,9 @@ export const TicketStorage = {
   },
 
   getById: (id: string): WeighingTicket | null => {
-    const ticket = getAllTickets().find(t => t.id === id);
-    return ticket ? normalizeTicket(ticket) : null;
+    const tickets = persistNormalizedTicketsIfNeeded(getAllTickets());
+    const ticket = tickets.find((t) => t.id === id);
+    return ticket ?? null;
   },
 
   delete: (id: string): void => {

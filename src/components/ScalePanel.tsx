@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useScale } from '@/hooks/useScale';
 import { SCALE_DEVICE_LIST, type ScaleDeviceId } from '@/lib/scales';
 import { isCaptureAllowed } from '@/lib/weighing-mode';
@@ -12,6 +12,8 @@ interface Props {
   onDeviceChange: (id: ScaleDeviceId) => void;
   stableMode?: boolean;
   onUnstableCapture?: () => void;
+  /** Live instrument weight for dual-mode threshold hints (null when disconnected). */
+  onReadingChange?: (weight: number | null) => void;
 }
 
 export function ScalePanel({
@@ -22,10 +24,15 @@ export function ScalePanel({
   onDeviceChange,
   stableMode = false,
   onUnstableCapture,
+  onReadingChange,
 }: Props) {
   const { reading, connected, error, connect, disconnect } = useScale();
   const [supported] = useState(() => typeof navigator !== 'undefined' && 'serial' in navigator);
   const canCapture = !!reading && isCaptureAllowed(reading.stable, stableMode);
+
+  useEffect(() => {
+    onReadingChange?.(reading ? reading.weight : null);
+  }, [reading, onReadingChange]);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-slate-100 p-5 shadow-sm">

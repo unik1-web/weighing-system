@@ -54,16 +54,21 @@ describe('normalizeWeighingMode', () => {
     expect(normalizeWeighingMode({ status: 'open' })).toBe('dual');
     expect(normalizeWeighingMode({ status: 'completed' })).toBe('single');
   });
+
+  it('repairs open+single to dual (sync default corruption)', () => {
+    expect(normalizeWeighingMode({ status: 'open', weighing_mode: 'single' })).toBe('dual');
+  });
 });
 
 describe('filterIncompleteDual / classify', () => {
-  it('filters only open dual', () => {
+  it('filters open tickets (including repaired open+single)', () => {
     const tickets = [
       { id: '1', status: 'open', weighing_mode: 'dual' as const },
       { id: '2', status: 'open', weighing_mode: 'single' as const },
       { id: '3', status: 'completed', weighing_mode: 'dual' as const },
+      { id: '4', status: 'completed', weighing_mode: 'single' as const },
     ];
-    expect(filterIncompleteDual(tickets).map((t) => t.id)).toEqual(['1']);
+    expect(filterIncompleteDual(tickets).map((t) => t.id)).toEqual(['1', '2']);
   });
 
   it('classifies 0/1/2 weights', () => {
@@ -193,6 +198,7 @@ describe('net / amount / autofill / capture', () => {
 describe('validators', () => {
   it('validateSingleComplete', () => {
     expect(validateSingleComplete({ gross: null, tare: 0 })).toMatch(/брутто/i);
+    expect(validateSingleComplete({ gross: 0, tare: 0 })).toMatch(/брутто/i);
     expect(validateSingleComplete({ gross: 10000, tare: null })).toMatch(/тара/i);
     expect(validateSingleComplete({ gross: 10000, tare: 0 })).toBeNull();
   });
