@@ -181,49 +181,29 @@ def test_stage6_smoke_runner_writes_reports_and_returns_zero(tmp_path):
     """TC-UNIT-01: stage-6 smoke runner works against real HTTP entrypoint."""
     repo_root = Path(__file__).resolve().parents[2]
     python_bin = Path(_resolve_python_bin(repo_root))
-    port = _pick_free_port()
-    base_url = f"http://127.0.0.1:{port}"
-    env = dict(os.environ)
-    env["OPEN_BROWSER"] = "0"
-    env["PORT"] = str(port)
-
-    server = subprocess.Popen(
-        [str(python_bin), "server/app.py"],
+    json_report = tmp_path / "stage6-smoke.json"
+    markdown_report = tmp_path / "stage6-smoke.md"
+    # fail-retry spins an isolated Flask app root with seeded yearly DB —
+    # CI runners have no live BD/active_year, so the default live `active`
+    # scenario is not a reliable unit-gate.
+    smoke = subprocess.run(
+        [
+            str(python_bin),
+            "scripts/smoke_yearly_archive.py",
+            "--scenario",
+            "fail-retry",
+            "--write-json",
+            str(json_report),
+            "--write-markdown",
+            str(markdown_report),
+        ],
         cwd=repo_root,
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        env=dict(os.environ),
+        check=False,
+        capture_output=True,
+        text=True,
     )
-    try:
-        _wait_for_health(base_url)
-        json_report = tmp_path / "stage6-smoke.json"
-        markdown_report = tmp_path / "stage6-smoke.md"
-        smoke = subprocess.run(
-            [
-                str(python_bin),
-                "scripts/smoke_yearly_archive.py",
-                "--base-url",
-                base_url,
-                "--origin",
-                base_url,
-                "--write-json",
-                str(json_report),
-                "--write-markdown",
-                str(markdown_report),
-            ],
-            cwd=repo_root,
-            env=env,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert smoke.returncode == 0, smoke.stdout + smoke.stderr
-        report_payload = json.loads(json_report.read_text(encoding="utf-8"))
-        assert report_payload["summary"]["all_steps_passed"] is True
-        assert markdown_report.is_file()
-    finally:
-        server.terminate()
-        try:
-            server.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            server.kill()
+    assert smoke.returncode == 0, smoke.stdout + smoke.stderr
+    report_payload = json.loads(json_report.read_text(encoding="utf-8"))
+    assert report_payload["summary"]["all_steps_passed"] is True
+    assert markdown_report.is_file()
