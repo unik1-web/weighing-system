@@ -31,7 +31,17 @@
 
 ## Как запускать
 
-В Cursor (Agent mode) — шаблон из [README](../../README.md#мультиагентная-разработка), подставив путь к нужному файлу, например:
+CLI-оркестратор (рекомендуется для последовательного прогона с `agent`):
+
+```bash
+./orchestrate.sh docs/tasks/05-scale-adapters.md
+./orchestrate.sh --queue
+make orchestrate TASK=docs/tasks/05-scale-adapters.md
+```
+
+Подробности: [README — Мультиагентная разработка](../../README.md#мультиагентная-разработка).
+
+В Cursor (Agent mode) — шаблон из README, подставив путь к нужному файлу, например:
 
 ```text
 Используя подход по оркестрации мультиагентной разработки (agents/01_orchestrator.md),

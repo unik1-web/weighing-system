@@ -219,7 +219,32 @@ git submodule update --remote agents
 
 Постановку задачи положите в `docs/tasks/` (очередь этапов: [docs/tasks/README.md](docs/tasks/README.md)). Артефакты пайплайна пишутся в `docs/implementation/` (не коммитятся).
 
-Пример запуска в Cursor (Agent mode):
+### Скрипт-оркестратор
+
+Последовательный прогон ролей из `agents/01_orchestrator.md` (с циклами review/repair):
+
+```bash
+chmod +x orchestrate.sh
+agent login   # или export CURSOR_API_KEY=...
+
+# одна постановка (или следующая невыполненная из очереди)
+./orchestrate.sh docs/tasks/05-scale-adapters.md
+
+# вся очередь docs/tasks/* без статуса «реализовано»
+./orchestrate.sh --queue
+
+# продолжить с шага / dry-run
+./orchestrate.sh --from develop docs/tasks/05-scale-adapters.md
+./orchestrate.sh --dry-run docs/tasks/05-scale-adapters.md
+
+# через Makefile
+make orchestrate TASK=docs/tasks/05-scale-adapters.md
+make orchestrate-queue
+```
+
+Модели по умолчанию: аналитик/архитектор/планировщик — `gpt-5.4-high`; ревьюеры и разработчик — `gpt-5.3-codex` (переопределение: `MODEL_HIGH`, `MODEL_CODEX`).
+
+### Запуск оркестратора в Cursor (Agent mode)
 
 ```
 Используя подход по оркестрации мультиагентной разработки (agents/01_orchestrator.md),
