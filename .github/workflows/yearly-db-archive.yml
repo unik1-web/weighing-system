@@ -74,7 +74,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci
-          python3 -m pip install -r server/requirements.txt
+          python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
 
       - name: Run full backend test suite
         run: python3 -m pytest server/tests -q
@@ -126,7 +126,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci
-          python3 -m pip install -r server/requirements.txt
+          python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
 
       - name: Build frontend for production entrypoint
         run: npm run build
@@ -241,7 +241,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install backend dependencies
-        run: python3 -m pip install -r server/requirements.txt
+        run: python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
 
       - name: Validate stage-6 release gate artifacts
         run: python3 -m pytest server/tests/test_stage6_release_gate_artifacts.py -q
@@ -266,28 +266,28 @@ jobs:
           done
 
           for ec_id in EC-01 EC-02 EC-03 EC-04 EC-05 EC-06 EC-07 EC-08 EC-09 EC-10 EC-11 EC-12 EC-13 EC-14; do
-            rg -n "^\|[[:space:]]*${ec_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
+            grep -nE "^\|[[:space:]]*${ec_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
               || (echo "Missing or malformed row for ${ec_id}" && exit 1)
           done
 
           for tf_id in TF-01 TF-02 TF-03 TF-04 TF-05; do
-            rg -n "^\|[[:space:]]*${tf_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
+            grep -nE "^\|[[:space:]]*${tf_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
               || (echo "Missing or malformed row for ${tf_id}" && exit 1)
           done
 
-          if rg -n "^\|[[:space:]]*(EC-[0-9]+|TF-[0-9]+)[[:space:]]*\|[[:space:]]*FAIL[[:space:]]*\|" "$acceptance_report"; then
+          if grep -nE "^\|[[:space:]]*(EC-[0-9]+|TF-[0-9]+)[[:space:]]*\|[[:space:]]*FAIL[[:space:]]*\|" "$acceptance_report"; then
             echo "Acceptance report contains FAIL status."
             exit 1
           fi
 
-          rg -ni "mixed legacy" "$acceptance_report" "$release_checklist"
-          rg -ni "rotation" "$acceptance_report" "$release_checklist"
-          rg -ni "fail-retry|fail/retry" "$acceptance_report" "$release_checklist"
-          rg -ni "parallel" "$acceptance_report" "$release_checklist"
-          rg -ni "write-gate|write gate" "$acceptance_report" "$release_checklist"
-          rg -ni "archive" "$acceptance_report" "$release_checklist"
-          rg -ni "forbidden" "$acceptance_report" "$release_checklist"
-          rg -ni "sent-REO|sent REO|reo_sent" "$acceptance_report" "$release_checklist"
+          grep -niE "mixed legacy" "$acceptance_report" "$release_checklist"
+          grep -niE "rotation" "$acceptance_report" "$release_checklist"
+          grep -niE "fail-retry|fail/retry" "$acceptance_report" "$release_checklist"
+          grep -niE "parallel" "$acceptance_report" "$release_checklist"
+          grep -niE "write-gate|write gate" "$acceptance_report" "$release_checklist"
+          grep -niE "archive" "$acceptance_report" "$release_checklist"
+          grep -niE "forbidden" "$acceptance_report" "$release_checklist"
+          grep -niE "sent-REO|sent REO|reo_sent" "$acceptance_report" "$release_checklist"
 
       - name: Upload stage-6 evidence
         uses: actions/upload-artifact@v4

@@ -38,7 +38,7 @@ jobs:
 
       - name: Ensure docs/api.md contains /api/scales/*
         run: |
-          rg -n "/api/scales/" docs/api.md
+          grep -nE "/api/scales/" docs/api.md
 
   frontend-tests:
     name: frontend-tests
@@ -80,7 +80,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install backend dependencies
-        run: python3 -m pip install -r server/requirements.txt
+        run: python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
 
       - name: Run full backend test suite
         run: python3 -m pytest server/tests -q
@@ -159,11 +159,11 @@ jobs:
           test -s "$acceptance_report" || (echo "Missing evidence: $acceptance_report" && exit 1)
 
           for ec_id in EC-01 EC-02 EC-03 EC-04 EC-05 EC-06 EC-07 EC-08 EC-09; do
-            rg -n "^\|[[:space:]]*${ec_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
+            grep -nE "^\|[[:space:]]*${ec_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
               || (echo "Missing or malformed row for ${ec_id}" && exit 1)
           done
 
-          if rg -n "^\|[[:space:]]*EC-0[1-9][[:space:]]*\|[[:space:]]*FAIL[[:space:]]*\|" "$acceptance_report"; then
+          if grep -nE "^\|[[:space:]]*EC-0[1-9][[:space:]]*\|[[:space:]]*FAIL[[:space:]]*\|" "$acceptance_report"; then
             echo "Acceptance report contains FAIL status."
             exit 1
           fi

@@ -74,7 +74,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm ci
-          python3 -m pip install -r server/requirements.txt
+          python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
 
       - name: Run full backend test suite
         run: python3 -m pytest server/tests -q
@@ -118,7 +118,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install basic backend dependencies
-        run: python3 -m pip install -r server/requirements.txt
+        run: python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
 
       - name: Smoke basic-import (no OpenCV required)
         run: npm run smoke:photo-basic-import
@@ -244,7 +244,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install backend dependencies
-        run: python3 -m pip install -r server/requirements.txt
+        run: python3 -m pip install -r server/requirements.txt -r server/requirements-dev.txt
 
       - name: Validate stage-7 release gate anchors
         run: python3 -m pytest server/tests/test_stage7_release_gate.py server/tests/test_stage7_packaging_tokens.py server/tests/test_photo_capture_deploy_docs.py -q
@@ -271,24 +271,24 @@ jobs:
           done
 
           for ec_id in EC-01 EC-02 EC-03 EC-04 EC-05 EC-06 EC-07 EC-08 EC-09 EC-10 EC-11 EC-12; do
-            rg -n "^\|[[:space:]]*${ec_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
+            grep -nE "^\|[[:space:]]*${ec_id}[[:space:]]*\|[[:space:]]*(PASS|FAIL)[[:space:]]*\|" "$acceptance_report" \
               || (echo "Missing or malformed row for ${ec_id}" && exit 1)
           done
 
-          if rg -n "^\|[[:space:]]*(EC-[0-9]+)[[:space:]]*\|[[:space:]]*FAIL[[:space:]]*\|" "$acceptance_report"; then
+          if grep -nE "^\|[[:space:]]*(EC-[0-9]+)[[:space:]]*\|[[:space:]]*FAIL[[:space:]]*\|" "$acceptance_report"; then
             echo "Acceptance report contains FAIL status."
             exit 1
           fi
 
-          rg -ni "migration v7|user_version.*7|schema v7" "$deploy_doc"
-          rg -ni "degrade" "$deploy_doc" "$acceptance_report" "$release_checklist"
-          rg -n "Photo/" "$deploy_doc"
-          rg -ni "basic-import|full-import" "$release_checklist"
-          rg -ni "requirements-full|WeighingSystem-Full-Setup" "$release_checklist"
-          rg -ni "секрет|RTSP|бинарник|не коммитить|FORBIDDEN" "$deploy_doc" "$release_checklist"
+          grep -niE "migration v7|user_version.*7|schema v7" "$deploy_doc"
+          grep -niE "degrade" "$deploy_doc" "$acceptance_report" "$release_checklist"
+          grep -nE "Photo/" "$deploy_doc"
+          grep -niE "basic-import|full-import" "$release_checklist"
+          grep -niE "requirements-full|WeighingSystem-Full-Setup" "$release_checklist"
+          grep -niE "секрет|RTSP|бинарник|не коммитить|FORBIDDEN" "$deploy_doc" "$release_checklist"
 
           # Secrets / photo binaries must not live under evidence templates
-          if rg -n "rtsp://[^\"'\s]+:[^\"'\s]+@" "$reports_dir" "$deploy_doc" 2>/dev/null; then
+          if grep -nE "rtsp://[^\"'\s]+:[^\"'\s]+@" "$reports_dir" "$deploy_doc" 2>/dev/null; then
             echo "Possible RTSP credentials found in docs — reject"
             exit 1
           fi
