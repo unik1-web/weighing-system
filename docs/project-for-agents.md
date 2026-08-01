@@ -49,10 +49,11 @@ Flask (server/app.py)  ──►  config.ini
 
 | Путь | Назначение |
 |------|------------|
-| `agents/` | Промпты ролей (submodule [rdudov/agents](https://github.com/rdudov/agents)) |
+| `agents/` | Промпты ролей (submodule [rdudov/agents](https://github.com/rdudov/agents)) — текущий процесс |
 | `docs/project-for-agents.md` | Этот файл — описание проекта |
 | `docs/tasks/` | Постановки задач (вход оркестратора) |
 | `docs/implementation/` | ТЗ, архитектура, план, статус пайплайна (не коммитить) |
+| `docs/orchestrator-integration.md` | План миграции на denistv/cursor-agent-orchestrator + dashboard |
 
 ## Запуск пайплайна
 

@@ -201,9 +201,12 @@ JSON-файл для ручной отправки содержит пустые
 | [docs/architecture.md](docs/architecture.md) | Потоки данных, модули, нормализация, печать, env |
 | [docs/api.md](docs/api.md) | Справочник HTTP API Flask |
 | [docs/project-for-agents.md](docs/project-for-agents.md) | Контекст проекта для мультиагентного пайплайна |
+| [docs/orchestrator-integration.md](docs/orchestrator-integration.md) | План интеграции Cursor Agent Orchestrator и дашборда |
 | [docs/roadmap.md](docs/roadmap.md) | Roadmap развития |
 
 ## Мультиагентная разработка
+
+> **Предложение по миграции:** заменить CLI-пайплайн на [Cursor Agent Orchestrator](https://github.com/denistv/cursor-agent-orchestrator) (FSM, skills, `memory/`, live-дашборд). Анализ и план — в [docs/orchestrator-integration.md](docs/orchestrator-integration.md).
 
 Промпты ролей подключены как git submodule из [rdudov/agents](https://github.com/rdudov/agents) в каталог `agents/`.
 
