@@ -281,4 +281,26 @@ describe('TicketStorage normalize / create / CAS', () => {
     expect(card?.preferred_cargo_name).toBe('Щебень');
     expect(card?.default_tare_weight).toBe(4100);
   });
+
+  it('dispatches dictionaries-updated after learning prefs', () => {
+    VehicleDriversStorage.ensureInitialized();
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', { dispatchEvent });
+
+    TicketStorage.create(
+      baseTicket({
+        vehicle_number: 'А888АА56',
+        driver_name: 'Сидоров С.С.',
+        cargo_name: 'Песок',
+        shipper_name: 'ООО Юг',
+        tare_weight: 3900,
+        weighing_mode: 'single',
+      }),
+    );
+
+    expect(dispatchEvent).toHaveBeenCalled();
+    const event = dispatchEvent.mock.calls[0]?.[0] as Event;
+    expect(event?.type).toBe('dictionaries-updated');
+    vi.unstubAllGlobals();
+  });
 });

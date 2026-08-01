@@ -5,6 +5,7 @@ import {
   VehicleDriversStorage,
   type WeighingTicket,
 } from './storage';
+import { DICTIONARIES_UPDATED_EVENT } from './storage-sync';
 import { formatVehiclePlate } from './vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from './text-format';
 import { logger } from './logger';
@@ -61,6 +62,11 @@ export function applyVehicleLearningOnComplete(ticket: WeighingTicket): void {
         preferred_shipper_name: prefs.preferred_shipper_name,
         default_tare_weight: ticket.tare_weight != null ? ticket.tare_weight : null,
       });
+    }
+
+    // Invalidate useDictionary React state so the next resolve sees fresh prefs (FR6).
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event(DICTIONARIES_UPDATED_EVENT));
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

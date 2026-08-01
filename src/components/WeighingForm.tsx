@@ -5,6 +5,7 @@ import {
   TicketStorage,
   SettingsStorage,
   VehicleDriversStorage,
+  DictionaryStorage,
 } from '@/lib/storage';
 import { logger } from '@/lib/logger';
 import { useDictionary } from '@/hooks/useDictionary';
@@ -354,9 +355,11 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       }
 
       const settings = SettingsStorage.getAppSettings();
+      // Read dictionaries from storage directly so resolve sees prefs written by
+      // applyVehicleLearningOnComplete in the same session (not stale useDictionary state).
       const result = resolveVehicle(plate, {
-        vehicles: vehicles.entries,
-        drivers: drivers.entries,
+        vehicles: DictionaryStorage.getTable('vehicles'),
+        drivers: DictionaryStorage.getTable('drivers'),
         vehicleDrivers: VehicleDriversStorage.getAll(),
         completedTickets: TicketStorage.getAll(),
         taraDefault: settings.tara_default,
@@ -394,13 +397,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         setTareSource(result.tare.tare_source);
       }
     },
-    [
-      vehicles.entries,
-      drivers.entries,
-      formMode,
-      isCompleting,
-      applyResolvedTextField,
-    ],
+    [formMode, isCompleting, applyResolvedTextField],
   );
 
   useEffect(() => {
