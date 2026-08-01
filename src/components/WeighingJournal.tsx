@@ -1,9 +1,27 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage } from '@/lib/storage';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
+import {
+  type WeightSource,
+  WEIGHT_SOURCES,
+  WEIGHT_SOURCE_LABELS,
+  normalizeWeightSource,
+  ticketMatchesWeightSources,
+} from '@/lib/weight-source';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
+import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson } from 'lucide-react';
+
+const SOURCE_FILTER_OPTIONS = WEIGHT_SOURCES.map((source) => WEIGHT_SOURCE_LABELS[source]);
+const LABEL_TO_SOURCE = Object.fromEntries(
+  WEIGHT_SOURCES.map((source) => [WEIGHT_SOURCE_LABELS[source], source]),
+) as Record<string, WeightSource>;
+
+function sourceLabelForWeight(weight: number | null, source: unknown): string {
+  if (weight == null) return '—';
+  return WEIGHT_SOURCE_LABELS[normalizeWeightSource(source)];
+}
 
 interface Props {
   refreshKey: number;
@@ -18,7 +36,13 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'completed'>('all');
   const [reoFilter, setReoFilter] = useState<'all' | 'pending' | 'sent'>('all');
+  const [sourceFilter, setSourceFilter] = useState<WeightSource[]>([]);
   const [sendingBulk, setSendingBulk] = useState(false);
+
+  const sourceFilterLabels = useMemo(
+    () => sourceFilter.map((source) => WEIGHT_SOURCE_LABELS[source]),
+    [sourceFilter],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,6 +73,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const reoComplianceWarnings = reoComplianceIssues.filter((issue) => issue.level === 'warning');
 
   const filtered = tickets.filter((t) => {
+    if (!ticketMatchesWeightSources(t, sourceFilter)) return false;
     if (!search) return true;
     const s = search.toLowerCase();
     return t.vehicle_number?.toLowerCase().includes(s) || t.driver_name?.toLowerCase().includes(s) || t.cargo_name?.toLowerCase().includes(s) || t.shipper_name?.toLowerCase().includes(s) || t.receiver_name?.toLowerCase().includes(s) || t.carrier_name?.toLowerCase().includes(s) || t.operator_name?.toLowerCase().includes(s) || String(t.ticket_number ?? '').includes(s);
@@ -166,6 +191,21 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
             <button key={s} onClick={() => setStatusFilter(s)} className={`px-4 py-2 text-sm font-medium transition ${statusFilter === s ? 'bg-blue-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}>{s === 'all' ? 'Все' : s === 'completed' ? 'Завершённые' : 'Открытые'}</button>
           ))}
         </div>
+        <div className="w-[220px]">
+          <MultiSelectDropdown
+            options={SOURCE_FILTER_OPTIONS}
+            selected={sourceFilterLabels}
+            onChange={(labels) => {
+              setSourceFilter(
+                labels
+                  .map((label) => LABEL_TO_SOURCE[label])
+                  .filter((source): source is WeightSource => source != null),
+              );
+            }}
+            placeholder="Источник веса"
+            emptyMessage="Нет источников"
+          />
+        </div>
         {reoEnabled && (
           <>
             <div className="flex rounded-lg border border-slate-300 overflow-hidden">
@@ -254,8 +294,14 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                     <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.shipper_name}>{t.shipper_name}</td>
                     <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.receiver_name}>{t.receiver_name}</td>
                     <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.carrier_name}>{t.carrier_name}</td>
-                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">{t.gross_weight?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">{t.tare_weight?.toLocaleString('ru-RU') ?? '—'}</td>
+                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                      <div>{t.gross_weight?.toLocaleString('ru-RU') ?? '—'}</div>
+                      <div className="text-[10px] font-medium text-slate-400">Б: {sourceLabelForWeight(t.gross_weight, t.gross_source)}</div>
+                    </td>
+                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                      <div>{t.tare_weight?.toLocaleString('ru-RU') ?? '—'}</div>
+                      <div className="text-[10px] font-medium text-slate-400">Т: {sourceLabelForWeight(t.tare_weight, t.tare_source)}</div>
+                    </td>
                     <td className="px-2 py-2.5 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">{t.net_weight?.toLocaleString('ru-RU') ?? '—'}</td>
                     <td className="px-2 py-2.5 text-center whitespace-nowrap">{t.status === 'completed' ? <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"><CheckCircle2 size={12} /> Завершён</span> : <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700"><Clock size={12} /> Открыт</span>}</td>
                     {reoEnabled && (

@@ -4,9 +4,10 @@ import { formatVehiclePlate } from './vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from './text-format';
 import { ticketImportKey } from './import-keys';
 import { normalizeWeighingMode, type WeighingMode } from './weighing-mode';
+import { normalizeWeightSource, type WeightSource } from './weight-source';
 import { logger } from './logger';
 
-export type WeightSource = 'manual' | 'instrument';
+export type { WeightSource };
 export type TicketStatus = 'open' | 'completed';
 export type ReoStatus = 'pending' | 'sent';
 export type { WeighingMode };
@@ -248,6 +249,8 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     ...ticket,
     reo_status: ticket.reo_status ?? 'pending',
     reo_sent_at: ticket.reo_sent_at ?? null,
+    gross_source: normalizeWeightSource(ticket.gross_source),
+    tare_source: normalizeWeightSource(ticket.tare_source),
   };
   const mode = normalizeWeighingMode(ticket);
   if (ticket.weighing_mode !== mode) {

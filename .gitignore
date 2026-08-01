@@ -39,3 +39,8 @@ dist/WeighingSystem/
 # Multi-agent pipeline working drafts (keep directory via .gitkeep)
 docs/implementation/*
 !docs/implementation/.gitkeep
+
+# Orchestrator runtime memory (keep TaskBoard template)
+memory/TASK_MEMORY_*.yml
+dashboard/node_modules/
+dashboard/dist/

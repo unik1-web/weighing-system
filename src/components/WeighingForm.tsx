@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   type WeighingTicket,
   type WeightSource,
@@ -31,7 +31,35 @@ import {
   firstWeightDatetime,
   isMaxTimeExceeded,
 } from '@/lib/weighing-mode';
+import {
+  normalizeWeightSource,
+  resolveTareAutofill,
+  WEIGHT_SOURCE_LABELS,
+} from '@/lib/weight-source';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
+
+const WEIGHT_SOURCE_BADGE_CLASS: Record<WeightSource, string> = {
+  instrument: 'rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-emerald-700',
+  manual: 'rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-slate-600',
+  dictionary: 'rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-sky-700',
+  default: 'rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-700',
+};
+
+function WeightSourceBadge({
+  weight,
+  source,
+}: {
+  weight: number | null;
+  source: WeightSource;
+}) {
+  if (weight == null) return null;
+  const normalized = normalizeWeightSource(source);
+  return (
+    <span className={WEIGHT_SOURCE_BADGE_CLASS[normalized]}>
+      {WEIGHT_SOURCE_LABELS[normalized]}
+    </span>
+  );
+}
 
 interface Props {
   onSaved: (ticket: WeighingTicket) => void;
@@ -91,6 +119,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [unstableWarning, setUnstableWarning] = useState<string | null>(null);
   const [intervalWarnedForId, setIntervalWarnedForId] = useState<string | null>(null);
   const [liveScaleWeight, setLiveScaleWeight] = useState<number | null>(null);
+  /** After operator edits/clears tare (or captures instrument), block autofill until vehicle/mode/reset. */
+  const tareAutofillBlocked = useRef(false);
 
   const isCompleting = completingTicket != null;
   // For completion, editability is based on the loaded ticket's original weights for locked slots,
@@ -150,6 +180,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   }, [showIntervalBanner, completingTicket, intervalWarnedForId, appSettings.max_time_between]);
 
   const resetFormFields = useCallback(() => {
+    tareAutofillBlocked.current = false;
     setActiveField('gross');
     setPhaseOverride(false);
     setOverridePhase('gross');
@@ -209,6 +240,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         return;
       }
 
+      tareAutofillBlocked.current = false;
       setCompletingTicket(ticket);
       setFormMode('dual');
       setSuccess(null);
@@ -276,17 +308,16 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     if (!shouldAutofillTare({ mode: formMode, completing: isCompleting })) return;
     if (!vehicleNumber) return;
     if (tareWeight != null) return;
+    if (tareAutofillBlocked.current) return;
 
     const vehicle = vehicles.entries.find((v) => v.vehicle_number === vehicleNumber);
-    if (vehicle?.default_tare_weight != null) {
-      setTareWeight(vehicle.default_tare_weight);
-      setTareSource('manual');
-      return;
-    }
-    if (appSettings.tara_default > 0) {
-      setTareWeight(appSettings.tara_default);
-      setTareSource('manual');
-    }
+    const resolved = resolveTareAutofill({
+      defaultTareWeight: vehicle?.default_tare_weight,
+      taraDefault: appSettings.tara_default,
+    });
+    if (!resolved) return;
+    setTareWeight(resolved.tare_weight);
+    setTareSource(resolved.tare_source);
   }, [
     vehicleNumber,
     vehicles.entries,
@@ -296,8 +327,14 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     appSettings.tara_default,
   ]);
 
+  const handleVehicleNumberChange = (value: string) => {
+    tareAutofillBlocked.current = false;
+    setVehicleNumber(value);
+  };
+
   const handleModeChange = (mode: WeighingMode) => {
     if (isCompleting) return;
+    tareAutofillBlocked.current = false;
     setFormMode(mode);
     setPhaseOverride(false);
     setOverridePhase('gross');
@@ -325,6 +362,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
 
   const captureTare = (w: number, raw: string) => {
     if (!editability.tareEditable) return;
+    tareAutofillBlocked.current = true;
     setTareWeight(w);
     setTareSource('instrument');
     setTareRaw(raw);
@@ -661,7 +699,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className={labelClass}>Номер автомобиля *</label>
-              <input list="vehicles-list" value={vehicleNumber} onChange={(e) => setVehicleNumber(e.target.value)} placeholder="А123ВС77" className={inputClass} />
+              <input list="vehicles-list" value={vehicleNumber} onChange={(e) => handleVehicleNumberChange(e.target.value)} placeholder="А123ВС77" className={inputClass} />
               <datalist id="vehicles-list">
                 {vehicles.entries.map((v) => <option key={v.id} value={v.vehicle_number} />)}
               </datalist>
@@ -780,7 +818,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <div className={`rounded-xl border-2 p-4 transition ${highlightPhase === 'gross' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">БРУТТО</span>
-                {grossSource === 'instrument' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">ПРИБОР</span>}
+                <WeightSourceBadge weight={grossWeight} source={grossSource} />
               </div>
               <input
                 type="number"
@@ -803,13 +841,14 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             <div className={`rounded-xl border-2 p-4 transition ${highlightPhase === 'tare' ? 'border-blue-500 bg-blue-50/30' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs font-semibold text-slate-600">ТАРА</span>
-                {tareSource === 'instrument' && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">ПРИБОР</span>}
+                <WeightSourceBadge weight={tareWeight} source={tareSource} />
               </div>
               <input
                 type="number"
                 value={tareWeight ?? ''}
                 disabled={!editability.tareEditable}
                 onChange={(e) => {
+                  tareAutofillBlocked.current = true;
                   setTareWeight(parseWeightInput(e.target.value));
                   setTareSource('manual');
                   setTareRaw(null);

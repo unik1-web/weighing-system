@@ -131,3 +131,50 @@ def test_api_config_weighing_settings_roundtrip(api_client):
     config = get.get_json()['config']
     for key, value in keys.items():
         assert config[key] == value
+
+
+def test_api_database_roundtrip_weight_source_literals(api_client):
+    """Smoke: extended WeightSource literals survive /api/database round-trip."""
+    tickets = [
+        _ticket(
+            id='t-src',
+            ticket_number=42,
+            status='completed',
+            completed_at='2026-01-01T11:00:00',
+            tare_weight=3200,
+            net_weight=16800,
+            total_amount=1680,
+            gross_source='instrument',
+            tare_source='dictionary',
+            weighing_mode='single',
+            version=1,
+        ),
+        _ticket(
+            id='t-src-2',
+            ticket_number=43,
+            status='completed',
+            completed_at='2026-01-01T12:00:00',
+            tare_weight=2500,
+            net_weight=17500,
+            total_amount=1750,
+            gross_source='manual',
+            tare_source='default',
+            weighing_mode='single',
+            version=1,
+        ),
+    ]
+    post = api_client.post(
+        '/api/database',
+        json={'data': {'app_weighing_tickets': json.dumps(tickets, ensure_ascii=False)}},
+    )
+    assert post.status_code == 200
+    assert post.get_json()['success'] is True
+
+    get = api_client.get('/api/database')
+    assert get.status_code == 200
+    loaded = json.loads(get.get_json()['data']['app_weighing_tickets'])
+    by_id = {row['id']: row for row in loaded}
+    assert by_id['t-src']['gross_source'] == 'instrument'
+    assert by_id['t-src']['tare_source'] == 'dictionary'
+    assert by_id['t-src-2']['gross_source'] == 'manual'
+    assert by_id['t-src-2']['tare_source'] == 'default'
