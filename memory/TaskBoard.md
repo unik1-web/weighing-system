@@ -38,3 +38,20 @@ Description: |
   Завершено: 2026-08-01T20:25:13Z. Артефакты: docs/13e79e-vehicle-resolve/.
 
 ---
+
+## 82cfbc-site-primary-spare
+
+State: architect
+Description: |
+  Источник: docs/tasks/04-site-primary-spare.md
+
+  Цель: модель площадки с комплектами основные/резервные весы; runtime
+  активного комплекта; журналируемое переключение (причина, оператор, время);
+  новые талоны пишут site_id/scale_id/scale_role; на spare anpr_mode=
+  disabled_by_configuration; wizard/чеклист на резерв без блокировки
+  взвешивания до камер; миграция текущего Web Serial → primary.
+
+  Зависимости: этапы 1–3. Вне скоупа: полные адаптеры (5), фото/ANPR (7–8),
+  годовая ротация (6). Артефакты: docs/implementation/.
+
+---
