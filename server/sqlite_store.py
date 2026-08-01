@@ -13,6 +13,7 @@ STORAGE_KEYS = {
     'profiles': 'app_users_profiles',
     'tickets': 'app_weighing_tickets',
     'ticket_audit': 'app_ticket_audit',
+    'vehicle_drivers': 'app_vehicle_drivers',
     'session': 'app_current_user',
     'vehicles': 'app_vehicles',
     'drivers': 'app_drivers',
@@ -39,10 +40,16 @@ TICKET_COLUMNS = [
     'scale_device', 'operator_id', 'operator_name', 'status', 'reo_status', 'reo_sent_at',
     'notes', 'created_at', 'completed_at',
     'weighing_mode', 'version',
+    'plate_source', 'scale_role',
+    'photo_entry_path', 'photo_exit_path', 'photo_overview_path',
 ]
 
 AUDIT_COLUMNS = [
     'id', 'ticket_id', 'action', 'at', 'operator_name', 'operator_id',
+]
+
+VEHICLE_DRIVER_COLUMNS = [
+    'id', 'vehicle_number', 'driver_name', 'last_used_at', 'use_count', 'driver_id',
 ]
 
 
@@ -81,7 +88,7 @@ def connect():
 
 
 def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
-    """Ensure weighing_tickets columns, ticket_audit table, and one-shot open→dual backfill."""
+    """Ensure weighing_tickets columns, ticket_audit, vehicle_drivers, and open→dual backfill."""
     connection.execute(
         '''
         CREATE TABLE IF NOT EXISTS ticket_audit (
@@ -96,6 +103,31 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         'CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket ON ticket_audit(ticket_id)'
+    )
+
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS vehicle_drivers (
+            id TEXT PRIMARY KEY,
+            vehicle_number TEXT NOT NULL,
+            driver_name TEXT NOT NULL,
+            last_used_at TEXT NOT NULL,
+            use_count INTEGER NOT NULL DEFAULT 1,
+            driver_id TEXT
+        )
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_pair
+            ON vehicle_drivers(vehicle_number, driver_name)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle
+            ON vehicle_drivers(vehicle_number)
+        '''
     )
 
     existing = {
@@ -116,6 +148,16 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             'ALTER TABLE weighing_tickets ADD COLUMN version INTEGER NOT NULL DEFAULT 1'
         )
+
+    for column in (
+        'plate_source',
+        'scale_role',
+        'photo_entry_path',
+        'photo_exit_path',
+        'photo_overview_path',
+    ):
+        if column not in existing:
+            connection.execute(f'ALTER TABLE weighing_tickets ADD COLUMN {column} TEXT')
 
     if column_weighing_mode_added:
         # One-shot backfill: only right after ADD COLUMN weighing_mode.
@@ -176,7 +218,12 @@ def init_schema(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             completed_at TEXT,
             weighing_mode TEXT NOT NULL DEFAULT 'single',
-            version INTEGER NOT NULL DEFAULT 1
+            version INTEGER NOT NULL DEFAULT 1,
+            plate_source TEXT,
+            scale_role TEXT,
+            photo_entry_path TEXT,
+            photo_exit_path TEXT,
+            photo_overview_path TEXT
         );
 
         CREATE TABLE IF NOT EXISTS dictionary_entries (
@@ -207,6 +254,21 @@ def init_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket
             ON ticket_audit(ticket_id);
+
+        CREATE TABLE IF NOT EXISTS vehicle_drivers (
+            id TEXT PRIMARY KEY,
+            vehicle_number TEXT NOT NULL,
+            driver_name TEXT NOT NULL,
+            last_used_at TEXT NOT NULL,
+            use_count INTEGER NOT NULL DEFAULT 1,
+            driver_id TEXT
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_pair
+            ON vehicle_drivers(vehicle_number, driver_name);
+
+        CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle
+            ON vehicle_drivers(vehicle_number);
         '''
     )
     ensure_ticket_schema(connection)
@@ -218,7 +280,7 @@ def _table_count(connection: sqlite3.Connection, table: str) -> int:
 
 
 def database_has_data(connection: sqlite3.Connection) -> bool:
-    for table in ('users', 'weighing_tickets', 'dictionary_entries', 'app_sessions'):
+    for table in ('users', 'weighing_tickets', 'dictionary_entries', 'app_sessions', 'vehicle_drivers'):
         if _table_count(connection, table) > 0:
             return True
     return False
@@ -297,6 +359,14 @@ def _load_ticket_audit(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return [{column: row[column] for column in AUDIT_COLUMNS} for row in rows]
 
 
+def _load_vehicle_drivers(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'SELECT {", ".join(VEHICLE_DRIVER_COLUMNS)} FROM vehicle_drivers'
+        ' ORDER BY last_used_at DESC'
+    ).fetchall()
+    return [{column: row[column] for column in VEHICLE_DRIVER_COLUMNS} for row in rows]
+
+
 def _load_dictionary(connection: sqlite3.Connection, category: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
@@ -352,6 +422,12 @@ def read_database() -> dict[str, str]:
         audit_events = _load_ticket_audit(connection)
         if audit_events:
             result[STORAGE_KEYS['ticket_audit']] = json.dumps(audit_events, ensure_ascii=False)
+
+        vehicle_drivers = _load_vehicle_drivers(connection)
+        if vehicle_drivers:
+            result[STORAGE_KEYS['vehicle_drivers']] = json.dumps(
+                vehicle_drivers, ensure_ascii=False
+            )
 
         session = _load_session(connection)
         if session:
@@ -456,6 +532,34 @@ def _replace_ticket_audit(connection: sqlite3.Connection, events: list[Any]) -> 
         )
 
 
+def _replace_vehicle_drivers(connection: sqlite3.Connection, links: list[Any]) -> None:
+    connection.execute('DELETE FROM vehicle_drivers')
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        use_count = link.get('use_count')
+        try:
+            use_count_int = int(use_count) if use_count is not None else 1
+        except (TypeError, ValueError):
+            use_count_int = 1
+        if use_count_int < 1:
+            use_count_int = 1
+        connection.execute(
+            f'''
+            INSERT INTO vehicle_drivers ({", ".join(VEHICLE_DRIVER_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(VEHICLE_DRIVER_COLUMNS))})
+            ''',
+            (
+                str(link.get('id', '')),
+                str(link.get('vehicle_number', '')),
+                str(link.get('driver_name', '')),
+                str(link.get('last_used_at', '')),
+                use_count_int,
+                link.get('driver_id'),
+            ),
+        )
+
+
 def _replace_dictionary(connection: sqlite3.Connection, category: str, items: list[Any]) -> None:
     connection.execute('DELETE FROM dictionary_entries WHERE category = ?', (category,))
     for item in items:
@@ -520,6 +624,14 @@ def write_database(data: dict[str, Any]) -> None:
                 events = json.loads(str(data[STORAGE_KEYS['ticket_audit']]))
                 if isinstance(events, list):
                     _replace_ticket_audit(connection, events)
+            except json.JSONDecodeError:
+                pass
+
+        if STORAGE_KEYS['vehicle_drivers'] in data:
+            try:
+                links = json.loads(str(data[STORAGE_KEYS['vehicle_drivers']]))
+                if isinstance(links, list):
+                    _replace_vehicle_drivers(connection, links)
             except json.JSONDecodeError:
                 pass
 

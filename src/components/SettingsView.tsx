@@ -10,6 +10,8 @@ import {
   type NavTabMode,
   type PrintLayout,
 } from '@/lib/storage';
+import { DRIVER_INPUT_MODE_LABELS, type DriverInputMode } from '@/lib/vehicle-resolve';
+import { SCALE_DEVICE_LIST, type ScaleDeviceId } from '@/lib/scales';
 import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale, Download, Upload, FolderOpen, Trash2, LayoutPanelTop, Server } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
@@ -105,6 +107,8 @@ export function SettingsView({ onSaved }: Props) {
       tara_threshold: settings.tara_threshold,
       max_time_between: settings.max_time_between,
       tara_default: settings.tara_default,
+      driver_input_mode: settings.driver_input_mode,
+      scale_device_id: settings.scale_device_id,
     });
     logger.info('settings', 'Настройки сохранены');
     setSaved(true);
@@ -504,6 +508,36 @@ export function SettingsView({ onSaved }: Props) {
             <p className="mt-1 text-xs text-slate-500">
               0 = не задано (автоподстановка в одиночном режиме не выполняется).
             </p>
+          </div>
+          <div>
+            <label className={labelClass}>Режим ввода водителя</label>
+            <select
+              value={settings.driver_input_mode}
+              onChange={(e) =>
+                updateField('driver_input_mode', e.target.value as DriverInputMode)
+              }
+              className={inputClass}
+            >
+              {(Object.keys(DRIVER_INPUT_MODE_LABELS) as DriverInputMode[]).map((mode) => (
+                <option key={mode} value={mode}>
+                  {DRIVER_INPUT_MODE_LABELS[mode]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelClass}>Модель весов по умолчанию</label>
+            <select
+              value={settings.scale_device_id}
+              onChange={(e) => updateField('scale_device_id', e.target.value as ScaleDeviceId)}
+              className={inputClass}
+            >
+              {SCALE_DEVICE_LIST.map((device) => (
+                <option key={device.id} value={device.id}>
+                  {device.name}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
       </div>

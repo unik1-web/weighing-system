@@ -11,7 +11,7 @@ import {
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
-import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson } from 'lucide-react';
+import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson, Eye, X } from 'lucide-react';
 
 const SOURCE_FILTER_OPTIONS = WEIGHT_SOURCES.map((source) => WEIGHT_SOURCE_LABELS[source]);
 const LABEL_TO_SOURCE = Object.fromEntries(
@@ -38,6 +38,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const [reoFilter, setReoFilter] = useState<'all' | 'pending' | 'sent'>('all');
   const [sourceFilter, setSourceFilter] = useState<WeightSource[]>([]);
   const [sendingBulk, setSendingBulk] = useState(false);
+  const [viewTicket, setViewTicket] = useState<WeighingTicket | null>(null);
 
   const sourceFilterLabels = useMemo(
     () => sourceFilter.map((source) => WEIGHT_SOURCE_LABELS[source]),
@@ -140,8 +141,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
 
   const exportCSV = () => {
     const headers = reoEnabled
-      ? ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Статус', 'РЭО', 'Дата отправки в РЭО']
-      : ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Статус'];
+      ? ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Источник брутто', 'Источник тары', 'Устройство весов', 'Статус', 'РЭО', 'Дата отправки в РЭО']
+      : ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Источник брутто', 'Источник тары', 'Устройство весов', 'Статус'];
     const rows = filtered.map((t) => {
       const base = [
         t.ticket_number,
@@ -158,6 +159,9 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
         t.price,
         t.total_amount ?? '',
         t.operator_name,
+        sourceLabelForWeight(t.gross_weight, t.gross_source),
+        sourceLabelForWeight(t.tare_weight, t.tare_source),
+        t.scale_device || '',
         t.status === 'completed' ? 'Завершён' : 'Открыт',
       ];
       if (!reoEnabled) return base;
@@ -324,6 +328,13 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                       </td>
                     )}
                     <td className="px-2 py-2.5 text-center whitespace-nowrap">
+                      <button
+                        onClick={() => setViewTicket(t)}
+                        className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition mr-1"
+                        title="Просмотр"
+                      >
+                        <Eye size={15} />
+                      </button>
                       {t.status === 'open' && (
                         <button
                           onClick={() => onCompleteOpen?.(t.id)}
@@ -352,6 +363,114 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
           </table>
         </div>
       </div>
+
+      {viewTicket && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => setViewTicket(null)}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+              <h3 className="text-sm font-semibold text-slate-800">
+                Просмотр тикета №{viewTicket.ticket_number ?? '—'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setViewTicket(null)}
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                title="Закрыть"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4 text-sm text-slate-700">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-xs text-slate-500">ТС</div>
+                  <div className="font-medium">{viewTicket.vehicle_number}</div>
+                  {viewTicket.vehicle_brand && (
+                    <div className="text-xs text-slate-500">{viewTicket.vehicle_brand}</div>
+                  )}
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Водитель</div>
+                  <div className="font-medium">{viewTicket.driver_name || '—'}</div>
+                </div>
+                <div className="col-span-2">
+                  <div className="text-xs text-slate-500">Груз</div>
+                  <div className="font-medium">{viewTicket.cargo_name || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Брутто</div>
+                  <div className="font-medium tabular-nums">
+                    {viewTicket.gross_weight?.toLocaleString('ru-RU') ?? '—'}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {sourceLabelForWeight(viewTicket.gross_weight, viewTicket.gross_source)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Тара</div>
+                  <div className="font-medium tabular-nums">
+                    {viewTicket.tare_weight?.toLocaleString('ru-RU') ?? '—'}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {sourceLabelForWeight(viewTicket.tare_weight, viewTicket.tare_source)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Нетто</div>
+                  <div className="font-semibold tabular-nums">
+                    {viewTicket.net_weight?.toLocaleString('ru-RU') ?? '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Устройство весов</div>
+                  <div className="font-medium">{viewTicket.scale_device || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Оператор</div>
+                  <div className="font-medium">{viewTicket.operator_name || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Создан</div>
+                  <div className="font-medium">
+                    {new Date(viewTicket.created_at).toLocaleString('ru-RU')}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Завершён</div>
+                  <div className="font-medium">
+                    {viewTicket.completed_at
+                      ? new Date(viewTicket.completed_at).toLocaleString('ru-RU')
+                      : '—'}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setViewTicket(null)}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Закрыть
+              </button>
+              <button
+                type="button"
+                disabled={viewTicket.status !== 'completed'}
+                onClick={() => printTicket(viewTicket)}
+                className="flex items-center gap-2 rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Printer size={16} /> Печать
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -3,6 +3,8 @@ import {
   TicketStorage,
   TicketAuditStorage,
   SettingsStorage,
+  VehicleDriversStorage,
+  DictionaryStorage,
   DEFAULT_APP_SETTINGS,
 } from '../storage';
 
@@ -77,6 +79,8 @@ describe('SettingsStorage weighing defaults', () => {
     expect(settings.tara_threshold).toBe(15000);
     expect(settings.max_time_between).toBe(24);
     expect(settings.tara_default).toBe(0);
+    expect(settings.driver_input_mode).toBe('all');
+    expect(settings.scale_device_id).toBe('microsim-m0601');
   });
 
   it('parses stable_mode and round-trips new keys', () => {
@@ -86,6 +90,8 @@ describe('SettingsStorage weighing defaults', () => {
       tara_threshold: 12000,
       max_time_between: 12,
       tara_default: 2500,
+      driver_input_mode: 'vehicle',
+      scale_device_id: 'cas',
     });
     const settings = SettingsStorage.getAppSettings();
     expect(settings.weighing_mode_default).toBe('dual');
@@ -93,6 +99,18 @@ describe('SettingsStorage weighing defaults', () => {
     expect(settings.tara_threshold).toBe(12000);
     expect(settings.max_time_between).toBe(12);
     expect(settings.tara_default).toBe(2500);
+    expect(settings.driver_input_mode).toBe('vehicle');
+    expect(settings.scale_device_id).toBe('cas');
+  });
+
+  it('falls back invalid driver_input_mode and scale_device_id', () => {
+    localStorage.setItem(
+      'app_settings',
+      JSON.stringify({ driver_input_mode: 'nope', scale_device_id: 'unknown' }),
+    );
+    const settings = SettingsStorage.getAppSettings();
+    expect(settings.driver_input_mode).toBe('all');
+    expect(settings.scale_device_id).toBe('microsim-m0601');
   });
 });
 
@@ -220,5 +238,69 @@ describe('TicketStorage normalize / create / CAS', () => {
     const ticket = TicketStorage.create(baseTicket({ status: 'open', weighing_mode: 'dual', tare_weight: null, net_weight: null, total_amount: null, completed_at: null }));
     TicketStorage.update(ticket.id, { notes: 'a' }, { expectedVersion: 999 });
     warn.mockRestore();
+  });
+
+  it('soft-reads missing audit stubs as null', () => {
+    const raw = {
+      ...baseTicket(),
+      id: 'legacy-no-audit',
+      ticket_number: 9,
+      created_at: '2026-01-01T00:00:00',
+      reo_status: 'pending' as const,
+      reo_sent_at: null,
+    };
+    localStorage.setItem('app_weighing_tickets', JSON.stringify([raw]));
+    const ticket = TicketStorage.getById('legacy-no-audit');
+    expect(ticket?.plate_source).toBeNull();
+    expect(ticket?.scale_role).toBeNull();
+    expect(ticket?.photo_entry_path).toBeNull();
+  });
+
+  it('learns vehicle_drivers and prefs on completed create', () => {
+    VehicleDriversStorage.ensureInitialized();
+    const ticket = TicketStorage.create(
+      baseTicket({
+        vehicle_number: 'А777АА56',
+        vehicle_brand: 'КамАЗ',
+        driver_name: 'Кузнецов К.К.',
+        cargo_name: 'Щебень',
+        shipper_name: 'ООО Север',
+        tare_weight: 4100,
+        weighing_mode: 'single',
+      }),
+    );
+    expect(ticket.status).toBe('completed');
+    const links = VehicleDriversStorage.getByVehicle('А777АА56');
+    expect(links).toHaveLength(1);
+    expect(links[0].driver_name).toContain('Кузнецов');
+    expect(links[0].use_count).toBe(1);
+
+    const vehicles = DictionaryStorage.getTable('vehicles');
+    const card = vehicles.find((v) => v.vehicle_number === 'А777АА56');
+    expect(card?.preferred_driver_name).toContain('Кузнецов');
+    expect(card?.preferred_cargo_name).toBe('Щебень');
+    expect(card?.default_tare_weight).toBe(4100);
+  });
+
+  it('dispatches dictionaries-updated after learning prefs', () => {
+    VehicleDriversStorage.ensureInitialized();
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', { dispatchEvent });
+
+    TicketStorage.create(
+      baseTicket({
+        vehicle_number: 'А888АА56',
+        driver_name: 'Сидоров С.С.',
+        cargo_name: 'Песок',
+        shipper_name: 'ООО Юг',
+        tare_weight: 3900,
+        weighing_mode: 'single',
+      }),
+    );
+
+    expect(dispatchEvent).toHaveBeenCalled();
+    const event = dispatchEvent.mock.calls[0]?.[0] as Event;
+    expect(event?.type).toBe('dictionaries-updated');
+    vi.unstubAllGlobals();
   });
 });

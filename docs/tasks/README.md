@@ -10,8 +10,8 @@
 | Что | Значение |
 |-----|----------|
 | Последний **влитый** этап (base) | **01** — [PR #13](https://github.com/unik1-web/weighing-system/pull/13) (+ [PR #23](https://github.com/unik1-web/weighing-system/pull/23)) |
-| На этой ветке оркестратора | **02** выполнен: задача `7b2254-weight-source` (см. [docs/7b2254-weight-source/](../7b2254-weight-source/)) |
-| **Следующий прогон** | [03-vehicle-resolve.md](03-vehicle-resolve.md) |
+| На этой ветке оркестратора | **03** выполнен: задача `13e79e-vehicle-resolve` (см. [docs/13e79e-vehicle-resolve/](../13e79e-vehicle-resolve/)); ранее **02** `7b2254-weight-source` |
+| **Следующий прогон** | [04-site-primary-spare.md](04-site-primary-spare.md) |
 | Не брать как базу | Открытые PR #15–#21 (старый CLI-стек 2–7, не влиты) |
 
 ## Очередь
@@ -20,7 +20,7 @@
 |---|------|--------------|-------------|------------|
 | 01 | [01-weighing-modes.md](01-weighing-modes.md) | 1. Режимы single/dual | — | **Сделано** (PR #13; [weighing-modes-deploy.md](../weighing-modes-deploy.md)) |
 | 02 | [02-weight-source.md](02-weight-source.md) | 2. Источник веса | 01 | **Сделано на ветке** (`7b2254-weight-source`) |
-| 03 | [03-vehicle-resolve.md](03-vehicle-resolve.md) | 3. Автоподстановка + водители | 01–02 | **Следующий приоритет** |
+| 03 | [03-vehicle-resolve.md](03-vehicle-resolve.md) | 3. Автоподстановка + водители | 01–02 | **Сделано на ветке** (`13e79e-vehicle-resolve`) |
 | 04 | [04-site-primary-spare.md](04-site-primary-spare.md) | 4. Площадка primary/spare | 01–03 | Параллельно с 05 после старта |
 | 05 | [05-scale-adapters.md](05-scale-adapters.md) | 5. Адаптеры терминалов | 04 | Параллельно с 04/06 |
 | 06 | [06-yearly-db-archive.md](06-yearly-db-archive.md) | 6. Годовая БД / архив | 01–03 | Можно параллельно с 04–05 |
@@ -45,7 +45,7 @@
 2. В чате Cursor:
 
 ```text
-/orchestrator создай задачу на доске по docs/tasks/03-vehicle-resolve.md и начни выполнять
+/orchestrator создай задачу на доске по docs/tasks/04-site-primary-spare.md и начни выполнять
 ```
 
 Прогресс: `memory/TaskBoard.md`, `memory/TASK_MEMORY_*.yml`, UI на `http://127.0.0.1:5174`.

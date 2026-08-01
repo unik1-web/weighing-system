@@ -5,9 +5,19 @@ import { formatPersonName, formatVehicleBrand } from './text-format';
 import { ticketImportKey } from './import-keys';
 import { normalizeWeighingMode, type WeighingMode } from './weighing-mode';
 import { normalizeWeightSource, type WeightSource } from './weight-source';
+import {
+  normalizeDriverInputMode,
+  normalizePlateSource,
+  type DriverInputMode,
+  type PlateSource,
+  type VehicleDriverLink,
+} from './vehicle-resolve';
+import { applyVehicleLearningOnComplete } from './vehicle-learning';
+import { SCALE_DEVICES, type ScaleDeviceId } from './scales';
 import { logger } from './logger';
 
 export type { WeightSource };
+export type { DriverInputMode, PlateSource, VehicleDriverLink };
 export type TicketStatus = 'open' | 'completed';
 export type ReoStatus = 'pending' | 'sent';
 export type { WeighingMode };
@@ -51,6 +61,11 @@ export interface WeighingTicket {
   completed_at: string | null;
   weighing_mode?: WeighingMode;
   version?: number;
+  plate_source?: PlateSource | null;
+  scale_role?: 'primary' | 'spare' | null;
+  photo_entry_path?: string | null;
+  photo_exit_path?: string | null;
+  photo_overview_path?: string | null;
 }
 
 export interface TicketAuditEvent {
@@ -84,6 +99,7 @@ const STORAGE_KEYS = {
   SESSIONS: 'app_sessions',
   TICKETS: 'app_weighing_tickets',
   TICKET_AUDIT: 'app_ticket_audit',
+  VEHICLE_DRIVERS: 'app_vehicle_drivers',
   VEHICLES: 'app_vehicles',
   DRIVERS: 'app_drivers',
   CARGOS: 'app_cargos',
@@ -93,6 +109,13 @@ const STORAGE_KEYS = {
   SETTINGS: 'app_settings',
   CURRENT_USER: 'app_current_user',
 };
+
+function normalizeScaleDeviceId(raw: unknown): ScaleDeviceId {
+  if (typeof raw === 'string' && raw in SCALE_DEVICES) {
+    return raw as ScaleDeviceId;
+  }
+  return 'microsim-m0601';
+}
 
 function persist(key: string, value: string): void {
   localStorage.setItem(key, value);
@@ -251,6 +274,12 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     reo_sent_at: ticket.reo_sent_at ?? null,
     gross_source: normalizeWeightSource(ticket.gross_source),
     tare_source: normalizeWeightSource(ticket.tare_source),
+    plate_source: normalizePlateSource(ticket.plate_source),
+    scale_role:
+      ticket.scale_role === 'primary' || ticket.scale_role === 'spare' ? ticket.scale_role : null,
+    photo_entry_path: ticket.photo_entry_path ?? null,
+    photo_exit_path: ticket.photo_exit_path ?? null,
+    photo_overview_path: ticket.photo_overview_path ?? null,
   };
   const mode = normalizeWeighingMode(ticket);
   if (ticket.weighing_mode !== mode) {
@@ -334,6 +363,7 @@ export const TicketStorage = {
           operator_name: ticket.operator_name,
           operator_id: ticket.operator_id,
         });
+        applyVehicleLearningOnComplete(ticket);
       }
     }
 
@@ -411,6 +441,7 @@ export const TicketStorage = {
         operator_name: merged.operator_name,
         operator_id: merged.operator_id,
       });
+      applyVehicleLearningOnComplete(merged);
     }
 
     return merged;
@@ -471,6 +502,88 @@ export const TicketAuditStorage = {
   },
 };
 
+/** History machine ↔ driver (sync key app_vehicle_drivers). */
+export const VehicleDriversStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.VEHICLE_DRIVERS) === null) {
+      localStorage.setItem(STORAGE_KEYS.VEHICLE_DRIVERS, '[]');
+    }
+  },
+
+  getAll(): VehicleDriverLink[] {
+    VehicleDriversStorage.ensureInitialized();
+    const stored = localStorage.getItem(STORAGE_KEYS.VEHICLE_DRIVERS);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (item): item is VehicleDriverLink =>
+          item != null &&
+          typeof item === 'object' &&
+          typeof item.id === 'string' &&
+          typeof item.vehicle_number === 'string' &&
+          typeof item.driver_name === 'string',
+      );
+    } catch {
+      return [];
+    }
+  },
+
+  getByVehicle(vehicleNumber: string): VehicleDriverLink[] {
+    const plate = formatVehiclePlate(vehicleNumber);
+    return VehicleDriversStorage.getAll().filter(
+      (link) => formatVehiclePlate(link.vehicle_number) === plate,
+    );
+  },
+
+  upsert(args: {
+    vehicle_number: string;
+    driver_name: string;
+    last_used_at?: string;
+    driver_id?: string | null;
+  }): VehicleDriverLink {
+    VehicleDriversStorage.ensureInitialized();
+    const plate = formatVehiclePlate(args.vehicle_number);
+    const driverName = formatPersonName(args.driver_name);
+    const at = args.last_used_at ?? new Date().toISOString();
+    const links = VehicleDriversStorage.getAll();
+    const index = links.findIndex(
+      (link) =>
+        formatVehiclePlate(link.vehicle_number) === plate &&
+        formatPersonName(link.driver_name) === driverName,
+    );
+
+    if (index === -1) {
+      const created: VehicleDriverLink = {
+        id: crypto.randomUUID(),
+        vehicle_number: plate,
+        driver_name: driverName,
+        last_used_at: at,
+        use_count: 1,
+        driver_id: args.driver_id ?? null,
+      };
+      links.push(created);
+      persist(STORAGE_KEYS.VEHICLE_DRIVERS, JSON.stringify(links));
+      return created;
+    }
+
+    const current = links[index];
+    const updated: VehicleDriverLink = {
+      ...current,
+      vehicle_number: plate,
+      driver_name: driverName,
+      last_used_at: at,
+      use_count: (current.use_count || 0) + 1,
+      driver_id:
+        args.driver_id !== undefined ? args.driver_id : (current.driver_id ?? null),
+    };
+    links[index] = updated;
+    persist(STORAGE_KEYS.VEHICLE_DRIVERS, JSON.stringify(links));
+    return updated;
+  },
+};
+
 // Dictionary storage
 export type DictionaryTable = 'vehicles' | 'drivers' | 'cargos' | 'shippers' | 'receivers' | 'carriers';
 
@@ -484,6 +597,9 @@ export interface DictionaryEntry {
   vehicle_brand?: string;
   vehicle_number?: string;
   inn?: string;
+  preferred_driver_name?: string | null;
+  preferred_cargo_name?: string | null;
+  preferred_shipper_name?: string | null;
 }
 
 export const DICTIONARY_LABELS: Record<DictionaryTable, string> = {
@@ -524,6 +640,11 @@ export const DictionaryStorage = {
       if (normalizedEntry.vehicle_brand) {
         normalizedEntry.vehicle_brand = formatVehicleBrand(normalizedEntry.vehicle_brand);
       }
+      if (normalizedEntry.preferred_driver_name) {
+        normalizedEntry.preferred_driver_name = formatPersonName(
+          String(normalizedEntry.preferred_driver_name),
+        );
+      }
     } else if (table === 'drivers') {
       normalizedEntry.name = formatPersonName(entry.name);
     }
@@ -555,6 +676,11 @@ export const DictionaryStorage = {
       }
       if (normalizedUpdates.vehicle_brand) {
         normalizedUpdates.vehicle_brand = formatVehicleBrand(String(normalizedUpdates.vehicle_brand));
+      }
+      if (normalizedUpdates.preferred_driver_name) {
+        normalizedUpdates.preferred_driver_name = formatPersonName(
+          String(normalizedUpdates.preferred_driver_name),
+        );
       }
     } else if (table === 'drivers') {
       const rawName = updates.name ?? items[index].name;
@@ -638,6 +764,8 @@ export interface AppSettings {
   tara_threshold: number;
   max_time_between: number;
   tara_default: number;
+  driver_input_mode: DriverInputMode;
+  scale_device_id: ScaleDeviceId;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -670,6 +798,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   tara_threshold: 15000,
   max_time_between: 24,
   tara_default: 0,
+  driver_input_mode: 'all',
+  scale_device_id: 'microsim-m0601',
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -735,12 +865,16 @@ export const SettingsStorage = {
       tara_threshold: parseNumber(stored.tara_threshold, DEFAULT_APP_SETTINGS.tara_threshold),
       max_time_between: parseNumber(stored.max_time_between, DEFAULT_APP_SETTINGS.max_time_between),
       tara_default: parseNumber(stored.tara_default, DEFAULT_APP_SETTINGS.tara_default),
+      driver_input_mode: normalizeDriverInputMode(stored.driver_input_mode),
+      scale_device_id: normalizeScaleDeviceId(stored.scale_device_id),
     };
   },
 
   updateAppSettings: (updates: Partial<AppSettings>): AppSettings => {
     const current = SettingsStorage.getAppSettings();
     const next = { ...current, ...updates };
+    next.driver_input_mode = normalizeDriverInputMode(next.driver_input_mode);
+    next.scale_device_id = normalizeScaleDeviceId(next.scale_device_id);
     const flat: Record<string, string> = {
       org_name: next.org_name,
       org_address: next.org_address,
@@ -771,6 +905,8 @@ export const SettingsStorage = {
       tara_threshold: String(next.tara_threshold),
       max_time_between: String(next.max_time_between),
       tara_default: String(next.tara_default),
+      driver_input_mode: next.driver_input_mode,
+      scale_device_id: next.scale_device_id,
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
