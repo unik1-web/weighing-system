@@ -207,15 +207,15 @@ weighing-system/
 | React 19 в dashboard vs React 18 в продукте | Держать отдельные `package.json` (уже так в denistv) |
 | Пустой `agents/` ломает старые инструкции | Сразу обновить README при Этапе A |
 
-## 11. Предлагаемый порядок работ (чеклист PR)
+## 11. Порядок работ (чеклист)
 
-1. [ ] Добавить `orchestrator-protocol.md`, `.cursor/skills/`, `dashboard/`, `memory/TaskBoard.md`
-2. [ ] npm scripts + краткий `docs/orchestrator.md` (how-to)
-3. [ ] Адаптировать skills под weighing-system
-4. [ ] Обновить README и `docs/project-for-agents.md`
-5. [ ] Пилотный прогон + скрин/проверка дашборда
+1. [x] Добавить `orchestrator-protocol.md`, `.cursor/skills/`, `dashboard/`, `memory/TaskBoard.md`
+2. [x] npm scripts + краткий `docs/orchestrator.md` (how-to)
+3. [x] Адаптировать skills под weighing-system (`_weighing-system-context.md`)
+4. [x] Обновить README и `docs/project-for-agents.md`
+5. [ ] Пилотный прогон + проверка дашборда на реальной задаче
 6. [ ] Удалить submodule `agents/`
-7. [ ] (Опционально) шаблон задачи: скрипт `docs/tasks` → секция TaskBoard
+7. [x] Мост `docs/tasks` → TaskBoard описан в skill оркестратора
 
 ## 12. Пример целевого UX
 

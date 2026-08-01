@@ -1,7 +1,15 @@
-# Постановки задач для мультиагентного пайплайна
+# Постановки задач для оркестратора
 
 Положите сюда markdown-файлы с постановкой задачи.
 
-Пример (этап 1 roadmap): [01-weighing-modes.md](01-weighing-modes.md).
+Пример: [01-weighing-modes.md](01-weighing-modes.md).
 
-Затем в Cursor (Agent mode) запустите оркестратор по шаблону из [README](../../README.md#мультиагентная-разработка), указав путь к файлу постановки.
+Затем в Cursor:
+
+```text
+/orchestrator создай задачу на доске по docs/tasks/01-weighing-modes.md и начни выполнять
+```
+
+Мониторинг: `npm run orchestrator:dashboard` → `http://127.0.0.1:5174`.
+
+Подробности: [docs/orchestrator.md](../orchestrator.md).

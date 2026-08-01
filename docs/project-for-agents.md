@@ -1,6 +1,6 @@
 # Описание проекта для агентов
 
-Краткий контекст для мультиагентного пайплайна (`agents/`). Подробности: [architecture.md](architecture.md), [api.md](api.md), [roadmap.md](roadmap.md), корневой [README.md](../README.md).
+Краткий контекст для мультиагентного пайплайна (Cursor Agent Orchestrator). Подробности: [architecture.md](architecture.md), [api.md](api.md), [roadmap.md](roadmap.md), [orchestrator.md](orchestrator.md), корневой [README.md](../README.md). Ограничения для skills: [`.cursor/skills/_weighing-system-context.md`](../.cursor/skills/_weighing-system-context.md).
 
 ## Назначение
 
@@ -29,6 +29,7 @@ Flask (server/app.py)  ──►  config.ini
 
 - Production: `npm run build` + `npm start` → один процесс Flask раздаёт `dist/` и API.
 - Dev: Vite `:5173` + `npm run dev:api` (прокси `/api` → `:5001`). У `localhost:5173` и `127.0.0.1:5001` разный `localStorage`.
+- Orchestrator dashboard (отдельно): UI `:5174`, API `:3001`, данные из `memory/`.
 
 ## Ключевые модули
 
@@ -39,22 +40,27 @@ Flask (server/app.py)  ──►  config.ini
 ## Ограничения и правила
 
 - Не коммитить секреты, `config.ini`, `BD/`, `server/data/`, `.env*`.
-- Артефакты пайплайна писать только в `docs/implementation/` (каталог в `.gitignore`).
+- Память оркестратора: `memory/TaskBoard.md`, `memory/TASK_MEMORY_*.yml` (YAML в `.gitignore`).
 - Сохранять существующие API-контракты из `docs/api.md`, если задача явно не меняет их.
 - Python: ориентироваться на 3.11/3.12 (`fdb` может ломаться на 3.13).
 - Импорт справочников: нормализация госномеров и ФИО через `dictionary_import` — не дублировать логику в обход.
 - UI на русском; печатные формы и РЭО-форматы менять осторожно.
+- Не включать `dashboard/` оркестратора в Windows-установщик.
 
 ## Каталоги для пайплайна
 
 | Путь | Назначение |
 |------|------------|
-| `agents/` | Промпты ролей (submodule [rdudov/agents](https://github.com/rdudov/agents)) — текущий процесс |
-| `docs/project-for-agents.md` | Этот файл — описание проекта |
+| `.cursor/skills/` | Роли оркестратора (SKILL.md) |
+| `.cursor/skills/_weighing-system-context.md` | Стек и ограничения для всех ролей |
+| `memory/` | TaskBoard и память executions |
+| `dashboard/` | Live-мониторинг агентов |
+| `orchestrator-protocol.md` | Форматы Task / Execution |
 | `docs/tasks/` | Постановки задач (вход оркестратора) |
-| `docs/implementation/` | ТЗ, архитектура, план, статус пайплайна (не коммитить) |
-| `docs/orchestrator-integration.md` | План миграции на denistv/cursor-agent-orchestrator + dashboard |
+| `docs/{task_id}/` | Документы tech-writer после прогона |
+| `docs/implementation/` | Черновики старого CLI-пайплайна (deprecated) |
+| `agents/` | Deprecated submodule [rdudov/agents](https://github.com/rdudov/agents) |
 
 ## Запуск пайплайна
 
-См. раздел «Мультиагентная разработка» в корневом README.
+См. [orchestrator.md](orchestrator.md) и раздел «Мультиагентная разработка» в корневом README.

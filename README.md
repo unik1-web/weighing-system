@@ -201,62 +201,54 @@ JSON-файл для ручной отправки содержит пустые
 | [docs/architecture.md](docs/architecture.md) | Потоки данных, модули, нормализация, печать, env |
 | [docs/api.md](docs/api.md) | Справочник HTTP API Flask |
 | [docs/project-for-agents.md](docs/project-for-agents.md) | Контекст проекта для мультиагентного пайплайна |
-| [docs/orchestrator-integration.md](docs/orchestrator-integration.md) | План интеграции Cursor Agent Orchestrator и дашборда |
+| [docs/orchestrator.md](docs/orchestrator.md) | Запуск Cursor Agent Orchestrator и live-дашборда |
+| [docs/orchestrator-integration.md](docs/orchestrator-integration.md) | План/статус интеграции оркестратора |
 | [docs/roadmap.md](docs/roadmap.md) | Roadmap развития |
 
 ## Мультиагентная разработка
 
-> **Предложение по миграции:** заменить CLI-пайплайн на [Cursor Agent Orchestrator](https://github.com/denistv/cursor-agent-orchestrator) (FSM, skills, `memory/`, live-дашборд). Анализ и план — в [docs/orchestrator-integration.md](docs/orchestrator-integration.md).
+Пайплайн на базе [Cursor Agent Orchestrator](https://github.com/denistv/cursor-agent-orchestrator): Cursor Skills (`.cursor/skills/`), FSM, память в `memory/`, live-дашборд в `dashboard/`.
 
-Промпты ролей подключены как git submodule из [rdudov/agents](https://github.com/rdudov/agents) в каталог `agents/`.
+Подробности: [docs/orchestrator.md](docs/orchestrator.md). Контекст продукта для ролей: [docs/project-for-agents.md](docs/project-for-agents.md).
+
+### Дашборд
 
 ```bash
-# после clone репозитория
-git submodule update --init --recursive
-
-# обновление промптов
-git submodule update --remote agents
+npm run orchestrator:dashboard:install
+npm run orchestrator:dashboard
 ```
 
-Нужен [Cursor CLI](https://cursor.com/install): `agent login`, модели — `agent models`.
+UI: `http://127.0.0.1:5174`, API/SSE: `:3001` (продукт остаётся на Vite `:5173` и Flask `:5001`).
 
-Постановку задачи положите в `docs/tasks/`. Артефакты пайплайна пишутся в `docs/implementation/` (не коммитятся).
+### Запуск в Cursor
 
-Пример запуска в Cursor (Agent mode):
+Постановку положите в `docs/tasks/`, затем в чате:
 
+```text
+/orchestrator создай задачу на доске по docs/tasks/01-weighing-modes.md и начни выполнять
 ```
-Используя подход по оркестрации мультиагентной разработки (agents/01_orchestrator.md),
-выполни доработку docs/tasks/01-weighing-modes.md.
 
-Описание проекта: docs/project-for-agents.md
-Дополнительный контекст: docs/architecture.md, docs/api.md, README.md
+Оркестратор ведёт задачу по FSM (`analysis` → … → `tech-writer`), субагенты пишут `memory/TASK_MEMORY_*.yml`, прогресс виден в дашборде.
 
-Каталог артефактов пайплайна: docs/implementation
+### Deprecated: CLI-пайплайн `agents/`
 
-Промпты агентов с указанными в 01_orchestrator.md ролями находятся в agents (02*.md..10.md).
-Агентов нужно вызывать shell-командами:
-agent -f --model {модель} -p {промпт}
-и дожидаться от них результатов.
-
-Промпт следующего формата:
-"{содержимое файла с ролью} {входные данные согласно описанию роли}"
-
-Модель:
-аналитик, архитектор, планировщик — gpt-5.4-high
-ревьюеры ТЗ, архитектуры, плана, кода и разработчик — gpt-5.3-codex
-```
+Submodule [rdudov/agents](https://github.com/rdudov/agents) и запуск через Cursor CLI `agent -f --model …` больше не рекомендуются. Используйте `/orchestrator` и skills выше.
 
 ## Структура проекта
 
 ```
 weighing-system/
-├── agents/                 # промпты мультиагентного пайплайна (submodule)
+├── .cursor/skills/         # роли Cursor Agent Orchestrator
+├── memory/                 # TaskBoard + TASK_MEMORY_*.yml
+├── dashboard/              # live UI оркестратора (:5174 / API :3001)
+├── orchestrator-protocol.md
+├── agents/                 # deprecated: старый submodule rdudov/agents
 ├── config.ini              # настройки (создаётся при работе)
 ├── BD/
 │   └── weighing.db         # SQLite
 ├── docs/                   # архитектура, API, задачи и артефакты пайплайна
 │   ├── tasks/              # постановки задач для оркестратора
-│   └── implementation/     # черновики пайплайна (в .gitignore)
+│   └── implementation/     # черновики старого пайплайна (в .gitignore)
 ├── installer/
 │   ├── build.ps1           # сборка exe + setup
 │   ├── weighing-system.spec

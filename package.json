@@ -15,7 +15,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:server": "python3 -m pytest server/tests -q"
+    "test:server": "python3 -m pytest server/tests -q",
+    "orchestrator:dashboard:install": "npm --prefix dashboard install",
+    "orchestrator:dashboard": "npm --prefix dashboard run dev",
+    "orchestrator:dashboard:check": "npm --prefix dashboard run check"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",
