@@ -252,8 +252,23 @@ describe('TicketStorage normalize / create / CAS', () => {
     localStorage.setItem('app_weighing_tickets', JSON.stringify([raw]));
     const ticket = TicketStorage.getById('legacy-no-audit');
     expect(ticket?.plate_source).toBeNull();
+    expect(ticket?.site_id).toBeNull();
+    expect(ticket?.scale_id).toBeNull();
     expect(ticket?.scale_role).toBeNull();
     expect(ticket?.photo_entry_path).toBeNull();
+  });
+
+  it('persists site_id/scale_id/scale_role on create', () => {
+    const ticket = TicketStorage.create(
+      baseTicket({
+        site_id: 'site-1',
+        scale_id: 'scale-1',
+        scale_role: 'primary',
+      }),
+    );
+    expect(ticket.site_id).toBe('site-1');
+    expect(ticket.scale_id).toBe('scale-1');
+    expect(ticket.scale_role).toBe('primary');
   });
 
   it('learns vehicle_drivers and prefs on completed create', () => {

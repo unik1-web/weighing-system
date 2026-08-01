@@ -15,6 +15,12 @@ import { formatVehiclePlate } from '@/lib/vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from '@/lib/text-format';
 import { SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
 import {
+  getActiveScaleContext,
+  updateActiveScaleDevice,
+  SITE_RUNTIME_UPDATED_EVENT,
+  ACTIVE_SCALE_SET_LABELS,
+} from '@/lib/site-runtime';
+import {
   type WeighingMode,
   type WeightPhase,
   filterIncompleteDual,
@@ -206,6 +212,30 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setIntervalWarnedForId(completingTicket.id);
     }
   }, [showIntervalBanner, completingTicket, intervalWarnedForId, appSettings.max_time_between]);
+
+  const [activeScaleLabel, setActiveScaleLabel] = useState(() => {
+    try {
+      return ACTIVE_SCALE_SET_LABELS[getActiveScaleContext().runtime.active_scale_set];
+    } catch {
+      return ACTIVE_SCALE_SET_LABELS.primary;
+    }
+  });
+
+  useEffect(() => {
+    const syncFromRuntime = () => {
+      try {
+        const ctx = getActiveScaleContext();
+        setDeviceId(ctx.adapter_id);
+        setActiveScaleLabel(ACTIVE_SCALE_SET_LABELS[ctx.runtime.active_scale_set]);
+        setAppSettings(SettingsStorage.getAppSettings());
+      } catch {
+        // migration may not be ready in tests without crypto
+      }
+    };
+    syncFromRuntime();
+    window.addEventListener(SITE_RUNTIME_UPDATED_EVENT, syncFromRuntime);
+    return () => window.removeEventListener(SITE_RUNTIME_UPDATED_EVENT, syncFromRuntime);
+  }, []);
 
   const resetFormFields = useCallback(() => {
     tareAutofillBlocked.current = false;
@@ -412,15 +442,36 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
 
   const handleDeviceChange = (id: ScaleDeviceId) => {
     setDeviceId(id);
-    SettingsStorage.updateAppSettings({ scale_device_id: id });
+    updateActiveScaleDevice(id);
   };
 
-  const auditStubFields = (): Pick<
+  const auditCreateFields = (): Pick<
     WeighingTicket,
-    'plate_source' | 'scale_role' | 'photo_entry_path' | 'photo_exit_path' | 'photo_overview_path'
+    | 'plate_source'
+    | 'site_id'
+    | 'scale_id'
+    | 'scale_role'
+    | 'photo_entry_path'
+    | 'photo_exit_path'
+    | 'photo_overview_path'
+  > => {
+    const ctx = getActiveScaleContext();
+    return {
+      plate_source: plateSource,
+      site_id: ctx.site_id,
+      scale_id: ctx.scale_id,
+      scale_role: ctx.scale_role,
+      photo_entry_path: null,
+      photo_exit_path: null,
+      photo_overview_path: null,
+    };
+  };
+
+  const auditUpdateFields = (): Pick<
+    WeighingTicket,
+    'plate_source' | 'photo_entry_path' | 'photo_exit_path' | 'photo_overview_path'
   > => ({
     plate_source: plateSource,
-    scale_role: null,
     photo_entry_path: null,
     photo_exit_path: null,
     photo_overview_path: null,
@@ -535,7 +586,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         notes,
         weighing_mode: 'single',
         version: 1,
-        ...auditStubFields(),
+        ...auditCreateFields(),
       });
       logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
         id: ticket.id,
@@ -601,7 +652,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         notes,
         weighing_mode: 'dual',
         version: 1,
-        ...auditStubFields(),
+        ...auditCreateFields(),
       });
       logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
         id: ticket.id,
@@ -661,7 +712,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       completed_at: now,
       net_weight: net,
       total_amount: amount,
-      ...auditStubFields(),
+      ...auditUpdateFields(),
     };
 
     // Only write weight meta for slots that were editable (new on this step)
@@ -779,6 +830,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
               </div>
               <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
                 Весовщик: {displayName}
+              </span>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                Комплект: {activeScaleLabel}
               </span>
             </div>
           </div>

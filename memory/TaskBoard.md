@@ -41,7 +41,7 @@ Description: |
 
 ## 82cfbc-site-primary-spare
 
-State: architect
+State: development
 Description: |
   Источник: docs/tasks/04-site-primary-spare.md
 

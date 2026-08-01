@@ -9,10 +9,28 @@ import {
   type AppSettings,
   type NavTabMode,
   type PrintLayout,
+  type Scale,
 } from '@/lib/storage';
 import { DRIVER_INPUT_MODE_LABELS, type DriverInputMode } from '@/lib/vehicle-resolve';
-import { SCALE_DEVICE_LIST, type ScaleDeviceId } from '@/lib/scales';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale, Download, Upload, FolderOpen, Trash2, LayoutPanelTop, Server } from 'lucide-react';
+import { SCALE_DEVICE_LIST, SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
+import {
+  ensureSiteMigrated,
+  getDefaultSite,
+  getActiveScaleContext,
+  listScalesForSite,
+  updateSite,
+  upsertScale,
+  enableSpareScale,
+  connectionFromDevice,
+  listSwitchHistory,
+  ACTIVE_SCALE_SET_LABELS,
+  SWITCH_REASON_LABELS,
+  SITE_RUNTIME_UPDATED_EVENT,
+  DEFAULT_SPARE_SCALE_NAME,
+  isSpareEnabled,
+} from '@/lib/site-runtime';
+import { SpareSwitchWizard } from '@/components/SpareSwitchWizard';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, LayoutPanelTop, Server, ArrowLeftRight } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
 import {
@@ -54,9 +72,36 @@ export function SettingsView({ onSaved }: Props) {
   const [dictClearBusy, setDictClearBusy] = useState(false);
   const [pathPicker, setPathPicker] = useState<'vescom' | 'metra' | 'wa' | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [siteName, setSiteName] = useState('');
+  const [siteId, setSiteId] = useState('');
+  const [primaryScale, setPrimaryScale] = useState<Scale | null>(null);
+  const [spareScale, setSpareScale] = useState<Scale | null>(null);
+  const [activeSetLabel, setActiveSetLabel] = useState(ACTIVE_SCALE_SET_LABELS.primary);
+  const [spareEnabled, setSpareEnabled] = useState(false);
+  const [switchHistory, setSwitchHistory] = useState<
+    ReturnType<typeof listSwitchHistory>
+  >([]);
+  const [wizardDirection, setWizardDirection] = useState<'to_spare' | 'to_primary' | null>(null);
+  const [siteMessage, setSiteMessage] = useState<string | null>(null);
+
+  const reloadSiteState = () => {
+    ensureSiteMigrated();
+    const site = getDefaultSite();
+    setSiteId(site.id);
+    setSiteName(site.name);
+    const scales = listScalesForSite(site.id);
+    setPrimaryScale(scales.find((s) => s.role === 'primary') ?? null);
+    setSpareScale(scales.find((s) => s.role === 'spare') ?? null);
+    const ctx = getActiveScaleContext();
+    setActiveSetLabel(ACTIVE_SCALE_SET_LABELS[ctx.runtime.active_scale_set]);
+    setSpareEnabled(isSpareEnabled(site.id));
+    setSwitchHistory(listSwitchHistory(site.id).slice().reverse().slice(0, 10));
+    setSettings(SettingsStorage.getAppSettings());
+  };
 
   useEffect(() => {
     setSettings(SettingsStorage.getAppSettings());
+    reloadSiteState();
     const cargosFromDictionary = DictionaryStorage.getTable('cargos').map((item) => item.name);
     const cargosFromTickets = TicketStorage.getAll().map((ticket) => ticket.cargo_name);
     setCargoOptions(
@@ -65,6 +110,10 @@ export function SettingsView({ onSaved }: Props) {
       ),
     );
     void fetchStoragePaths().then(setStoragePaths);
+
+    const onRuntime = () => reloadSiteState();
+    window.addEventListener(SITE_RUNTIME_UPDATED_EVENT, onRuntime);
+    return () => window.removeEventListener(SITE_RUNTIME_UPDATED_EVENT, onRuntime);
   }, []);
 
   const reloadCargoOptions = () => {
@@ -101,6 +150,41 @@ export function SettingsView({ onSaved }: Props) {
       return;
     }
     SettingsStorage.updateAppSettings(settings);
+    try {
+      if (siteId) {
+        updateSite({ id: siteId, name: siteName });
+      }
+      if (primaryScale) {
+        upsertScale({
+          ...primaryScale,
+          adapter_id: primaryScale.adapter_id,
+          connection: connectionFromDevice(primaryScale.adapter_id),
+          name: SCALE_DEVICES[primaryScale.adapter_id]?.name ?? primaryScale.name,
+        });
+      }
+      if (spareScale) {
+        if (spareEnabled) {
+          enableSpareScale({
+            adapter_id: spareScale.adapter_id,
+            name: spareScale.name || DEFAULT_SPARE_SCALE_NAME,
+          });
+        } else {
+          upsertScale({
+            ...spareScale,
+            enabled: false,
+            connection: connectionFromDevice(spareScale.adapter_id),
+          });
+        }
+      }
+      // Keep settings cache in sync with active scale adapter
+      const ctx = getActiveScaleContext();
+      SettingsStorage.updateAppSettings({ scale_device_id: ctx.adapter_id });
+      setSettings((prev) => ({ ...prev, scale_device_id: ctx.adapter_id }));
+      reloadSiteState();
+    } catch (err: unknown) {
+      setSettingsError(err instanceof Error ? err.message : 'Ошибка сохранения площадки');
+      return;
+    }
     logger.info('settings', 'Сохранены настройки режимов взвешивания', {
       weighing_mode_default: settings.weighing_mode_default,
       stable_mode: settings.stable_mode,
@@ -445,7 +529,161 @@ export function SettingsView({ onSaved }: Props) {
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-          <Scale size={18} className="text-blue-600" />
+          <ArrowLeftRight size={18} className="text-blue-600" />
+          <h3 className="text-sm font-semibold text-slate-800">Площадка и весы</h3>
+        </div>
+        <p className="text-xs text-slate-500">
+          Основные и резервные весы одной площадки. Активный комплект:{' '}
+          <span className="font-semibold text-slate-700">{activeSetLabel}</span>
+          {spareEnabled ? '' : ' (резерв ещё не включён)'}
+        </p>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <label className={labelClass}>Название площадки</label>
+            <input
+              type="text"
+              value={siteName}
+              onChange={(e) => {
+                setSiteName(e.target.value);
+                setSaved(false);
+              }}
+              className={inputClass}
+            />
+          </div>
+
+          <div>
+            <label className={labelClass}>Основные весы — профиль</label>
+            <select
+              value={primaryScale?.adapter_id ?? settings.scale_device_id}
+              onChange={(e) => {
+                const id = e.target.value as ScaleDeviceId;
+                setPrimaryScale((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        adapter_id: id,
+                        name: SCALE_DEVICES[id].name,
+                        connection: connectionFromDevice(id),
+                      }
+                    : prev,
+                );
+                setSaved(false);
+              }}
+              className={inputClass}
+            >
+              {SCALE_DEVICE_LIST.map((device) => (
+                <option key={device.id} value={device.id}>
+                  {device.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className={labelClass}>Резервные весы — профиль</label>
+            <select
+              value={spareScale?.adapter_id ?? 'microsim-m0601'}
+              onChange={(e) => {
+                const id = e.target.value as ScaleDeviceId;
+                setSpareScale((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        adapter_id: id,
+                        connection: connectionFromDevice(id),
+                      }
+                    : prev,
+                );
+                setSaved(false);
+              }}
+              className={inputClass}
+            >
+              {SCALE_DEVICE_LIST.map((device) => (
+                <option key={device.id} value={device.id}>
+                  {device.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="sm:col-span-2">
+            <label className={labelClass}>Имя резервных весов</label>
+            <input
+              type="text"
+              value={spareScale?.name ?? DEFAULT_SPARE_SCALE_NAME}
+              onChange={(e) => {
+                setSpareScale((prev) => (prev ? { ...prev, name: e.target.value } : prev));
+                setSaved(false);
+              }}
+              className={inputClass}
+            />
+          </div>
+
+          <div className="sm:col-span-2">
+            <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={spareEnabled}
+                onChange={(e) => {
+                  setSpareEnabled(e.target.checked);
+                  setSaved(false);
+                }}
+                className="mt-0.5"
+              />
+              <span>Резервные весы включены (можно переключаться на резерв)</span>
+            </label>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setSiteMessage(null);
+              if (activeSetLabel === ACTIVE_SCALE_SET_LABELS.primary) {
+                if (!spareEnabled) {
+                  setSiteMessage(
+                    'Сначала включите и сохраните резервные весы, затем переключайтесь.',
+                  );
+                  return;
+                }
+                setWizardDirection('to_spare');
+              } else {
+                setWizardDirection('to_primary');
+              }
+            }}
+            className="inline-flex items-center gap-2 rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100"
+          >
+            <ArrowLeftRight size={16} />
+            {activeSetLabel === ACTIVE_SCALE_SET_LABELS.primary
+              ? 'Переключить на резервные'
+              : 'Вернуться на основные'}
+          </button>
+          {siteMessage && <span className="text-sm text-amber-700">{siteMessage}</span>}
+        </div>
+
+        {switchHistory.length > 0 && (
+          <div className="space-y-1 border-t border-slate-100 pt-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Журнал переключений
+            </p>
+            <ul className="max-h-40 space-y-1 overflow-y-auto text-xs text-slate-600">
+              {switchHistory.map((ev) => (
+                <li key={ev.id}>
+                  {new Date(ev.at).toLocaleString('ru-RU')} —{' '}
+                  {ACTIVE_SCALE_SET_LABELS[ev.from_set]} → {ACTIVE_SCALE_SET_LABELS[ev.to_set]},{' '}
+                  {SWITCH_REASON_LABELS[ev.reason]}, {ev.operator_name}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+          <ScaleIcon size={18} className="text-blue-600" />
           <h3 className="text-sm font-semibold text-slate-800">Режимы взвешивания</h3>
         </div>
         <p className="text-xs text-slate-500">
@@ -526,10 +764,36 @@ export function SettingsView({ onSaved }: Props) {
             </select>
           </div>
           <div>
-            <label className={labelClass}>Модель весов по умолчанию</label>
+            <label className={labelClass}>Модель весов активного комплекта</label>
             <select
               value={settings.scale_device_id}
-              onChange={(e) => updateField('scale_device_id', e.target.value as ScaleDeviceId)}
+              onChange={(e) => {
+                const id = e.target.value as ScaleDeviceId;
+                updateField('scale_device_id', id);
+                const ctx = getActiveScaleContext();
+                if (ctx.scale_role === 'primary') {
+                  setPrimaryScale((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          adapter_id: id,
+                          name: SCALE_DEVICES[id].name,
+                          connection: connectionFromDevice(id),
+                        }
+                      : prev,
+                  );
+                } else {
+                  setSpareScale((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          adapter_id: id,
+                          connection: connectionFromDevice(id),
+                        }
+                      : prev,
+                  );
+                }
+              }}
               className={inputClass}
             >
               {SCALE_DEVICE_LIST.map((device) => (
@@ -538,6 +802,9 @@ export function SettingsView({ onSaved }: Props) {
                 </option>
               ))}
             </select>
+            <p className="mt-1 text-xs text-slate-500">
+              Синхронизируется с профилем активного комплекта (основные/резервные).
+            </p>
           </div>
         </div>
       </div>
@@ -787,7 +1054,7 @@ export function SettingsView({ onSaved }: Props) {
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-          <Scale size={18} className="text-violet-600" />
+          <ScaleIcon size={18} className="text-violet-600" />
           <h3 className="text-sm font-semibold text-slate-800">База Metra (TWeights.db)</h3>
         </div>
 
@@ -1029,6 +1296,18 @@ export function SettingsView({ onSaved }: Props) {
           setPathPicker(null);
         }}
       />
+
+      {wizardDirection && (
+        <SpareSwitchWizard
+          direction={wizardDirection}
+          onCancel={() => setWizardDirection(null)}
+          onDone={() => {
+            setWizardDirection(null);
+            reloadSiteState();
+            setSiteMessage('Комплект переключён.');
+          }}
+        />
+      )}
 
       <div className="flex items-center gap-3">
         <button

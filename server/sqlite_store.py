@@ -14,6 +14,10 @@ STORAGE_KEYS = {
     'tickets': 'app_weighing_tickets',
     'ticket_audit': 'app_ticket_audit',
     'vehicle_drivers': 'app_vehicle_drivers',
+    'sites': 'app_sites',
+    'scales': 'app_scales',
+    'site_runtime': 'app_site_runtime',
+    'site_scale_switches': 'app_site_scale_switches',
     'session': 'app_current_user',
     'vehicles': 'app_vehicles',
     'drivers': 'app_drivers',
@@ -40,7 +44,7 @@ TICKET_COLUMNS = [
     'scale_device', 'operator_id', 'operator_name', 'status', 'reo_status', 'reo_sent_at',
     'notes', 'created_at', 'completed_at',
     'weighing_mode', 'version',
-    'plate_source', 'scale_role',
+    'plate_source', 'site_id', 'scale_id', 'scale_role',
     'photo_entry_path', 'photo_exit_path', 'photo_overview_path',
 ]
 
@@ -50,6 +54,24 @@ AUDIT_COLUMNS = [
 
 VEHICLE_DRIVER_COLUMNS = [
     'id', 'vehicle_number', 'driver_name', 'last_used_at', 'use_count', 'driver_id',
+]
+
+SITE_COLUMNS = [
+    'id', 'name', 'is_default', 'created_at',
+]
+
+SCALE_COLUMNS = [
+    'id', 'site_id', 'role', 'name', 'adapter_id', 'connection', 'enabled', 'created_at',
+]
+
+SITE_RUNTIME_COLUMNS = [
+    'site_id', 'active_scale_set', 'camera_mode', 'anpr_mode',
+    'switch_reason', 'switch_by_operator_id', 'switch_by_operator_name', 'switch_at',
+]
+
+SITE_SCALE_SWITCH_COLUMNS = [
+    'id', 'site_id', 'from_set', 'to_set', 'reason',
+    'operator_id', 'operator_name', 'at', 'camera_ack',
 ]
 
 
@@ -88,7 +110,7 @@ def connect():
 
 
 def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
-    """Ensure weighing_tickets columns, ticket_audit, vehicle_drivers, and open→dual backfill."""
+    """Ensure weighing_tickets columns, ticket_audit, vehicle_drivers, sites/scales, and open→dual backfill."""
     connection.execute(
         '''
         CREATE TABLE IF NOT EXISTS ticket_audit (
@@ -130,6 +152,8 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         '''
     )
 
+    _ensure_site_tables(connection)
+
     existing = {
         row['name']
         for row in connection.execute('PRAGMA table_info(weighing_tickets)').fetchall()
@@ -151,6 +175,8 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
 
     for column in (
         'plate_source',
+        'site_id',
+        'scale_id',
         'scale_role',
         'photo_entry_path',
         'photo_exit_path',
@@ -164,6 +190,74 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             "UPDATE weighing_tickets SET weighing_mode = 'dual' WHERE status = 'open'"
         )
+
+
+def _ensure_site_tables(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS sites (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS scales (
+            id TEXT PRIMARY KEY,
+            site_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            name TEXT NOT NULL,
+            adapter_id TEXT NOT NULL,
+            connection TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (site_id) REFERENCES sites(id)
+        )
+        '''
+    )
+    connection.execute(
+        'CREATE INDEX IF NOT EXISTS idx_scales_site_role ON scales(site_id, role)'
+    )
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS site_runtime (
+            site_id TEXT PRIMARY KEY,
+            active_scale_set TEXT NOT NULL,
+            camera_mode TEXT NOT NULL,
+            anpr_mode TEXT NOT NULL,
+            switch_reason TEXT,
+            switch_by_operator_id TEXT,
+            switch_by_operator_name TEXT,
+            switch_at TEXT,
+            FOREIGN KEY (site_id) REFERENCES sites(id)
+        )
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS site_scale_switches (
+            id TEXT PRIMARY KEY,
+            site_id TEXT NOT NULL,
+            from_set TEXT NOT NULL,
+            to_set TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            operator_id TEXT,
+            operator_name TEXT NOT NULL,
+            at TEXT NOT NULL,
+            camera_ack TEXT,
+            FOREIGN KEY (site_id) REFERENCES sites(id)
+        )
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_site_scale_switches_site_at
+            ON site_scale_switches(site_id, at)
+        '''
+    )
 
 
 def init_schema(connection: sqlite3.Connection) -> None:
@@ -220,6 +314,8 @@ def init_schema(connection: sqlite3.Connection) -> None:
             weighing_mode TEXT NOT NULL DEFAULT 'single',
             version INTEGER NOT NULL DEFAULT 1,
             plate_source TEXT,
+            site_id TEXT,
+            scale_id TEXT,
             scale_role TEXT,
             photo_entry_path TEXT,
             photo_exit_path TEXT,
@@ -269,6 +365,55 @@ def init_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle
             ON vehicle_drivers(vehicle_number);
+
+        CREATE TABLE IF NOT EXISTS sites (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS scales (
+            id TEXT PRIMARY KEY,
+            site_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            name TEXT NOT NULL,
+            adapter_id TEXT NOT NULL,
+            connection TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (site_id) REFERENCES sites(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_scales_site_role ON scales(site_id, role);
+
+        CREATE TABLE IF NOT EXISTS site_runtime (
+            site_id TEXT PRIMARY KEY,
+            active_scale_set TEXT NOT NULL,
+            camera_mode TEXT NOT NULL,
+            anpr_mode TEXT NOT NULL,
+            switch_reason TEXT,
+            switch_by_operator_id TEXT,
+            switch_by_operator_name TEXT,
+            switch_at TEXT,
+            FOREIGN KEY (site_id) REFERENCES sites(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS site_scale_switches (
+            id TEXT PRIMARY KEY,
+            site_id TEXT NOT NULL,
+            from_set TEXT NOT NULL,
+            to_set TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            operator_id TEXT,
+            operator_name TEXT NOT NULL,
+            at TEXT NOT NULL,
+            camera_ack TEXT,
+            FOREIGN KEY (site_id) REFERENCES sites(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_site_scale_switches_site_at
+            ON site_scale_switches(site_id, at);
         '''
     )
     ensure_ticket_schema(connection)
@@ -280,7 +425,15 @@ def _table_count(connection: sqlite3.Connection, table: str) -> int:
 
 
 def database_has_data(connection: sqlite3.Connection) -> bool:
-    for table in ('users', 'weighing_tickets', 'dictionary_entries', 'app_sessions', 'vehicle_drivers'):
+    for table in (
+        'users',
+        'weighing_tickets',
+        'dictionary_entries',
+        'app_sessions',
+        'vehicle_drivers',
+        'sites',
+        'scales',
+    ):
         if _table_count(connection, table) > 0:
             return True
     return False
@@ -367,6 +520,64 @@ def _load_vehicle_drivers(connection: sqlite3.Connection) -> list[dict[str, Any]
     return [{column: row[column] for column in VEHICLE_DRIVER_COLUMNS} for row in rows]
 
 
+def _load_sites(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'SELECT {", ".join(SITE_COLUMNS)} FROM sites ORDER BY created_at ASC'
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        result.append(
+            {
+                'id': row['id'],
+                'name': row['name'],
+                'is_default': bool(row['is_default']),
+                'created_at': row['created_at'],
+            }
+        )
+    return result
+
+
+def _load_scales(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'SELECT {", ".join(SCALE_COLUMNS)} FROM scales ORDER BY created_at ASC'
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        connection_raw = row['connection']
+        try:
+            connection_obj = json.loads(connection_raw) if connection_raw else {}
+        except (TypeError, json.JSONDecodeError):
+            connection_obj = {}
+        result.append(
+            {
+                'id': row['id'],
+                'site_id': row['site_id'],
+                'role': row['role'],
+                'name': row['name'],
+                'adapter_id': row['adapter_id'],
+                'connection': connection_obj,
+                'enabled': bool(row['enabled']),
+                'created_at': row['created_at'],
+            }
+        )
+    return result
+
+
+def _load_site_runtime(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'SELECT {", ".join(SITE_RUNTIME_COLUMNS)} FROM site_runtime'
+    ).fetchall()
+    return [{column: row[column] for column in SITE_RUNTIME_COLUMNS} for row in rows]
+
+
+def _load_site_scale_switches(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'SELECT {", ".join(SITE_SCALE_SWITCH_COLUMNS)} FROM site_scale_switches'
+        ' ORDER BY at ASC'
+    ).fetchall()
+    return [{column: row[column] for column in SITE_SCALE_SWITCH_COLUMNS} for row in rows]
+
+
 def _load_dictionary(connection: sqlite3.Connection, category: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
@@ -427,6 +638,24 @@ def read_database() -> dict[str, str]:
         if vehicle_drivers:
             result[STORAGE_KEYS['vehicle_drivers']] = json.dumps(
                 vehicle_drivers, ensure_ascii=False
+            )
+
+        sites = _load_sites(connection)
+        if sites:
+            result[STORAGE_KEYS['sites']] = json.dumps(sites, ensure_ascii=False)
+
+        scales = _load_scales(connection)
+        if scales:
+            result[STORAGE_KEYS['scales']] = json.dumps(scales, ensure_ascii=False)
+
+        site_runtime = _load_site_runtime(connection)
+        if site_runtime:
+            result[STORAGE_KEYS['site_runtime']] = json.dumps(site_runtime, ensure_ascii=False)
+
+        site_switches = _load_site_scale_switches(connection)
+        if site_switches:
+            result[STORAGE_KEYS['site_scale_switches']] = json.dumps(
+                site_switches, ensure_ascii=False
             )
 
         session = _load_session(connection)
@@ -560,6 +789,102 @@ def _replace_vehicle_drivers(connection: sqlite3.Connection, links: list[Any]) -
         )
 
 
+def _replace_sites(connection: sqlite3.Connection, sites: list[Any]) -> None:
+    connection.execute('DELETE FROM sites')
+    for site in sites:
+        if not isinstance(site, dict):
+            continue
+        is_default = site.get('is_default')
+        connection.execute(
+            f'''
+            INSERT INTO sites ({", ".join(SITE_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(SITE_COLUMNS))})
+            ''',
+            (
+                str(site.get('id', '')),
+                str(site.get('name', '')),
+                1 if is_default else 0,
+                str(site.get('created_at', '')),
+            ),
+        )
+
+
+def _replace_scales(connection: sqlite3.Connection, scales: list[Any]) -> None:
+    connection.execute('DELETE FROM scales')
+    for scale in scales:
+        if not isinstance(scale, dict):
+            continue
+        conn_val = scale.get('connection')
+        if isinstance(conn_val, (dict, list)):
+            connection_json = json.dumps(conn_val, ensure_ascii=False)
+        else:
+            connection_json = str(conn_val or '{}')
+        enabled = scale.get('enabled')
+        connection.execute(
+            f'''
+            INSERT INTO scales ({", ".join(SCALE_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(SCALE_COLUMNS))})
+            ''',
+            (
+                str(scale.get('id', '')),
+                str(scale.get('site_id', '')),
+                str(scale.get('role', '')),
+                str(scale.get('name', '')),
+                str(scale.get('adapter_id', '')),
+                connection_json,
+                1 if enabled else 0,
+                str(scale.get('created_at', '')),
+            ),
+        )
+
+
+def _replace_site_runtime(connection: sqlite3.Connection, rows: list[Any]) -> None:
+    connection.execute('DELETE FROM site_runtime')
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        connection.execute(
+            f'''
+            INSERT INTO site_runtime ({", ".join(SITE_RUNTIME_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(SITE_RUNTIME_COLUMNS))})
+            ''',
+            (
+                str(row.get('site_id', '')),
+                str(row.get('active_scale_set', 'primary')),
+                str(row.get('camera_mode', 'normal')),
+                str(row.get('anpr_mode', 'enabled')),
+                row.get('switch_reason'),
+                row.get('switch_by_operator_id'),
+                row.get('switch_by_operator_name'),
+                row.get('switch_at'),
+            ),
+        )
+
+
+def _replace_site_scale_switches(connection: sqlite3.Connection, events: list[Any]) -> None:
+    connection.execute('DELETE FROM site_scale_switches')
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        connection.execute(
+            f'''
+            INSERT INTO site_scale_switches ({", ".join(SITE_SCALE_SWITCH_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(SITE_SCALE_SWITCH_COLUMNS))})
+            ''',
+            (
+                str(event.get('id', '')),
+                str(event.get('site_id', '')),
+                str(event.get('from_set', '')),
+                str(event.get('to_set', '')),
+                str(event.get('reason', '')),
+                event.get('operator_id'),
+                str(event.get('operator_name', '')),
+                str(event.get('at', '')),
+                event.get('camera_ack'),
+            ),
+        )
+
+
 def _replace_dictionary(connection: sqlite3.Connection, category: str, items: list[Any]) -> None:
     connection.execute('DELETE FROM dictionary_entries WHERE category = ?', (category,))
     for item in items:
@@ -632,6 +957,38 @@ def write_database(data: dict[str, Any]) -> None:
                 links = json.loads(str(data[STORAGE_KEYS['vehicle_drivers']]))
                 if isinstance(links, list):
                     _replace_vehicle_drivers(connection, links)
+            except json.JSONDecodeError:
+                pass
+
+        if STORAGE_KEYS['sites'] in data:
+            try:
+                sites = json.loads(str(data[STORAGE_KEYS['sites']]))
+                if isinstance(sites, list):
+                    _replace_sites(connection, sites)
+            except json.JSONDecodeError:
+                pass
+
+        if STORAGE_KEYS['scales'] in data:
+            try:
+                scales = json.loads(str(data[STORAGE_KEYS['scales']]))
+                if isinstance(scales, list):
+                    _replace_scales(connection, scales)
+            except json.JSONDecodeError:
+                pass
+
+        if STORAGE_KEYS['site_runtime'] in data:
+            try:
+                runtime_rows = json.loads(str(data[STORAGE_KEYS['site_runtime']]))
+                if isinstance(runtime_rows, list):
+                    _replace_site_runtime(connection, runtime_rows)
+            except json.JSONDecodeError:
+                pass
+
+        if STORAGE_KEYS['site_scale_switches'] in data:
+            try:
+                switches = json.loads(str(data[STORAGE_KEYS['site_scale_switches']]))
+                if isinstance(switches, list):
+                    _replace_site_scale_switches(connection, switches)
             except json.JSONDecodeError:
                 pass
 
