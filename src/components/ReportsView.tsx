@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { type WeighingTicket } from '@/lib/storage';
 import { TicketStorage } from '@/lib/storage';
+import { countWeightSources } from '@/lib/weight-source';
 import { BarChart3, Download, Filter, Calendar, RefreshCw } from 'lucide-react';
 
 type GroupBy = 'shipper_name' | 'carrier_name' | 'cargo_name' | 'operator_name' | 'receiver_name' | 'vehicle_number';
@@ -75,6 +76,8 @@ export function ReportsView() {
     (acc, r) => ({ count: acc.count + r.count, net: acc.net + r.totalNet, amount: acc.amount + r.totalAmount }),
     { count: 0, net: 0, amount: 0 }
   );
+
+  const sourceCounts = useMemo(() => countWeightSources(tickets), [tickets]);
 
   const exportCSV = () => {
     const headers = [GROUP_LABELS[groupBy], 'Взвешиваний', 'Брутто, кг', 'Тара, кг', 'Нетто, кг', 'Нетто, т', 'Сумма, ₽'];
@@ -155,6 +158,49 @@ export function ReportsView() {
       </div>
 
       {error && <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">{error}</div>}
+
+      {/* Weight source summary (UI only; not in CSV) */}
+      <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div className="flex items-center gap-2 px-5 py-4 border-b border-slate-100 bg-slate-50">
+          <BarChart3 size={18} className="text-slate-600" />
+          <h3 className="text-sm font-semibold text-slate-800">Источники веса</h3>
+          <span className="ml-auto text-xs text-slate-400">{dateFrom} — {dateTo}</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase">
+              <tr>
+                <th className="px-5 py-3 text-left font-medium">Источник</th>
+                <th className="px-3 py-3 text-right font-medium">Брутто</th>
+                <th className="px-3 py-3 text-right font-medium">Тара</th>
+                <th className="px-5 py-3 text-right font-medium">Всего</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {sourceCounts.map((row) => (
+                <tr key={row.source} className="hover:bg-slate-50/50 transition">
+                  <td className="px-5 py-2.5 font-medium text-slate-700">{row.label}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-600">{row.gross}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-slate-600">{row.tare}</td>
+                  <td className="px-5 py-2.5 text-right tabular-nums font-semibold text-slate-800">{row.total}</td>
+                </tr>
+              ))}
+              <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
+                <td className="px-5 py-3 text-slate-800">Итого</td>
+                <td className="px-3 py-3 text-right tabular-nums text-slate-800">
+                  {sourceCounts.reduce((sum, row) => sum + row.gross, 0)}
+                </td>
+                <td className="px-3 py-3 text-right tabular-nums text-slate-800">
+                  {sourceCounts.reduce((sum, row) => sum + row.tare, 0)}
+                </td>
+                <td className="px-5 py-3 text-right tabular-nums text-slate-800">
+                  {sourceCounts.reduce((sum, row) => sum + row.total, 0)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
 
       {/* Report table */}
       <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
