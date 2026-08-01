@@ -222,10 +222,10 @@ UI: `http://127.0.0.1:5174`, API/SSE: `:3001` (продукт остаётся �
 
 ### Запуск в Cursor
 
-Очередь этапов: [docs/tasks/README.md](docs/tasks/README.md). Этап **01** влит (PR #13); следующий — **02**.
+Очередь этапов: [docs/tasks/README.md](docs/tasks/README.md). Этап **01** влит (PR #13); **02** выполнен на этой ветке; следующий — **03**.
 
 ```text
-/orchestrator создай задачу на доске по docs/tasks/02-weight-source.md и начни выполнять
+/orchestrator создай задачу на доске по docs/tasks/03-vehicle-resolve.md и начни выполнять
 ```
 
 Оркестратор ведёт задачу по FSM (`analysis` → … → `tech-writer`), субагенты пишут `memory/TASK_MEMORY_*.yml`, прогресс виден в дашборде.

@@ -4,14 +4,20 @@
 
 Формат: [orchestrator-protocol.md](../orchestrator-protocol.md).
 
-Постановки: [docs/tasks/](../docs/tasks/). Очередь и handoff после PR #13: [docs/tasks/README.md](../docs/tasks/README.md).
+Постановки: [docs/tasks/](../docs/tasks/). Очередь: [docs/tasks/README.md](../docs/tasks/README.md).
 
-**Следующий запуск (ещё не на доске):** создайте задачу командой
+---
 
-```text
-/orchestrator создай задачу на доске по docs/tasks/02-weight-source.md и начни выполнять
-```
+## 7b2254-weight-source
 
-Этап 01 (weighing modes) уже влит — повторно не ставить, если нет регрессии.
+State: done
+Description: |
+  Источник: docs/tasks/02-weight-source.md
+
+  Цель: расширить WeightSource до instrument/manual/dictionary/default;
+  исправить запись автотары как manual; бейджи на форме; фильтр в журнале;
+  сводка в отчётах; печатные формы не менять.
+
+  Завершено: 2026-08-01T19:47:11Z. Артефакты: docs/7b2254-weight-source/.
 
 ---

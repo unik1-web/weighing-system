@@ -28,7 +28,7 @@
 | Область | Есть | Где |
 |--------|------|-----|
 | Журнал / талон | `WeighingTicket`, SQLite | `storage.ts`, `sqlite_store.py` |
-| Источник веса | `manual` \| `instrument` | талон, форма |
+| Источник веса | `manual` \| `instrument` \| `dictionary` \| `default` (на ветке этапа 2) | `weight-source.ts`, форма / журнал / отчёты |
 | Терминалы | 4 Web Serial-профиля, один `ScaleConnection` | `scales.ts`, `ScalePanel` |
 | Справочники | авто, водители, грузы, контрагенты | импорт Vescom/Metra/WA |
 | Подстановка по номеру | только марка и стандартная тара | `WeighingForm.tsx` |
@@ -36,7 +36,7 @@
 | Печать, РЭО, отчёты | акт, талон, CSV | `PrintAct`, `reo.ts` |
 | Режимы Vescom (этап 1) | `weighing_mode`, настройки порога/интервала/тары, `version`, зачаток audit | `weighing-mode.ts`, `storage.ts` |
 
-**Нет:** площадка primary/spare; pluggable-адаптеры; камеры и фото; ANPR; полная автоподстановка; годовая ротация БД; расширенный `WeightSource` (`dictionary`/`default`); полный аудит.
+**Нет:** площадка primary/spare; pluggable-адаптеры; камеры и фото; ANPR; полная автоподстановка; годовая ротация БД; полный аудит.
 
 ---
 
@@ -302,7 +302,9 @@ site_runtime (active_scale_set, switch reason/by/at, camera_mode, anpr_mode)
 
 **Этап 1** (режимы single/dual) — выполнен; см. [weighing-modes-deploy.md](weighing-modes-deploy.md), PR [#13](https://github.com/unik1-web/weighing-system/pull/13).
 
-**Следующий:** этап 2 — источник веса и ручной ввод ([docs/tasks/02-weight-source.md](tasks/02-weight-source.md)). Постановки всех этапов: [docs/tasks/](tasks/). Запуск нового оркестратора: [docs/orchestrator.md](orchestrator.md).
+**Этап 2** (WeightSource dictionary/default) — выполнен на ветке оркестратора: задача `7b2254-weight-source`, артефакты [docs/7b2254-weight-source/](7b2254-weight-source/).
+
+**Следующий:** этап 3 — автоподстановка и водители ([docs/tasks/03-vehicle-resolve.md](tasks/03-vehicle-resolve.md)). Очередь: [docs/tasks/](tasks/). Запуск: [docs/orchestrator.md](orchestrator.md).
 
 ---
 
