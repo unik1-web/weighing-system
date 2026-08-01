@@ -21,6 +21,7 @@ import {
   updateSite,
   upsertScale,
   enableSpareScale,
+  disableSpareScale,
   connectionFromDevice,
   listSwitchHistory,
   ACTIVE_SCALE_SET_LABELS,
@@ -83,6 +84,7 @@ export function SettingsView({ onSaved }: Props) {
   >([]);
   const [wizardDirection, setWizardDirection] = useState<'to_spare' | 'to_primary' | null>(null);
   const [siteMessage, setSiteMessage] = useState<string | null>(null);
+  const [activeOnSpare, setActiveOnSpare] = useState(false);
 
   const reloadSiteState = () => {
     ensureSiteMigrated();
@@ -94,6 +96,7 @@ export function SettingsView({ onSaved }: Props) {
     setSpareScale(scales.find((s) => s.role === 'spare') ?? null);
     const ctx = getActiveScaleContext();
     setActiveSetLabel(ACTIVE_SCALE_SET_LABELS[ctx.runtime.active_scale_set]);
+    setActiveOnSpare(ctx.runtime.active_scale_set === 'spare');
     setSpareEnabled(isSpareEnabled(site.id));
     setSwitchHistory(listSwitchHistory(site.id).slice().reverse().slice(0, 10));
     setSettings(SettingsStorage.getAppSettings());
@@ -169,10 +172,9 @@ export function SettingsView({ onSaved }: Props) {
             name: spareScale.name || DEFAULT_SPARE_SCALE_NAME,
           });
         } else {
-          upsertScale({
-            ...spareScale,
-            enabled: false,
-            connection: connectionFromDevice(spareScale.adapter_id),
+          disableSpareScale({
+            adapter_id: spareScale.adapter_id,
+            name: spareScale.name || DEFAULT_SPARE_SCALE_NAME,
           });
         }
       }
@@ -626,13 +628,25 @@ export function SettingsView({ onSaved }: Props) {
                 type="checkbox"
                 checked={spareEnabled}
                 onChange={(e) => {
-                  setSpareEnabled(e.target.checked);
+                  const next = e.target.checked;
+                  if (!next && activeOnSpare) {
+                    setSiteMessage(
+                      'Сначала вернитесь на основные весы, затем отключите резервный комплект.',
+                    );
+                    return;
+                  }
+                  setSpareEnabled(next);
                   setSaved(false);
                 }}
                 className="mt-0.5"
               />
               <span>Резервные весы включены (можно переключаться на резерв)</span>
             </label>
+            {activeOnSpare && (
+              <p className="mt-1 text-xs text-amber-700">
+                Чтобы отключить резерв, сначала вернитесь на основные весы.
+              </p>
+            )}
           </div>
         </div>
 

@@ -21,6 +21,7 @@ import {
   type ScaleConnectionProfile,
 } from './storage';
 import { SCALE_DEVICES, type ScaleDeviceId } from './scales';
+import { logger } from './logger';
 
 export type {
   Site,
@@ -204,14 +205,36 @@ export function getActiveScaleContext(): ActiveScaleContext {
     (s) => s.role === runtime.active_scale_set && s.enabled,
   );
   if (!activeScale) {
-    // Fallback: primary even if somehow disabled
     const primary = scales.find((s) => s.role === 'primary');
     if (!primary) {
       throw new Error('Основные весы не найдены');
     }
+    logger.warn(
+      'site-runtime',
+      'Активный комплект недоступен (enabled=false или отсутствует); откат на основные',
+      {
+        active_scale_set: runtime.active_scale_set,
+        spare_enabled: scales.some((s) => s.role === 'spare' && s.enabled),
+        site_id: site.id,
+      },
+    );
+    // Heal split-brain: runtime claimed spare/primary but matching enabled scale is gone
+    let resolvedRuntime = runtime;
+    if (runtime.active_scale_set !== 'primary') {
+      resolvedRuntime = SiteRuntimeStorage.upsert({
+        ...runtime,
+        active_scale_set: 'primary',
+        camera_mode: 'normal',
+        anpr_mode: 'enabled',
+      });
+      SettingsStorage.updateAppSettings({
+        scale_device_id: normalizeAdapterId(primary.adapter_id),
+      });
+      dispatchRuntimeUpdated();
+    }
     return {
       site,
-      runtime,
+      runtime: resolvedRuntime,
       activeScale: primary,
       site_id: site.id,
       scale_id: primary.id,
@@ -285,6 +308,37 @@ export function enableSpareScale(input: {
     created_at: existing?.created_at ?? now,
   };
   return upsertScale(spare);
+}
+
+/**
+ * Disable spare scale. Forbidden while active_scale_set === 'spare'
+ * to avoid split-brain (runtime spare vs tickets/device on primary fallback).
+ */
+export function disableSpareScale(input?: {
+  adapter_id?: ScaleDeviceId;
+  name?: string;
+}): Scale {
+  ensureSiteMigrated();
+  const site = getDefaultSite();
+  const runtime = ensureRuntimeRow(site.id);
+  if (runtime.active_scale_set === 'spare') {
+    throw new Error(
+      'Сначала вернитесь на основные весы, затем отключите резервный комплект.',
+    );
+  }
+  const scales = ScalesStorage.getBySite(site.id);
+  const existing = scales.find((s) => s.role === 'spare');
+  if (!existing) {
+    throw new Error('Резервные весы не найдены');
+  }
+  const adapterId = normalizeAdapterId(input?.adapter_id ?? existing.adapter_id);
+  return upsertScale({
+    ...existing,
+    adapter_id: adapterId,
+    name: input?.name?.trim() || existing.name,
+    connection: connectionFromDevice(adapterId),
+    enabled: false,
+  });
 }
 
 /** Update adapter/connection of the currently active scale + settings cache. */

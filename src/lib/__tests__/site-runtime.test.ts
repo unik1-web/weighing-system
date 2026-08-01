@@ -14,10 +14,12 @@ import {
   getDefaultSite,
   switchScaleSet,
   enableSpareScale,
+  disableSpareScale,
   listSwitchHistory,
   DEFAULT_SITE_NAME,
   DEFAULT_SPARE_SCALE_NAME,
 } from '../site-runtime';
+import { logger } from '../logger';
 
 function installLocalStorage(): void {
   const store = new Map<string, string>();
@@ -268,5 +270,64 @@ describe('wizard cancel semantics', () => {
     const event = lastCall?.[0] as Event;
     expect(event?.type).toBe('site-runtime-updated');
     vi.unstubAllGlobals();
+  });
+});
+
+describe('disable spare while on spare', () => {
+  it('throws when disabling spare while active_scale_set is spare', () => {
+    ensureSiteMigrated();
+    enableSpareScale({ adapter_id: 'newton' });
+    switchScaleSet({
+      to: 'spare',
+      reason: 'repair',
+      operator_id: null,
+      operator_name: 'Оп',
+      camera_ack: 'no_cameras',
+    });
+    expect(() => disableSpareScale()).toThrow(/сначала вернитесь на основные/i);
+    const runtime = SiteRuntimeStorage.getBySite(getDefaultSite().id);
+    expect(runtime?.active_scale_set).toBe('spare');
+    expect(ScalesStorage.getBySite(getDefaultSite().id).find((s) => s.role === 'spare')?.enabled).toBe(
+      true,
+    );
+  });
+
+  it('allows disable spare when active set is primary', () => {
+    ensureSiteMigrated();
+    enableSpareScale({ adapter_id: 'cas' });
+    const spare = disableSpareScale();
+    expect(spare.enabled).toBe(false);
+    expect(SiteRuntimeStorage.getBySite(getDefaultSite().id)?.active_scale_set).toBe('primary');
+  });
+
+  it('heals and logs when runtime is spare but spare is disabled (split-brain)', () => {
+    ensureSiteMigrated();
+    enableSpareScale({ adapter_id: 'newton' });
+    switchScaleSet({
+      to: 'spare',
+      reason: 'cleaning',
+      operator_id: null,
+      operator_name: 'Оп',
+      camera_ack: 'rotated',
+    });
+    // Simulate corrupt state: spare disabled without switch back
+    const site = getDefaultSite();
+    const spare = ScalesStorage.getBySite(site.id).find((s) => s.role === 'spare')!;
+    ScalesStorage.upsert({ ...spare, enabled: false });
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const ctx = getActiveScaleContext();
+    expect(ctx.scale_role).toBe('primary');
+    expect(ctx.runtime.active_scale_set).toBe('primary');
+    expect(ctx.runtime.anpr_mode).toBe('enabled');
+    expect(SettingsStorage.getAppSettings().scale_device_id).toBe(
+      ScalesStorage.getBySite(site.id).find((s) => s.role === 'primary')!.adapter_id,
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      'site-runtime',
+      expect.stringMatching(/активный комплект недоступен/i),
+      expect.objectContaining({ active_scale_set: 'spare' }),
+    );
+    warnSpy.mockRestore();
   });
 });
