@@ -24,7 +24,7 @@ Description: |
 
 ## 13e79e-vehicle-resolve
 
-State: code-review
+State: done
 Description: |
   Источник: docs/tasks/03-vehicle-resolve.md
 
@@ -35,7 +35,6 @@ Description: |
   (plate_source, scale_role, фото); показ источника веса/устройства/оператора
   в карточке и CSV; сохранение модели весов в config.ini.
 
-  Зависимости: этапы 1–2. Артефакты: docs/implementation/.
-  Вне скоупа: primary/spare, камеры, ANPR, годовая ротация БД, полный UI архива.
+  Завершено: 2026-08-01T20:25:13Z. Артефакты: docs/13e79e-vehicle-resolve/.
 
 ---
