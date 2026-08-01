@@ -28,10 +28,16 @@ npm run orchestrator:dashboard
 
 Продукт по-прежнему: Vite `:5173` + Flask `:5001` — порты не пересекаются.
 
+## Точка продолжения roadmap
+
+- Влито: этап **01** (PR [#13](https://github.com/unik1-web/weighing-system/pull/13)) + bugfix PR [#23](https://github.com/unik1-web/weighing-system/pull/23).
+- Очередь постановок: [docs/tasks/README.md](tasks/README.md).
+- **Следующий запуск — этап 02** (не подмешивать невлитый стек PR #15–#21).
+
 ## Запуск пайплайна (чат Cursor)
 
 ```text
-/orchestrator создай задачу на доске по docs/tasks/01-weighing-modes.md и начни выполнять
+/orchestrator создай задачу на доске по docs/tasks/02-weight-source.md и начни выполнять
 ```
 
 или, если задача уже на доске:

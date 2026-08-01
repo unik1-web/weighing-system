@@ -32,10 +32,11 @@
 | Терминалы | 4 Web Serial-профиля, один `ScaleConnection` | `scales.ts`, `ScalePanel` |
 | Справочники | авто, водители, грузы, контрагенты | импорт Vescom/Metra/WA |
 | Подстановка по номеру | только марка и стандартная тара | `WeighingForm.tsx` |
-| Статус тикета | `open` \| `completed` (дозавершение UX слабое) | форма / журнал |
+| Статус тикета | `open` \| `completed`; single/dual, дозавершение из формы и журнала | форма / журнал |
 | Печать, РЭО, отчёты | акт, талон, CSV | `PrintAct`, `reo.ts` |
+| Режимы Vescom (этап 1) | `weighing_mode`, настройки порога/интервала/тары, `version`, зачаток audit | `weighing-mode.ts`, `storage.ts` |
 
-**Нет:** площадка primary/spare; pluggable-адаптеры; камеры и фото; ANPR; полная автоподстановка; годовая ротация БД; режимы одиночного/двойного взвешивания как в Vescom; полный аудит.
+**Нет:** площадка primary/spare; pluggable-адаптеры; камеры и фото; ANPR; полная автоподстановка; годовая ротация БД; расширенный `WeightSource` (`dictionary`/`default`); полный аудит.
 
 ---
 
@@ -299,7 +300,9 @@ site_runtime (active_scale_set, switch reason/by/at, camera_mode, anpr_mode)
 
 ## 10. Ближайший шаг
 
-**Этап 1** — одиночное/двойное взвешивание и дозавершение `open`-тикетов. Даёт сразу заметный эффект оператору и не требует нового железа; этапы 2–3 опираются на ту же форму и модель талона.
+**Этап 1** (режимы single/dual) — выполнен; см. [weighing-modes-deploy.md](weighing-modes-deploy.md), PR [#13](https://github.com/unik1-web/weighing-system/pull/13).
+
+**Следующий:** этап 2 — источник веса и ручной ввод ([docs/tasks/02-weight-source.md](tasks/02-weight-source.md)). Постановки всех этапов: [docs/tasks/](tasks/). Запуск нового оркестратора: [docs/orchestrator.md](orchestrator.md).
 
 ---
 
@@ -307,3 +310,5 @@ site_runtime (active_scale_set, switch reason/by/at, camera_mode, anpr_mode)
 
 - [Архитектура](architecture.md)
 - [API](api.md)
+- [Оркестратор](orchestrator.md)
+- [Постановки задач](tasks/)

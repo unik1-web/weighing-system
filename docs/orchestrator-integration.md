@@ -213,9 +213,12 @@ weighing-system/
 2. [x] npm scripts + краткий `docs/orchestrator.md` (how-to)
 3. [x] Адаптировать skills под weighing-system (`_weighing-system-context.md`)
 4. [x] Обновить README и `docs/project-for-agents.md`
-5. [ ] Пилотный прогон + проверка дашборда на реальной задаче
+5. [ ] Пилотный прогон: этап **02** (`docs/tasks/02-weight-source.md`) от baseline после PR #13/#23
 6. [ ] Удалить submodule `agents/`
 7. [x] Мост `docs/tasks` → TaskBoard описан в skill оркестратора
+8. [x] Постановки `02`–`09` перенесены из PR #14; handoff зафиксирован в `docs/tasks/README.md`
+
+**Handoff:** не использовать открытые PR #15–#21 как базу — продолжать новым оркестратором с этапа 02 на текущем base.
 
 ## 12. Пример целевого UX
 
