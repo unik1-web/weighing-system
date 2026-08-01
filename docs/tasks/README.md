@@ -45,7 +45,7 @@
 2. В чате Cursor:
 
 ```text
-/orchestrator создай задачу на доске по docs/tasks/03-vehicle-resolve.md и начни выполнять
+/orchestrator создай задачу на доске по docs/tasks/04-site-primary-spare.md и начни выполнять
 ```
 
 Прогресс: `memory/TaskBoard.md`, `memory/TASK_MEMORY_*.yml`, UI на `http://127.0.0.1:5174`.
