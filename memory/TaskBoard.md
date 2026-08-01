@@ -41,7 +41,7 @@ Description: |
 
 ## 82cfbc-site-primary-spare
 
-State: code-review
+State: done
 Description: |
   Источник: docs/tasks/04-site-primary-spare.md
 
@@ -51,7 +51,6 @@ Description: |
   disabled_by_configuration; wizard/чеклист на резерв без блокировки
   взвешивания до камер; миграция текущего Web Serial → primary.
 
-  Зависимости: этапы 1–3. Вне скоупа: полные адаптеры (5), фото/ANPR (7–8),
-  годовая ротация (6). Артефакты: docs/implementation/.
+  Завершено: 2026-08-01T20:52:59Z. Артефакты: docs/82cfbc-site-primary-spare/.
 
 ---
