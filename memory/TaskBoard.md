@@ -21,3 +21,21 @@ Description: |
   Завершено: 2026-08-01T19:47:11Z. Артефакты: docs/7b2254-weight-source/.
 
 ---
+
+## 13e79e-vehicle-resolve
+
+State: code-review
+Description: |
+  Источник: docs/tasks/03-vehicle-resolve.md
+
+  Цель: при выборе/вводе госномера заполнять реквизиты рейса за 1–2 действия
+  (марка, тара, ФИО, груз, грузоотправитель) на основе предпочтений ТС,
+  последнего рейса и истории водителей; настроить driver_input_mode
+  (vehicle|all|free); сущность vehicle_drivers; nullable audit-поля
+  (plate_source, scale_role, фото); показ источника веса/устройства/оператора
+  в карточке и CSV; сохранение модели весов в config.ini.
+
+  Зависимости: этапы 1–2. Артефакты: docs/implementation/.
+  Вне скоупа: primary/spare, камеры, ANPR, годовая ротация БД, полный UI архива.
+
+---
