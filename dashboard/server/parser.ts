@@ -102,8 +102,23 @@ function parseTaskBoard(content: string): BoardTask[] {
   const tasks: BoardTask[] = []
   let currentTask: Partial<BoardTask> | null = null
   let isInsideHtmlComment = false
+  /** Collecting body after `Description: |` / `Description: >` (orchestrator-protocol multiline). */
+  let collectingMultilineDescription = false
+  const descriptionLines: string[] = []
+
+  const finishMultilineDescription = () => {
+    if (!collectingMultilineDescription || !currentTask) {
+      return
+    }
+
+    currentTask.description = descriptionLines.join('\n').replace(/\s+$/u, '').trim()
+    descriptionLines.length = 0
+    collectingMultilineDescription = false
+  }
 
   const pushCurrentTask = () => {
+    finishMultilineDescription()
+
     if (!currentTask?.taskId || !currentTask.phase || !currentTask.description) {
       return
     }
@@ -139,6 +154,17 @@ function parseTaskBoard(content: string): BoardTask[] {
       continue
     }
 
+    if (collectingMultilineDescription) {
+      // Indented continuation or blank line inside the block.
+      if (rawLine.startsWith(' ') || rawLine.startsWith('\t') || line.length === 0) {
+        descriptionLines.push(rawLine.replace(/^\t/u, '  ').replace(/^ {0,2}/u, ''))
+        continue
+      }
+
+      finishMultilineDescription()
+      // Fall through to parse the next field on this line.
+    }
+
     if (line.startsWith('State:')) {
       const phase = line.slice('State:'.length).trim()
       if (isPipelinePhase(phase)) {
@@ -148,7 +174,14 @@ function parseTaskBoard(content: string): BoardTask[] {
     }
 
     if (line.startsWith('Description:')) {
-      currentTask.description = line.slice('Description:'.length).trim()
+      const value = line.slice('Description:'.length).trim()
+      if (value === '|' || value === '>' || value === '|-') {
+        collectingMultilineDescription = true
+        descriptionLines.length = 0
+        currentTask.description = ''
+      } else {
+        currentTask.description = value
+      }
     }
   }
 
