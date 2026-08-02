@@ -54,3 +54,19 @@ Description: |
   Завершено: 2026-08-01T20:52:59Z. Артефакты: docs/82cfbc-site-primary-spare/.
 
 ---
+
+## 20e99b-scale-adapters
+
+State: done
+Description: |
+  Источник: docs/tasks/05-scale-adapters.md
+
+  Цель: pluggable ScaleAdapter (connect/read/subscribe); 4 профиля
+  (Микросим, Ньютон, CAS, Мидл) как адаптеры; адаптер произвольного
+  разбора (regex/маска); параметры в scales.connection; сохранить Web Serial;
+  backend I/O (pyserial/TCP) и /api/scales/* для primary+spare и exe;
+  ручной ввод с опциональной/обязательной причиной (manual_weight_reason).
+
+  Завершено: 2026-08-02T01:53:04Z. Артефакты: docs/20e99b-scale-adapters/.
+
+---

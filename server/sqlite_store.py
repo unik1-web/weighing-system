@@ -46,6 +46,7 @@ TICKET_COLUMNS = [
     'weighing_mode', 'version',
     'plate_source', 'site_id', 'scale_id', 'scale_role',
     'photo_entry_path', 'photo_exit_path', 'photo_overview_path',
+    'manual_weight_reason',
 ]
 
 AUDIT_COLUMNS = [
@@ -181,6 +182,7 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         'photo_entry_path',
         'photo_exit_path',
         'photo_overview_path',
+        'manual_weight_reason',
     ):
         if column not in existing:
             connection.execute(f'ALTER TABLE weighing_tickets ADD COLUMN {column} TEXT')
@@ -319,7 +321,8 @@ def init_schema(connection: sqlite3.Connection) -> None:
             scale_role TEXT,
             photo_entry_path TEXT,
             photo_exit_path TEXT,
-            photo_overview_path TEXT
+            photo_overview_path TEXT,
+            manual_weight_reason TEXT
         );
 
         CREATE TABLE IF NOT EXISTS dictionary_entries (

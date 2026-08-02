@@ -80,6 +80,25 @@
 | `GET` | `/api/wa/weighing_data` | `date`, `db_path`, `user?`, `password?` → `{ items }` |
 | `POST` | `/api/wa/import_dictionaries` | `db_path`, `user?`, `password?` → `{ message, fetched, added, data }` |
 
+## Весы (backend I/O)
+
+Операции относятся к **активному** комплекту (primary/spare из `app_site_runtime` + `app_scales`).
+Ошибки: `{ success: false, message }` (как остальной API). Транспорт `web_serial` — только в браузере; `serial` — stub HTTP 501; `tcp` — реализован.
+
+| Method | Path | Body / query | Response |
+|--------|------|--------------|----------|
+| `GET` | `/api/scales/context` | — | `{ success, site_id, scale_id, scale_role, adapter_id, connection, transport }` |
+| `GET` | `/api/scales/status` | — | `{ success, connected, adapter_id, scale_id, transport, last_reading, error }` |
+| `POST` | `/api/scales/connect` | `{}` или `{ host?, tcpPort?, serialPath? }` (overrides не персистятся) | `{ success, connected, adapter_id, transport }` |
+| `POST` | `/api/scales/disconnect` | — | `{ success, connected: false }` |
+| `GET` | `/api/scales/reading` | — | `{ success, reading, connected }` |
+
+### Связанные поля данных
+
+- `app_scales[].connection`: framing + `transport` (`web_serial` \| `tcp` \| `serial`) + для `custom`: `parseRegex` / `parseMask`; для TCP: `host`, `tcpPort`.
+- `app_settings.manual_weight_reason_mode`: `off` \| `optional` \| `required` (default `optional`).
+- `weighing_tickets.manual_weight_reason`: nullable TEXT (причина ручного ввода веса).
+
 ## Frontend
 
 Неизвестные пути (не `api/*`) отдаются из `dist/` (`index.html` + ассеты). Если `dist/` нет — HTTP 503 с подсказкой `npm run build`.

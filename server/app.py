@@ -54,6 +54,7 @@ from reo_client import (
     is_reo_test_successful,
     post_reo_import,
 )
+from scale_io import get_active_scale_context_from_db, get_scale_session
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, 'frozen', False):
@@ -129,6 +130,63 @@ def fetch_vescom_rows(db_path: str, date_str: str, user: str, password: str):
 @app.get('/api/health')
 def health():
     return jsonify({'success': True, 'service': 'weighing-system-api'})
+
+
+@app.get('/api/scales/context')
+def scales_context():
+    try:
+        ctx = get_active_scale_context_from_db()
+        return jsonify({'success': True, **ctx})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('scales context failed')
+        return error_response(f'Ошибка чтения комплекта весов: {exc}')
+
+
+@app.get('/api/scales/status')
+def scales_status():
+    session = get_scale_session()
+    return jsonify({'success': True, **session.status()})
+
+
+@app.post('/api/scales/connect')
+def scales_connect():
+    body = request.get_json(silent=True) or {}
+    overrides = {}
+    if body.get('host'):
+        overrides['host'] = body['host']
+    if body.get('tcpPort') is not None:
+        overrides['tcpPort'] = body['tcpPort']
+    if body.get('serialPath'):
+        overrides['serialPath'] = body['serialPath']
+    session = get_scale_session()
+    try:
+        result = session.connect(overrides)
+        return jsonify({'success': True, **result})
+    except NotImplementedError as exc:
+        return error_response(str(exc), 501)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except OSError as exc:
+        logger.exception('scales connect failed')
+        return error_response(f'Не удалось подключить весы: {exc}')
+    except Exception as exc:
+        logger.exception('scales connect failed')
+        return error_response(f'Ошибка подключения весов: {exc}')
+
+
+@app.post('/api/scales/disconnect')
+def scales_disconnect():
+    session = get_scale_session()
+    session.disconnect()
+    return jsonify({'success': True, 'connected': False})
+
+
+@app.get('/api/scales/reading')
+def scales_reading():
+    session = get_scale_session()
+    return jsonify({'success': True, **session.reading()})
 
 
 @app.post('/api/shutdown')

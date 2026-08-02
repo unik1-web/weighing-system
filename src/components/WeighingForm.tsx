@@ -14,6 +14,7 @@ import { ScalePanel } from '@/components/ScalePanel';
 import { formatVehiclePlate } from '@/lib/vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from '@/lib/text-format';
 import { SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
+import { validateManualWeightReason } from '@/lib/manual-weight-reason';
 import {
   getActiveScaleContext,
   updateActiveScaleDevice,
@@ -134,6 +135,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [grossDatetime, setGrossDatetime] = useState<string | null>(null);
   const [tareDatetime, setTareDatetime] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
+  const [manualWeightReason, setManualWeightReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -262,6 +264,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setGrossDatetime(null);
     setTareDatetime(null);
     setNotes('');
+    setManualWeightReason('');
     setError(null);
     setUnstableWarning(null);
     setDriverCandidates([]);
@@ -326,6 +329,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setGrossDatetime(ticket.gross_datetime);
       setTareDatetime(ticket.tare_datetime);
       setNotes(ticket.notes);
+      setManualWeightReason(ticket.manual_weight_reason ?? '');
       setPlateSource(ticket.plate_source ?? null);
       setDriverCandidates([]);
 
@@ -503,6 +507,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setGrossSource('instrument');
     setGrossRaw(raw);
     setGrossDatetime(new Date().toISOString());
+    setManualWeightReason((prev) => (tareSource === 'manual' ? prev : ''));
   };
 
   const captureTare = (w: number, raw: string) => {
@@ -512,6 +517,23 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setTareSource('instrument');
     setTareRaw(raw);
     setTareDatetime(new Date().toISOString());
+    setManualWeightReason((prev) => (grossSource === 'manual' ? prev : ''));
+  };
+
+  const resolveManualReasonForSave = (): string | null | false => {
+    const result = validateManualWeightReason({
+      mode: appSettings.manual_weight_reason_mode,
+      reason: manualWeightReason,
+      gross_source: grossSource,
+      tare_source: tareSource,
+      gross_weight: grossWeight,
+      tare_weight: tareWeight,
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return false;
+    }
+    return result.reason;
   };
 
   const handleInstrumentCapture = (weight: number, raw: string) => {
@@ -551,6 +573,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setError(validation);
       return;
     }
+    const reasonOrFail = resolveManualReasonForSave();
+    if (reasonOrFail === false) return;
 
     setSaving(true);
     const now = new Date().toISOString();
@@ -584,6 +608,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         status: 'completed',
         completed_at: now,
         notes,
+        manual_weight_reason: reasonOrFail,
         weighing_mode: 'single',
         version: 1,
         ...auditCreateFields(),
@@ -619,6 +644,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setError(validation);
       return;
     }
+    const reasonOrFail = resolveManualReasonForSave();
+    if (reasonOrFail === false) return;
 
     const hasGross = grossWeight != null && grossWeight > 0;
     setSaving(true);
@@ -650,6 +677,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         status: 'open',
         completed_at: null,
         notes,
+        manual_weight_reason: reasonOrFail,
         weighing_mode: 'dual',
         version: 1,
         ...auditCreateFields(),
@@ -691,6 +719,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setError(validation);
       return;
     }
+    const reasonOrFail = resolveManualReasonForSave();
+    if (reasonOrFail === false) return;
 
     const now = new Date().toISOString();
     const net = calcNetWeight(grossWeight!, tareWeight!);
@@ -708,6 +738,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       price: parseFloat(price) || 0,
       vat_rate: parseFloat(vatRate) || 0,
       notes,
+      manual_weight_reason: reasonOrFail,
       status: 'completed',
       completed_at: now,
       net_weight: net,
@@ -1041,6 +1072,23 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
               <span className="text-xs text-slate-400">кг</span>
             </div>
           </div>
+
+          {appSettings.manual_weight_reason_mode !== 'off' &&
+            (grossSource === 'manual' || tareSource === 'manual') && (
+            <div className="mt-3">
+              <label className="mb-1 block text-xs font-medium text-slate-600">
+                Причина ручного ввода веса
+                {appSettings.manual_weight_reason_mode === 'required' ? ' *' : ''}
+              </label>
+              <input
+                type="text"
+                value={manualWeightReason}
+                onChange={(e) => setManualWeightReason(e.target.value)}
+                placeholder="Например: прибор недоступен"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+          )}
 
           <div className="mt-4 flex items-center justify-between rounded-xl bg-gradient-to-r from-blue-600 to-blue-700 px-5 py-4 text-white">
             <div>
