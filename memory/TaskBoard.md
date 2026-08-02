@@ -86,3 +86,20 @@ Description: |
   Завершено: 2026-08-02T02:29:14Z. Артефакты: docs/3aa7f0-yearly-db-archive/.
 
 ---
+
+## 37cc69-photo-capture
+
+State: development
+Description: |
+  Источник: docs/tasks/07-photo-capture.md
+
+  Цель: фотофиксация IP/RTSP (полная сборка): video_enabled, реестр 1–4
+  камер (role entry|exit|overview), снимок при фиксации брутто/тары,
+  файлы на диске (Photo/ или BD/photos), метаданные ticket_photos,
+  превью в форме и журнале; graceful degrade без блокировки взвешивания;
+  эталоны primary/spare для wizard; базовая сборка без тяжёлых deps.
+
+  Зависимости: этап 4 (camera_mode/площадка), желательно 5. Вне скоупа: ANPR.
+  Не коммитить RTSP-секреты и бинарники фото. Артефакты: docs/implementation/.
+
+---
