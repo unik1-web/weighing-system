@@ -6,17 +6,18 @@ import { WeighingJournal } from '@/components/WeighingJournal';
 import { DictionariesView } from '@/components/DictionariesView';
 import { ReportsView } from '@/components/ReportsView';
 import { SettingsView } from '@/components/SettingsView';
+import { ArchiveView } from '@/components/ArchiveView';
 import { VescomImportView } from '@/components/VescomImportView';
 import { MetraImportView } from '@/components/MetraImportView';
 import { WaImportView } from '@/components/WaImportView';
 import { printTicket } from '@/components/PrintAct';
 import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
-import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive, Server } from 'lucide-react';
+import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive, Server, Archive } from 'lucide-react';
 import { exitApplication } from '@/lib/api';
 import { logger } from '@/lib/logger';
 
-type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
+type Tab = 'weighing' | 'journal' | 'archive' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
 
 function MainApp() {
   const { displayName, signOut, isAdmin } = useAuth();
@@ -88,6 +89,7 @@ function MainApp() {
   const tabs: { id: Tab; label: string; icon: typeof Scale }[] = [
     { id: 'weighing', label: 'Взвешивание', icon: Scale },
     { id: 'journal', label: 'Журнал', icon: BookOpen },
+    { id: 'archive', label: 'Архив', icon: Archive },
     { id: 'reports', label: 'Отчёты', icon: BarChart3 },
     { id: 'dictionaries', label: 'Справочники', icon: Library },
     ...(appSettings.vescom_enabled
@@ -155,15 +157,23 @@ function MainApp() {
                 )}
               </div>
               <button
+                type="button"
                 onClick={handleExitApplication}
                 disabled={exiting}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
-                title="Закрыть программу"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
+                title={exiting ? 'Выход...' : 'Выход'}
+                aria-label={exiting ? 'Выход...' : 'Выход'}
               >
-                <Power size={15} /> <span className="hidden sm:inline">{exiting ? 'Выход...' : 'Выход'}</span>
+                <Power size={15} />
               </button>
-              <button onClick={signOut} className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-red-50 hover:text-red-600 hover:border-red-200">
-                <LogOut size={15} /> <span className="hidden sm:inline">Сменить пользователя</span>
+              <button
+                type="button"
+                onClick={signOut}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:bg-red-50 hover:text-red-600 hover:border-red-200"
+                title="Сменить пользователя"
+                aria-label="Сменить пользователя"
+              >
+                <LogOut size={15} />
               </button>
             </div>
           </div>
@@ -181,6 +191,7 @@ function MainApp() {
         {tab === 'journal' && (
           <WeighingJournal refreshKey={journalKey} onCompleteOpen={handleCompleteOpen} />
         )}
+        {tab === 'archive' && <ArchiveView />}
         {tab === 'reports' && <ReportsView />}
         {tab === 'dictionaries' && <DictionariesView />}
         {tab === 'vescom' && appSettings.vescom_enabled && (

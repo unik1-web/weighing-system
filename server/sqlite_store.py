@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Legacy constant kept for tests/docs; active path is weighing-{YYYY}.db via year_db.
 DB_FILENAME = 'weighing.db'
 
 STORAGE_KEYS = {
@@ -13,6 +14,7 @@ STORAGE_KEYS = {
     'profiles': 'app_users_profiles',
     'tickets': 'app_weighing_tickets',
     'ticket_audit': 'app_ticket_audit',
+    'ticket_revisions': 'app_ticket_revisions',
     'vehicle_drivers': 'app_vehicle_drivers',
     'sites': 'app_sites',
     'scales': 'app_scales',
@@ -47,10 +49,15 @@ TICKET_COLUMNS = [
     'plate_source', 'site_id', 'scale_id', 'scale_role',
     'photo_entry_path', 'photo_exit_path', 'photo_overview_path',
     'manual_weight_reason',
+    'auto_closed',
 ]
 
 AUDIT_COLUMNS = [
     'id', 'ticket_id', 'action', 'at', 'operator_name', 'operator_id',
+]
+
+REVISION_COLUMNS = [
+    'id', 'ticket_id', 'at', 'operator_id', 'operator_name', 'field', 'old_value', 'new_value',
 ]
 
 VEHICLE_DRIVER_COLUMNS = [
@@ -95,13 +102,16 @@ def ensure_storage_dirs() -> None:
 
 
 def get_sqlite_path() -> str:
-    return os.path.join(get_bd_dir(), DB_FILENAME)
+    import year_db
+
+    return year_db.resolve_active_sqlite_path()
 
 
 @contextmanager
-def connect():
+def connect(path: str | None = None):
     ensure_storage_dirs()
-    connection = sqlite3.connect(get_sqlite_path())
+    db_path = path if path is not None else get_sqlite_path()
+    connection = sqlite3.connect(db_path)
     connection.row_factory = sqlite3.Row
     try:
         yield connection
@@ -111,7 +121,7 @@ def connect():
 
 
 def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
-    """Ensure weighing_tickets columns, ticket_audit, vehicle_drivers, sites/scales, and open→dual backfill."""
+    """Ensure weighing_tickets columns, ticket_audit, revisions, vehicle_drivers, sites/scales."""
     connection.execute(
         '''
         CREATE TABLE IF NOT EXISTS ticket_audit (
@@ -126,6 +136,24 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         'CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket ON ticket_audit(ticket_id)'
+    )
+
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS ticket_revisions (
+            id TEXT PRIMARY KEY,
+            ticket_id TEXT NOT NULL,
+            at TEXT NOT NULL,
+            operator_id TEXT,
+            operator_name TEXT NOT NULL DEFAULT '',
+            field TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT
+        )
+        '''
+    )
+    connection.execute(
+        'CREATE INDEX IF NOT EXISTS idx_ticket_revisions_ticket ON ticket_revisions(ticket_id)'
     )
 
     connection.execute(
@@ -186,6 +214,11 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     ):
         if column not in existing:
             connection.execute(f'ALTER TABLE weighing_tickets ADD COLUMN {column} TEXT')
+
+    if 'auto_closed' not in existing:
+        connection.execute(
+            'ALTER TABLE weighing_tickets ADD COLUMN auto_closed INTEGER DEFAULT 0'
+        )
 
     if column_weighing_mode_added:
         # One-shot backfill: only right after ADD COLUMN weighing_mode.
@@ -322,7 +355,8 @@ def init_schema(connection: sqlite3.Connection) -> None:
             photo_entry_path TEXT,
             photo_exit_path TEXT,
             photo_overview_path TEXT,
-            manual_weight_reason TEXT
+            manual_weight_reason TEXT,
+            auto_closed INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS dictionary_entries (
@@ -353,6 +387,20 @@ def init_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_ticket_audit_ticket
             ON ticket_audit(ticket_id);
+
+        CREATE TABLE IF NOT EXISTS ticket_revisions (
+            id TEXT PRIMARY KEY,
+            ticket_id TEXT NOT NULL,
+            at TEXT NOT NULL,
+            operator_id TEXT,
+            operator_name TEXT NOT NULL DEFAULT '',
+            field TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ticket_revisions_ticket
+            ON ticket_revisions(ticket_id);
 
         CREATE TABLE IF NOT EXISTS vehicle_drivers (
             id TEXT PRIMARY KEY,
@@ -497,6 +545,18 @@ def _load_profiles(connection: sqlite3.Connection) -> dict[str, dict[str, str]]:
     }
 
 
+def _soft_bool(value: Any) -> bool:
+    if value is None or value == '':
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {'1', 'true', 'yes'}
+    return bool(value)
+
+
 def _load_tickets(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = connection.execute(
         f'SELECT {", ".join(TICKET_COLUMNS)} FROM weighing_tickets ORDER BY created_at DESC'
@@ -504,6 +564,7 @@ def _load_tickets(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     tickets: list[dict[str, Any]] = []
     for row in rows:
         ticket = {column: row[column] for column in TICKET_COLUMNS}
+        ticket['auto_closed'] = _soft_bool(ticket.get('auto_closed'))
         tickets.append(ticket)
     return tickets
 
@@ -513,6 +574,13 @@ def _load_ticket_audit(connection: sqlite3.Connection) -> list[dict[str, Any]]:
         f'SELECT {", ".join(AUDIT_COLUMNS)} FROM ticket_audit ORDER BY at ASC'
     ).fetchall()
     return [{column: row[column] for column in AUDIT_COLUMNS} for row in rows]
+
+
+def _load_ticket_revisions(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'SELECT {", ".join(REVISION_COLUMNS)} FROM ticket_revisions ORDER BY at ASC'
+    ).fetchall()
+    return [{column: row[column] for column in REVISION_COLUMNS} for row in rows]
 
 
 def _load_vehicle_drivers(connection: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -614,63 +682,78 @@ def _load_session(connection: sqlite3.Connection) -> str | None:
     return row['payload'] if row else None
 
 
-def read_database() -> dict[str, str]:
-    migrate_json_database_if_needed()
+def _read_database_from_connection(connection: sqlite3.Connection) -> dict[str, str]:
     result: dict[str, str] = {}
 
-    with connect() as connection:
-        init_schema(connection)
+    users = _load_users(connection)
+    if users:
+        result[STORAGE_KEYS['users']] = json.dumps(users, ensure_ascii=False)
 
-        users = _load_users(connection)
-        if users:
-            result[STORAGE_KEYS['users']] = json.dumps(users, ensure_ascii=False)
+    profiles = _load_profiles(connection)
+    if profiles:
+        result[STORAGE_KEYS['profiles']] = json.dumps(profiles, ensure_ascii=False)
 
-        profiles = _load_profiles(connection)
-        if profiles:
-            result[STORAGE_KEYS['profiles']] = json.dumps(profiles, ensure_ascii=False)
+    tickets = _load_tickets(connection)
+    if tickets:
+        result[STORAGE_KEYS['tickets']] = json.dumps(tickets, ensure_ascii=False)
 
-        tickets = _load_tickets(connection)
-        if tickets:
-            result[STORAGE_KEYS['tickets']] = json.dumps(tickets, ensure_ascii=False)
+    audit_events = _load_ticket_audit(connection)
+    if audit_events:
+        result[STORAGE_KEYS['ticket_audit']] = json.dumps(audit_events, ensure_ascii=False)
 
-        audit_events = _load_ticket_audit(connection)
-        if audit_events:
-            result[STORAGE_KEYS['ticket_audit']] = json.dumps(audit_events, ensure_ascii=False)
+    revisions = _load_ticket_revisions(connection)
+    if revisions:
+        result[STORAGE_KEYS['ticket_revisions']] = json.dumps(revisions, ensure_ascii=False)
 
-        vehicle_drivers = _load_vehicle_drivers(connection)
-        if vehicle_drivers:
-            result[STORAGE_KEYS['vehicle_drivers']] = json.dumps(
-                vehicle_drivers, ensure_ascii=False
-            )
+    vehicle_drivers = _load_vehicle_drivers(connection)
+    if vehicle_drivers:
+        result[STORAGE_KEYS['vehicle_drivers']] = json.dumps(
+            vehicle_drivers, ensure_ascii=False
+        )
 
-        sites = _load_sites(connection)
-        if sites:
-            result[STORAGE_KEYS['sites']] = json.dumps(sites, ensure_ascii=False)
+    sites = _load_sites(connection)
+    if sites:
+        result[STORAGE_KEYS['sites']] = json.dumps(sites, ensure_ascii=False)
 
-        scales = _load_scales(connection)
-        if scales:
-            result[STORAGE_KEYS['scales']] = json.dumps(scales, ensure_ascii=False)
+    scales = _load_scales(connection)
+    if scales:
+        result[STORAGE_KEYS['scales']] = json.dumps(scales, ensure_ascii=False)
 
-        site_runtime = _load_site_runtime(connection)
-        if site_runtime:
-            result[STORAGE_KEYS['site_runtime']] = json.dumps(site_runtime, ensure_ascii=False)
+    site_runtime = _load_site_runtime(connection)
+    if site_runtime:
+        result[STORAGE_KEYS['site_runtime']] = json.dumps(site_runtime, ensure_ascii=False)
 
-        site_switches = _load_site_scale_switches(connection)
-        if site_switches:
-            result[STORAGE_KEYS['site_scale_switches']] = json.dumps(
-                site_switches, ensure_ascii=False
-            )
+    site_switches = _load_site_scale_switches(connection)
+    if site_switches:
+        result[STORAGE_KEYS['site_scale_switches']] = json.dumps(
+            site_switches, ensure_ascii=False
+        )
 
-        session = _load_session(connection)
-        if session:
-            result[STORAGE_KEYS['session']] = session
+    session = _load_session(connection)
+    if session:
+        result[STORAGE_KEYS['session']] = session
 
-        for storage_key, category in DICTIONARY_CATEGORIES.items():
-            items = _load_dictionary(connection, category)
-            if items:
-                result[storage_key] = json.dumps(items, ensure_ascii=False)
+    for storage_key, category in DICTIONARY_CATEGORIES.items():
+        items = _load_dictionary(connection, category)
+        if items:
+            result[storage_key] = json.dumps(items, ensure_ascii=False)
 
     return result
+
+
+def read_database() -> dict[str, str]:
+    migrate_json_database_if_needed()
+    with connect() as connection:
+        init_schema(connection)
+        return _read_database_from_connection(connection)
+
+
+def read_database_at(path: str) -> dict[str, str]:
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    with connect(path) as connection:
+        init_schema(connection)
+        return _read_database_from_connection(connection)
 
 
 def _replace_users(connection: sqlite3.Connection, users: list[Any]) -> None:
@@ -732,6 +815,8 @@ def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None
                 values.append(_default_weighing_mode(ticket))
             elif column == 'version':
                 values.append(ticket.get(column) if ticket.get(column) is not None else 1)
+            elif column == 'auto_closed':
+                values.append(1 if _soft_bool(ticket.get('auto_closed')) else 0)
             else:
                 values.append(ticket.get(column))
         connection.execute(
@@ -760,6 +845,29 @@ def _replace_ticket_audit(connection: sqlite3.Connection, events: list[Any]) -> 
                 str(event.get('at', '')),
                 str(event.get('operator_name', '')),
                 event.get('operator_id'),
+            ),
+        )
+
+
+def _replace_ticket_revisions(connection: sqlite3.Connection, revisions: list[Any]) -> None:
+    connection.execute('DELETE FROM ticket_revisions')
+    for revision in revisions:
+        if not isinstance(revision, dict):
+            continue
+        connection.execute(
+            f'''
+            INSERT INTO ticket_revisions ({", ".join(REVISION_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(REVISION_COLUMNS))})
+            ''',
+            (
+                str(revision.get('id', '')),
+                str(revision.get('ticket_id', '')),
+                str(revision.get('at', '')),
+                revision.get('operator_id'),
+                str(revision.get('operator_name', '')),
+                str(revision.get('field', '')),
+                revision.get('old_value') if revision.get('old_value') is None else str(revision.get('old_value')),
+                revision.get('new_value') if revision.get('new_value') is None else str(revision.get('new_value')),
             ),
         )
 
@@ -952,6 +1060,14 @@ def write_database(data: dict[str, Any]) -> None:
                 events = json.loads(str(data[STORAGE_KEYS['ticket_audit']]))
                 if isinstance(events, list):
                     _replace_ticket_audit(connection, events)
+            except json.JSONDecodeError:
+                pass
+
+        if STORAGE_KEYS['ticket_revisions'] in data:
+            try:
+                revisions = json.loads(str(data[STORAGE_KEYS['ticket_revisions']]))
+                if isinstance(revisions, list):
+                    _replace_ticket_revisions(connection, revisions)
             except json.JSONDecodeError:
                 pass
 

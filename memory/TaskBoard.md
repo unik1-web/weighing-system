@@ -70,3 +70,19 @@ Description: |
   Завершено: 2026-08-02T01:53:04Z. Артефакты: docs/20e99b-scale-adapters/.
 
 ---
+
+## 3aa7f0-yearly-db-archive
+
+State: done
+Description: |
+  Источник: docs/tasks/06-yearly-db-archive.md
+
+  Цель: годовые файлы SQLite BD/weighing-ГГГГ.db; активный год в config.ini;
+  ротация года (закрытие забытых open с auto_closed, перенос справочников/
+  пользователей/vehicle_drivers/настроек, НЕ журнала; бэкап; нумерация с 1);
+  архивный просмотр/перепечатка; admin-правка с audit/revisions и
+  предупреждением при reo_status=sent.
+
+  Завершено: 2026-08-02T02:29:14Z. Артефакты: docs/3aa7f0-yearly-db-archive/.
+
+---

@@ -41,9 +41,10 @@ import {
   isSpareEnabled,
 } from '@/lib/site-runtime';
 import { SpareSwitchWizard } from '@/components/SpareSwitchWizard';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, LayoutPanelTop, Server, ArrowLeftRight } from 'lucide-react';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, LayoutPanelTop, Server, ArrowLeftRight, CalendarRange } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
+import { useAuth } from '@/hooks/useAuth';
 import {
   exportStorageBackup,
   fetchStoragePaths,
@@ -51,6 +52,13 @@ import {
   importStorageBackup,
   type StoragePaths,
 } from '@/lib/storage-sync';
+import {
+  fetchRotatePreview,
+  reloadStorageAfterRotate,
+  rotateYear,
+  type AutoClosedItem,
+  type RotatePreview,
+} from '@/lib/year-archive';
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 
@@ -81,9 +89,15 @@ interface Props {
 }
 
 export function SettingsView({ onSaved }: Props) {
+  const { isAdmin, session, displayName } = useAuth();
   const [settings, setSettings] = useState<AppSettings>(() => SettingsStorage.getAppSettings());
   const [cargoOptions, setCargoOptions] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
+  const [rotatePreview, setRotatePreview] = useState<RotatePreview | null>(null);
+  const [rotateTarget, setRotateTarget] = useState('');
+  const [rotateBusy, setRotateBusy] = useState(false);
+  const [rotateMessage, setRotateMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const [lastAutoClosed, setLastAutoClosed] = useState<AutoClosedItem[]>([]);
   const [reoTestMessage, setReoTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [reoTesting, setReoTesting] = useState(false);
   const [vescomTestMessage, setVescomTestMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -142,11 +156,76 @@ export function SettingsView({ onSaved }: Props) {
       ),
     );
     void fetchStoragePaths().then(setStoragePaths);
+    void fetchRotatePreview()
+      .then((preview) => {
+        setRotatePreview(preview);
+        setRotateTarget(String(preview.suggested_new_year));
+      })
+      .catch(() => {
+        setRotatePreview(null);
+      });
 
     const onRuntime = () => reloadSiteState();
     window.addEventListener(SITE_RUNTIME_UPDATED_EVENT, onRuntime);
     return () => window.removeEventListener(SITE_RUNTIME_UPDATED_EVENT, onRuntime);
   }, []);
+
+  const handleYearRotate = async () => {
+    if (!isAdmin || !rotatePreview) return;
+    const target = Number(rotateTarget);
+    if (!Number.isFinite(target) || target <= rotatePreview.active_year) {
+      setRotateMessage({ type: 'error', text: 'Целевой год должен быть больше активного' });
+      return;
+    }
+    let confirmReo = true;
+    if (rotatePreview.reo_pending_count > 0) {
+      confirmReo = window.confirm(
+        `Есть ${rotatePreview.reo_pending_count} тикетов с ожидающей отправкой в РЭО. Продолжить ротацию?`,
+      );
+      if (!confirmReo) return;
+    }
+    if (
+      !window.confirm(
+        `Закрыть год ${rotatePreview.active_year} и открыть ${target}? Открытые тикеты будут автозакрыты, журнал останется в архиве.`,
+      )
+    ) {
+      return;
+    }
+
+    setRotateBusy(true);
+    setRotateMessage(null);
+    try {
+      const result = await rotateYear({
+        target_year: target,
+        operator_id: session?.user.id ?? null,
+        operator_name: displayName || 'admin',
+        confirm_reo_pending: confirmReo,
+      });
+      setLastAutoClosed(result.auto_closed);
+      await reloadStorageAfterRotate();
+      const preview = await fetchRotatePreview();
+      setRotatePreview(preview);
+      setRotateTarget(String(preview.suggested_new_year));
+      void fetchStoragePaths().then(setStoragePaths);
+      setRotateMessage({
+        type: 'success',
+        text: `Год сменён: ${result.previous_year} → ${result.active_year}. Автозакрыто: ${result.auto_closed.length}.`,
+      });
+      logger.info('settings', 'Ротация года выполнена', result);
+      onSaved?.();
+    } catch (err: unknown) {
+      const e = err as Error & { error?: string; body?: { reo_pending_count?: number } };
+      if (e.error === 'reo_pending_confirm_required') {
+        setRotateMessage({
+          type: 'error',
+          text: 'Подтвердите ротацию при наличии тикетов, ожидающих РЭО',
+        });
+      } else {
+        setRotateMessage({ type: 'error', text: e.message || 'Не удалось выполнить ротацию' });
+      }
+    }
+    setRotateBusy(false);
+  };
 
   const reloadCargoOptions = () => {
     const cargosFromDictionary = DictionaryStorage.getTable('cargos').map((item) => item.name);
@@ -1594,16 +1673,85 @@ export function SettingsView({ onSaved }: Props) {
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+          <CalendarRange size={18} className="text-slate-600" />
+          <h3 className="text-sm font-semibold text-slate-800">Год и архив</h3>
+        </div>
+        <p className="text-xs text-slate-500">
+          Рабочие данные хранятся в годовом файле <code>BD/weighing-ГГГГ.db</code>. Смена года — операция администратора: автозакрытие открытых тикетов, бэкап и перенос справочников.
+        </p>
+        {rotatePreview && (
+          <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 space-y-1">
+            <div><span className="font-medium">Активный год:</span> {rotatePreview.active_year}</div>
+            <div><span className="font-medium">Открытых тикетов:</span> {rotatePreview.open_count}</div>
+            <div><span className="font-medium">Ожидают РЭО:</span> {rotatePreview.reo_pending_count}</div>
+            {rotatePreview.active_year < new Date().getFullYear() && (
+              <div className="text-amber-700 font-medium">
+                Наступил новый календарный год — рекомендуется выполнить ротацию.
+              </div>
+            )}
+          </div>
+        )}
+        {isAdmin && rotatePreview && (
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="text-xs text-slate-500">
+              Новый год
+              <input
+                type="number"
+                value={rotateTarget}
+                onChange={(e) => setRotateTarget(e.target.value)}
+                className="mt-1 block w-28 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={rotateBusy}
+              onClick={() => void handleYearRotate()}
+              className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+            >
+              {rotateBusy ? 'Ротация...' : 'Сменить год'}
+            </button>
+          </div>
+        )}
+        {!isAdmin && (
+          <p className="text-xs text-slate-500">Ротацию года может выполнить только администратор.</p>
+        )}
+        {rotateMessage && (
+          <div className={`text-sm ${rotateMessage.type === 'error' ? 'text-red-600' : rotateMessage.type === 'success' ? 'text-emerald-600' : 'text-slate-600'}`}>
+            {rotateMessage.text}
+          </div>
+        )}
+        {lastAutoClosed.length > 0 && (
+          <div className="rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600 max-h-40 overflow-y-auto">
+            <div className="font-medium mb-1">Автозакрытые при последней ротации:</div>
+            <ul className="space-y-0.5">
+              {lastAutoClosed.map((item) => (
+                <li key={item.id}>
+                  №{item.ticket_number ?? '—'} · {item.vehicle_number || '—'} · тара:{' '}
+                  {item.tare_source}
+                  {item.tare_weight != null ? ` (${item.tare_weight})` : ''}
+                  {item.attention ? ' · требует внимания' : ''}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <FolderOpen size={18} className="text-slate-600" />
           <h3 className="text-sm font-semibold text-slate-800">Данные и резервное копирование</h3>
         </div>
         <p className="text-xs text-slate-500">
-          Настройки сохраняются в <code>config.ini</code>, журнал и справочники — в SQLite-базе <code>BD/weighing.db</code> рядом с приложением. Резервная копия — файл <code>.ini</code>.
+          Настройки сохраняются в <code>config.ini</code>, журнал и справочники — в годовой SQLite-базе <code>BD/weighing-ГГГГ.db</code> рядом с приложением. Резервная копия — файл <code>.ini</code>.
         </p>
         {storagePaths && (
           <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 space-y-1">
             <div><span className="font-medium">Конфиг:</span> {storagePaths.config_file}</div>
             <div><span className="font-medium">База:</span> {storagePaths.database_file}</div>
+            {storagePaths.active_year && (
+              <div><span className="font-medium">Активный год:</span> {storagePaths.active_year}</div>
+            )}
           </div>
         )}
         <div className="flex flex-wrap items-center gap-3">

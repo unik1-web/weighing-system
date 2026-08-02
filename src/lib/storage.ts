@@ -83,15 +83,30 @@ export interface WeighingTicket {
   photo_overview_path?: string | null;
   /** Reason for keyboard weight entry; null when off / not applicable. Soft-read for old tickets. */
   manual_weight_reason?: string | null;
+  /** Closed during year rotation. Soft-read: missing → false. */
+  auto_closed?: boolean | null;
 }
+
+export type TicketAuditAction = 'created' | 'completed' | 'auto_closed' | 'updated';
 
 export interface TicketAuditEvent {
   id: string;
   ticket_id: string;
-  action: 'created' | 'completed';
+  action: TicketAuditAction;
   at: string;
   operator_name: string;
   operator_id: string | null;
+}
+
+export interface TicketRevision {
+  id: string;
+  ticket_id: string;
+  at: string;
+  operator_id: string | null;
+  operator_name: string;
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
 }
 
 export interface User {
@@ -116,6 +131,7 @@ const STORAGE_KEYS = {
   SESSIONS: 'app_sessions',
   TICKETS: 'app_weighing_tickets',
   TICKET_AUDIT: 'app_ticket_audit',
+  TICKET_REVISIONS: 'app_ticket_revisions',
   VEHICLE_DRIVERS: 'app_vehicle_drivers',
   SITES: 'app_sites',
   SCALES: 'app_scales',
@@ -300,6 +316,18 @@ function softReadNullableString(value: unknown): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
+/** Soft-read boolean: missing/null/'' → false; 1/'true' → true. */
+export function softReadBool(value: unknown): boolean {
+  if (value == null || value === '') return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes';
+  }
+  return Boolean(value);
+}
+
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
   const next: WeighingTicket = {
     ...ticket,
@@ -317,6 +345,9 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     photo_overview_path: ticket.photo_overview_path ?? null,
     manual_weight_reason: softReadNullableString(
       (ticket as WeighingTicket & { manual_weight_reason?: unknown }).manual_weight_reason,
+    ),
+    auto_closed: softReadBool(
+      (ticket as WeighingTicket & { auto_closed?: unknown }).auto_closed,
     ),
   };
   const mode = normalizeWeighingMode(ticket);

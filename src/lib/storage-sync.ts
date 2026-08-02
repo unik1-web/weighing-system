@@ -197,6 +197,8 @@ export interface StoragePaths {
   config_file: string;
   database_dir: string;
   database_file: string;
+  active_year?: string;
+  backups_dir?: string;
 }
 
 export async function fetchStoragePaths(): Promise<StoragePaths | null> {
@@ -209,6 +211,8 @@ export async function fetchStoragePaths(): Promise<StoragePaths | null> {
       config_file: body.config_file,
       database_dir: body.database_dir,
       database_file: body.database_file,
+      active_year: body.active_year,
+      backups_dir: body.backups_dir,
     };
   } catch {
     return null;

@@ -1,5 +1,6 @@
 import type { WeighingTicket } from '@/lib/storage';
 import { SettingsStorage, type AppSettings } from '@/lib/storage';
+import { formatTicketPrintTitle } from '@/lib/print-date';
 
 interface Props {
   ticket: WeighingTicket;
@@ -50,7 +51,7 @@ function renderActClassic(t: WeighingTicket, settings: AppSettings): string {
 <div style="font-family:Times New Roman,serif;font-size:10.5px;box-sizing:border-box;color:#000;width:100%;">
   <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.2mm;border-bottom:1px solid #000;padding-bottom:0.8mm;gap:3mm;">
     <div style="font-size:12px;font-weight:bold;white-space:nowrap;min-width:32%">${esc(receiverLabel)}</div>
-    <div style="font-size:12px;font-weight:bold;text-align:center;flex:1">Акт взвешивания № ${t.ticket_number ?? '—'}</div>
+    <div style="font-size:12px;font-weight:bold;text-align:center;flex:1">${esc(formatTicketPrintTitle(t, 'act'))}</div>
     <div style="min-width:18mm;text-align:right;font-size:10px;white-space:nowrap;">${t.created_at ? fmt(t.created_at) : '——'}</div>
   </div>
 
@@ -294,9 +295,10 @@ function buildSheetHtml(t: WeighingTicket, settings: AppSettings): string {
 
 export function printTicket(ticket: WeighingTicket, settings?: AppSettings) {
   const appSettings = settings ?? SettingsStorage.getAppSettings();
-  const title = appSettings.print_layout === 'receipt'
-    ? `Талон № ${ticket.ticket_number ?? '—'}`
-    : `Акт взвешивания № ${ticket.ticket_number ?? '—'}`;
+  const title = formatTicketPrintTitle(
+    ticket,
+    appSettings.print_layout === 'receipt' ? 'receipt' : 'act',
+  );
 
   const html = `<!DOCTYPE html>
 <html lang="ru">

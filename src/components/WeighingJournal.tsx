@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage } from '@/lib/storage';
+import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage, softReadBool } from '@/lib/storage';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import {
   type WeightSource,
@@ -307,7 +307,17 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                       <div className="text-[10px] font-medium text-slate-400">Т: {sourceLabelForWeight(t.tare_weight, t.tare_source)}</div>
                     </td>
                     <td className="px-2 py-2.5 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">{t.net_weight?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="px-2 py-2.5 text-center whitespace-nowrap">{t.status === 'completed' ? <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"><CheckCircle2 size={12} /> Завершён</span> : <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700"><Clock size={12} /> Открыт</span>}</td>
+                    <td className="px-2 py-2.5 text-center whitespace-nowrap">
+                      {softReadBool(t.auto_closed) ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700" title="Закрыт при ротации года">
+                          Закрыт при ротации
+                        </span>
+                      ) : t.status === 'completed' ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"><CheckCircle2 size={12} /> Завершён</span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700"><Clock size={12} /> Открыт</span>
+                      )}
+                    </td>
                     {reoEnabled && (
                       <td className="px-2 py-2.5 text-center whitespace-nowrap">
                         {t.reo_status === 'sent' ? (
@@ -449,6 +459,11 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                       : '—'}
                   </div>
                 </div>
+                {softReadBool(viewTicket.auto_closed) && (
+                  <div className="col-span-2 text-sm text-violet-700">
+                    Закрыт при ротации года
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
