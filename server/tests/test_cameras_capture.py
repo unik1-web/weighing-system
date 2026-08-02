@@ -224,3 +224,117 @@ def test_capabilities_endpoint(api_client, temp_app_root):
     assert 'http_snapshot' in data['backends']
     assert data['video_enabled'] is True
     assert data['photo_root'] == 'Photo'
+
+
+def test_sync_after_capture_ok(api_client, temp_app_root):
+    """ticket_photos FK must not block POST /api/database after capture."""
+    _seed_site_and_ticket(api_client)
+    _set_video_enabled(temp_app_root, True)
+
+    with patch('cameras.grab_frame', return_value=FAKE_JPEG):
+        cap = api_client.post(
+            '/api/cameras/capture',
+            json={'ticket_id': 't-photo-1', 'phase': 'gross', 'site_id': 'site-1'},
+        )
+    assert cap.status_code == 200
+    assert len(cap.get_json()['photos']) == 2
+
+    db = api_client.get('/api/database').get_json()['data']
+    tickets = db['app_weighing_tickets']
+    photos = db['app_ticket_photos']
+    assert len(json.loads(photos)) == 2
+
+    sync = api_client.post(
+        '/api/database',
+        json={
+            'data': {
+                'app_weighing_tickets': tickets,
+                'app_ticket_photos': photos,
+            }
+        },
+    )
+    assert sync.status_code == 200, sync.get_json()
+    assert sync.get_json()['success'] is True
+
+    db2 = api_client.get('/api/database').get_json()['data']
+    assert len(json.loads(db2['app_ticket_photos'])) == 2
+    assert len(json.loads(db2['app_weighing_tickets'])) == 1
+
+
+def test_full_site_camera_sync_twice(api_client, temp_app_root):
+    """cameras/scales FK must not block repeated full sync of site graph."""
+    _seed_site_and_ticket(api_client)
+    db = api_client.get('/api/database').get_json()['data']
+
+    payload = {
+        'app_sites': db['app_sites'],
+        'app_scales': db.get(
+            'app_scales',
+            json.dumps(
+                [
+                    {
+                        'id': 'scale-1',
+                        'site_id': 'site-1',
+                        'role': 'primary',
+                        'name': 'Основные',
+                        'adapter_id': 'manual',
+                        'connection': {},
+                        'enabled': True,
+                        'created_at': '2026-08-02T00:00:00',
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+        ),
+        'app_site_runtime': db['app_site_runtime'],
+        'app_site_scale_switches': db.get(
+            'app_site_scale_switches', json.dumps([], ensure_ascii=False)
+        ),
+        'app_cameras': db['app_cameras'],
+    }
+
+    for i in range(2):
+        resp = api_client.post('/api/database', json={'data': payload})
+        assert resp.status_code == 200, f'sync #{i + 1}: {resp.get_json()}'
+        assert resp.get_json()['success'] is True
+
+    db2 = api_client.get('/api/database').get_json()['data']
+    assert len(json.loads(db2['app_sites'])) == 1
+    assert len(json.loads(db2['app_cameras'])) == 2
+
+
+def test_capture_wall_clock_timeout(api_client, temp_app_root):
+    """Hung grab_frame must not block capture beyond CAPTURE_WALL_CLOCK."""
+    import threading
+    import time
+
+    import cameras as cameras_mod
+
+    _seed_site_and_ticket(api_client)
+    _set_video_enabled(temp_app_root, True)
+
+    release = threading.Event()
+
+    def slow_grab(_camera):
+        release.wait(timeout=60)
+        return FAKE_JPEG
+
+    wall = 0.8
+    started = time.monotonic()
+    try:
+        with patch.object(cameras_mod, 'CAPTURE_WALL_CLOCK', wall):
+            with patch('cameras.grab_frame', side_effect=slow_grab):
+                resp = api_client.post(
+                    '/api/cameras/capture',
+                    json={'ticket_id': 't-photo-1', 'phase': 'gross', 'site_id': 'site-1'},
+                )
+        elapsed = time.monotonic() - started
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['success'] is True
+        assert all(p['status'] == 'failed' for p in data['photos'])
+        assert all('Таймаут' in (p.get('error_message') or '') for p in data['photos'])
+        assert elapsed < wall + 2.0, f'elapsed={elapsed:.2f}s wall={wall}'
+    finally:
+        release.set()

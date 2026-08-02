@@ -6,7 +6,7 @@ import io
 import logging
 import os
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from typing import Any
 
@@ -26,6 +26,8 @@ JPEG_QUALITY = 85
 MAX_WIDTH = 1920
 CONNECT_TIMEOUT = 1.0
 READ_TIMEOUT = 3.0
+PER_CAMERA_TIMEOUT = 3.0
+CAPTURE_WALL_CLOCK = 6.0
 MAX_WORKERS = 4
 
 CAMERA_ROLES = ('entry', 'exit', 'overview')
@@ -415,6 +417,83 @@ def _capture_one(
     return base
 
 
+def _failed_photo(
+    camera: dict[str, Any],
+    ticket_id: str,
+    phase: str,
+    camera_mode: str,
+    error_message: str,
+) -> dict[str, Any]:
+    return {
+        'id': str(uuid.uuid4()),
+        'ticket_id': ticket_id,
+        'phase': phase,
+        'camera_id': camera.get('id'),
+        'camera_role': camera.get('role') or 'overview',
+        'relative_path': None,
+        'status': 'failed',
+        'error_message': error_message,
+        'camera_mode': camera_mode,
+        'created_at': _now_iso(),
+    }
+
+
+def _capture_parallel(
+    cameras: list[dict[str, Any]],
+    ticket_id: str,
+    phase: str,
+    camera_mode: str,
+) -> list[dict[str, Any]]:
+    """Parallel grab with hard wall-clock timeout (~CAPTURE_WALL_CLOCK seconds)."""
+    if not cameras:
+        return []
+    workers = min(MAX_WORKERS, len(cameras))
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futures = {
+        pool.submit(_capture_one, cam, ticket_id, phase, camera_mode, None): cam
+        for cam in cameras
+    }
+    photos: list[dict[str, Any]] = []
+    try:
+        done, not_done = wait(set(futures.keys()), timeout=CAPTURE_WALL_CLOCK)
+        for fut in done:
+            cam = futures[fut]
+            try:
+                photos.append(fut.result(timeout=0))
+            except Exception as exc:
+                logger.warning(
+                    'Capture future error ticket=%s camera=%s: %s',
+                    ticket_id,
+                    cam.get('id'),
+                    exc,
+                )
+                photos.append(
+                    _failed_photo(cam, ticket_id, phase, camera_mode, str(exc))
+                )
+        for fut in not_done:
+            cam = futures[fut]
+            logger.warning(
+                'Capture wall-clock timeout ticket=%s camera=%s (%.0fs)',
+                ticket_id,
+                cam.get('id'),
+                CAPTURE_WALL_CLOCK,
+            )
+            photos.append(
+                _failed_photo(
+                    cam,
+                    ticket_id,
+                    phase,
+                    camera_mode,
+                    f'Таймаут захвата ({CAPTURE_WALL_CLOCK:.0f} с)',
+                )
+            )
+            fut.cancel()
+    finally:
+        # Do not block HTTP on hung RTSP workers
+        pool.shutdown(wait=False, cancel_futures=True)
+    return photos
+
+
 def capture_for_ticket(
     ticket_id: str,
     phase: str,
@@ -467,13 +546,7 @@ def capture_for_ticket(
         for cam in cameras:
             photos.append(_capture_one(cam, ticket_id, phase, mode, skip_reason))
     else:
-        with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(cameras))) as pool:
-            futures = [
-                pool.submit(_capture_one, cam, ticket_id, phase, mode, None)
-                for cam in cameras
-            ]
-            for fut in as_completed(futures):
-                photos.append(fut.result())
+        photos = _capture_parallel(cameras, ticket_id, phase, mode)
 
     # Stable order by camera sort
     order = {c['id']: i for i, c in enumerate(cameras)}

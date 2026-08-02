@@ -917,6 +917,8 @@ def _default_weighing_mode(ticket: dict[str, Any]) -> str:
 
 
 def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None:
+    # ticket_photos.ticket_id → weighing_tickets(id): clear children first
+    connection.execute('DELETE FROM ticket_photos')
     connection.execute('DELETE FROM weighing_tickets')
     for ticket in tickets:
         if not isinstance(ticket, dict):
@@ -1012,7 +1014,16 @@ def _replace_vehicle_drivers(connection: sqlite3.Connection, links: list[Any]) -
         )
 
 
+def _clear_site_children(connection: sqlite3.Connection) -> None:
+    """Delete site-graph children before DELETE sites (FK: cameras/scales/runtime/switches)."""
+    connection.execute('DELETE FROM cameras')
+    connection.execute('DELETE FROM site_scale_switches')
+    connection.execute('DELETE FROM site_runtime')
+    connection.execute('DELETE FROM scales')
+
+
 def _replace_sites(connection: sqlite3.Connection, sites: list[Any]) -> None:
+    _clear_site_children(connection)
     connection.execute('DELETE FROM sites')
     for site in sites:
         if not isinstance(site, dict):
