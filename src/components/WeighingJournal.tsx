@@ -10,6 +10,7 @@ import {
 } from '@/lib/weight-source';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
+import { TicketPhotoPreview } from '@/components/TicketPhotoPreview';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson, Eye, X } from 'lucide-react';
 
@@ -464,6 +465,9 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                     Закрыт при ротации года
                   </div>
                 )}
+                <div className="col-span-2">
+                  <TicketPhotoPreview ticket={viewTicket} />
+                </div>
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">

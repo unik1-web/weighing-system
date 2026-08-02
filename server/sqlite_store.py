@@ -20,6 +20,8 @@ STORAGE_KEYS = {
     'scales': 'app_scales',
     'site_runtime': 'app_site_runtime',
     'site_scale_switches': 'app_site_scale_switches',
+    'cameras': 'app_cameras',
+    'ticket_photos': 'app_ticket_photos',
     'session': 'app_current_user',
     'vehicles': 'app_vehicles',
     'drivers': 'app_drivers',
@@ -80,6 +82,17 @@ SITE_RUNTIME_COLUMNS = [
 SITE_SCALE_SWITCH_COLUMNS = [
     'id', 'site_id', 'from_set', 'to_set', 'reason',
     'operator_id', 'operator_name', 'at', 'camera_ack',
+]
+
+CAMERA_COLUMNS = [
+    'id', 'site_id', 'role', 'name', 'capture_url', 'capture_kind',
+    'enabled', 'sort_order', 'roi_json',
+    'reference_normal_path', 'reference_spare_path', 'created_at',
+]
+
+TICKET_PHOTO_COLUMNS = [
+    'id', 'ticket_id', 'phase', 'camera_id', 'camera_role',
+    'relative_path', 'status', 'error_message', 'camera_mode', 'created_at',
 ]
 
 
@@ -182,6 +195,7 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     )
 
     _ensure_site_tables(connection)
+    _ensure_camera_tables(connection)
 
     existing = {
         row['name']
@@ -291,6 +305,54 @@ def _ensure_site_tables(connection: sqlite3.Connection) -> None:
         '''
         CREATE INDEX IF NOT EXISTS idx_site_scale_switches_site_at
             ON site_scale_switches(site_id, at)
+        '''
+    )
+
+
+def _ensure_camera_tables(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS cameras (
+            id TEXT PRIMARY KEY,
+            site_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            name TEXT NOT NULL,
+            capture_url TEXT NOT NULL DEFAULT '',
+            capture_kind TEXT NOT NULL DEFAULT 'auto',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            roi_json TEXT,
+            reference_normal_path TEXT,
+            reference_spare_path TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (site_id) REFERENCES sites(id)
+        )
+        '''
+    )
+    connection.execute(
+        'CREATE INDEX IF NOT EXISTS idx_cameras_site ON cameras(site_id, sort_order)'
+    )
+    connection.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS ticket_photos (
+            id TEXT PRIMARY KEY,
+            ticket_id TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            camera_id TEXT,
+            camera_role TEXT NOT NULL,
+            relative_path TEXT,
+            status TEXT NOT NULL,
+            error_message TEXT,
+            camera_mode TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (ticket_id) REFERENCES weighing_tickets(id)
+        )
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_ticket_photos_ticket
+            ON ticket_photos(ticket_id, phase, created_at)
         '''
     )
 
@@ -649,6 +711,46 @@ def _load_site_scale_switches(connection: sqlite3.Connection) -> list[dict[str, 
     return [{column: row[column] for column in SITE_SCALE_SWITCH_COLUMNS} for row in rows]
 
 
+def _load_cameras(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'SELECT {", ".join(CAMERA_COLUMNS)} FROM cameras'
+        ' ORDER BY sort_order ASC, created_at ASC'
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        roi = None
+        if row['roi_json']:
+            try:
+                roi = json.loads(row['roi_json'])
+            except (TypeError, json.JSONDecodeError):
+                roi = None
+        result.append(
+            {
+                'id': row['id'],
+                'site_id': row['site_id'],
+                'role': row['role'],
+                'name': row['name'],
+                'capture_url': row['capture_url'],
+                'capture_kind': row['capture_kind'] or 'auto',
+                'enabled': bool(row['enabled']),
+                'sort_order': int(row['sort_order'] or 0),
+                'roi': roi,
+                'reference_normal_path': row['reference_normal_path'],
+                'reference_spare_path': row['reference_spare_path'],
+                'created_at': row['created_at'],
+            }
+        )
+    return result
+
+
+def _load_ticket_photos(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f'SELECT {", ".join(TICKET_PHOTO_COLUMNS)} FROM ticket_photos'
+        ' ORDER BY created_at ASC'
+    ).fetchall()
+    return [{column: row[column] for column in TICKET_PHOTO_COLUMNS} for row in rows]
+
+
 def _load_dictionary(connection: sqlite3.Connection, category: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         '''
@@ -727,6 +829,16 @@ def _read_database_from_connection(connection: sqlite3.Connection) -> dict[str, 
     if site_switches:
         result[STORAGE_KEYS['site_scale_switches']] = json.dumps(
             site_switches, ensure_ascii=False
+        )
+
+    cameras = _load_cameras(connection)
+    if cameras:
+        result[STORAGE_KEYS['cameras']] = json.dumps(cameras, ensure_ascii=False)
+
+    ticket_photos = _load_ticket_photos(connection)
+    if ticket_photos:
+        result[STORAGE_KEYS['ticket_photos']] = json.dumps(
+            ticket_photos, ensure_ascii=False
         )
 
     session = _load_session(connection)
@@ -996,6 +1108,70 @@ def _replace_site_scale_switches(connection: sqlite3.Connection, events: list[An
         )
 
 
+def _replace_cameras(connection: sqlite3.Connection, cameras: list[Any]) -> None:
+    connection.execute('DELETE FROM cameras')
+    for cam in cameras:
+        if not isinstance(cam, dict):
+            continue
+        roi = cam.get('roi')
+        if isinstance(roi, (dict, list)):
+            roi_json = json.dumps(roi, ensure_ascii=False)
+        elif roi is None or roi == '':
+            roi_json = None
+        else:
+            roi_json = str(roi)
+        enabled = cam.get('enabled')
+        try:
+            sort_order = int(cam.get('sort_order') if cam.get('sort_order') is not None else 0)
+        except (TypeError, ValueError):
+            sort_order = 0
+        connection.execute(
+            f'''
+            INSERT INTO cameras ({", ".join(CAMERA_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(CAMERA_COLUMNS))})
+            ''',
+            (
+                str(cam.get('id', '')),
+                str(cam.get('site_id', '')),
+                str(cam.get('role', '')),
+                str(cam.get('name', '')),
+                str(cam.get('capture_url', '')),
+                str(cam.get('capture_kind') or 'auto'),
+                1 if enabled else 0,
+                sort_order,
+                roi_json,
+                cam.get('reference_normal_path'),
+                cam.get('reference_spare_path'),
+                str(cam.get('created_at', '')),
+            ),
+        )
+
+
+def _replace_ticket_photos(connection: sqlite3.Connection, photos: list[Any]) -> None:
+    connection.execute('DELETE FROM ticket_photos')
+    for photo in photos:
+        if not isinstance(photo, dict):
+            continue
+        connection.execute(
+            f'''
+            INSERT INTO ticket_photos ({", ".join(TICKET_PHOTO_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(TICKET_PHOTO_COLUMNS))})
+            ''',
+            (
+                str(photo.get('id', '')),
+                str(photo.get('ticket_id', '')),
+                str(photo.get('phase', '')),
+                photo.get('camera_id'),
+                str(photo.get('camera_role', '')),
+                photo.get('relative_path'),
+                str(photo.get('status', 'skipped')),
+                photo.get('error_message'),
+                str(photo.get('camera_mode', 'normal')),
+                str(photo.get('created_at', '')),
+            ),
+        )
+
+
 def _replace_dictionary(connection: sqlite3.Connection, category: str, items: list[Any]) -> None:
     connection.execute('DELETE FROM dictionary_entries WHERE category = ?', (category,))
     for item in items:
@@ -1108,6 +1284,22 @@ def write_database(data: dict[str, Any]) -> None:
                 switches = json.loads(str(data[STORAGE_KEYS['site_scale_switches']]))
                 if isinstance(switches, list):
                     _replace_site_scale_switches(connection, switches)
+            except json.JSONDecodeError:
+                pass
+
+        if STORAGE_KEYS['cameras'] in data:
+            try:
+                cameras = json.loads(str(data[STORAGE_KEYS['cameras']]))
+                if isinstance(cameras, list):
+                    _replace_cameras(connection, cameras)
+            except json.JSONDecodeError:
+                pass
+
+        if STORAGE_KEYS['ticket_photos'] in data:
+            try:
+                photos = json.loads(str(data[STORAGE_KEYS['ticket_photos']]))
+                if isinstance(photos, list):
+                    _replace_ticket_photos(connection, photos)
             except json.JSONDecodeError:
                 pass
 

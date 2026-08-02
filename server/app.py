@@ -192,6 +192,101 @@ def scales_reading():
     return jsonify({'success': True, **session.reading()})
 
 
+@app.get('/api/cameras/capabilities')
+def cameras_capabilities():
+    try:
+        import cameras as cameras_mod
+
+        caps = cameras_mod.capabilities()
+        return jsonify({'success': True, **caps})
+    except Exception as exc:
+        logger.exception('cameras capabilities failed')
+        return error_response(f'Ошибка capabilities камер: {exc}')
+
+
+@app.post('/api/cameras/capture')
+def cameras_capture():
+    body = request.get_json(silent=True) or {}
+    ticket_id = body.get('ticket_id')
+    phase = body.get('phase')
+    site_id = body.get('site_id')
+    if not ticket_id or not phase:
+        return error_response('Нужны ticket_id и phase')
+    try:
+        import cameras as cameras_mod
+
+        photos, stubs = cameras_mod.capture_for_ticket(
+            str(ticket_id),
+            str(phase),
+            str(site_id) if site_id else None,
+        )
+        return jsonify({'success': True, 'photos': photos, 'stubs': stubs})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras capture failed')
+        return error_response(f'Ошибка захвата фото: {exc}')
+
+
+@app.post('/api/cameras/snapshot')
+def cameras_snapshot():
+    body = request.get_json(silent=True) or {}
+    camera_id = body.get('camera_id')
+    capture_url = body.get('capture_url')
+    capture_kind = body.get('capture_kind')
+    try:
+        import cameras as cameras_mod
+
+        relative_path = cameras_mod.snapshot_camera(
+            camera_id=str(camera_id) if camera_id else None,
+            capture_url=str(capture_url) if capture_url else None,
+            capture_kind=str(capture_kind) if capture_kind else None,
+        )
+        return jsonify({'success': True, 'relative_path': relative_path})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras snapshot failed')
+        return error_response(f'Ошибка снимка: {exc}')
+
+
+@app.post('/api/cameras/reference')
+def cameras_reference():
+    body = request.get_json(silent=True) or {}
+    camera_id = body.get('camera_id')
+    mode = body.get('mode')
+    if not camera_id or not mode:
+        return error_response('Нужны camera_id и mode')
+    try:
+        import cameras as cameras_mod
+
+        camera = cameras_mod.save_reference(str(camera_id), str(mode))
+        return jsonify({'success': True, 'camera': camera})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras reference failed')
+        return error_response(f'Ошибка эталона: {exc}')
+
+
+@app.get('/api/cameras/photo')
+def cameras_photo():
+    relative = request.args.get('path') or ''
+    try:
+        import cameras as cameras_mod
+
+        absolute = cameras_mod.resolve_safe_photo_path(relative)
+        if not os.path.isfile(absolute):
+            return error_response('Файл не найден', 404)
+        directory, filename = os.path.split(absolute)
+        return send_from_directory(directory, filename, mimetype='image/jpeg')
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras photo serve failed')
+        return error_response(f'Ошибка чтения фото: {exc}')
+
+
 @app.post('/api/shutdown')
 def shutdown_application():
     shutdown_func = request.environ.get('werkzeug.server.shutdown')

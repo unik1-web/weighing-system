@@ -48,6 +48,8 @@ import {
   resolveVehicle,
   type PlateSource,
 } from '@/lib/vehicle-resolve';
+import { triggerCaptureAfterSave } from '@/lib/cameras';
+import { TicketPhotoPreview } from '@/components/TicketPhotoPreview';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
 
 type AutofillTextField = 'vehicle_brand' | 'driver_name' | 'cargo_name' | 'shipper_name';
@@ -476,9 +478,10 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     'plate_source' | 'photo_entry_path' | 'photo_exit_path' | 'photo_overview_path'
   > => ({
     plate_source: plateSource,
-    photo_entry_path: null,
-    photo_exit_path: null,
-    photo_overview_path: null,
+    // Preserve stubs from first dual pass; capture will refresh after save.
+    photo_entry_path: completingTicket?.photo_entry_path ?? null,
+    photo_exit_path: completingTicket?.photo_exit_path ?? null,
+    photo_overview_path: completingTicket?.photo_overview_path ?? null,
   });
 
   const handleModeChange = (mode: WeighingMode) => {
@@ -622,6 +625,13 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setLastTicket(ticket);
       setSuccess('Взвешивание завершено и сохранено.');
       onSaved(ticket);
+      void triggerCaptureAfterSave(ticket.id, ['gross', 'tare'], ticket.site_id).then((cap) => {
+        if (cap.message) {
+          setSuccess(`Взвешивание завершено и сохранено. ${cap.message}`);
+        }
+        const refreshed = TicketStorage.getById(ticket.id);
+        if (refreshed) setLastTicket(refreshed);
+      });
       resetFormFields();
       setIncompleteRefresh((n) => n + 1);
     } catch (err: unknown) {
@@ -691,6 +701,12 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setLastTicket(ticket);
       setSuccess('Первый проход сохранён. Тикет в незавершённых.');
       onSaved(ticket);
+      const phase = hasGross ? 'gross' as const : 'tare' as const;
+      void triggerCaptureAfterSave(ticket.id, [phase], ticket.site_id).then((cap) => {
+        if (cap.message) {
+          setSuccess(`Первый проход сохранён. Тикет в незавершённых. ${cap.message}`);
+        }
+      });
       resetFormFields();
       setIncompleteRefresh((n) => n + 1);
     } catch (err: unknown) {
@@ -792,6 +808,14 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setLastTicket(ticket);
       setSuccess('Взвешивание завершено и сохранено.');
       onSaved(ticket);
+      const secondPhase = editability.grossEditable ? 'gross' as const : 'tare' as const;
+      void triggerCaptureAfterSave(ticket.id, [secondPhase], ticket.site_id).then((cap) => {
+        if (cap.message) {
+          setSuccess(`Взвешивание завершено и сохранено. ${cap.message}`);
+        }
+        const refreshed = TicketStorage.getById(ticket.id);
+        if (refreshed) setLastTicket(refreshed);
+      });
       resetFormFields();
       exitCompletion();
       const settings = SettingsStorage.getAppSettings();
@@ -1162,6 +1186,10 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           <div className="flex items-start gap-2 rounded-lg bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm text-emerald-700">
             <CheckCircle2 size={18} className="mt-0.5 shrink-0" /> {success}
           </div>
+        )}
+
+        {lastTicket && (
+          <TicketPhotoPreview ticket={lastTicket} className="rounded-xl border border-slate-200 bg-white p-3" />
         )}
 
         <div className="flex flex-wrap gap-3">

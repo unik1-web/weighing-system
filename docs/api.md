@@ -26,11 +26,11 @@
 | `GET` | `/api/database/archive/<year>` | — | Read-only снимок архивного (или активного) года |
 | `POST` | `/api/database/archive/<year>/ticket` | `{ ticket, operator_id, operator_name, confirm_reo_sent? }` | Admin-правка архивного тикета + revisions/audit |
 
-Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` | `all` | `free`, default `all`), `scale_device_id` (id модели весов, default `microsim-m0601`), `active_year` (ГГГГ; меняется только ротацией).
+Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` | `all` | `free`, default `all`), `scale_device_id` (id модели весов, default `microsim-m0601`), `video_enabled` (`true`/`false`, default `false` — фотофиксация), `active_year` (ГГГГ; меняется только ротацией).
 
-Файлы БД: `BD/weighing-ГГГГ.db`; бэкапы ротации — `BD/backups/`. Legacy `BD/weighing.db` мигрирует в годовой файл при первом запуске.
+Файлы БД: `BD/weighing-ГГГГ.db`; бэкапы ротации — `BD/backups/`. Legacy `BD/weighing.db` мигрирует в годовой файл при первом запуске. Фото JPEG — каталог `Photo/` рядом с приложением (не в SQLite).
 
-В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version`, `auto_closed`, nullable audit-stubs (`plate_source`, `site_id`, `scale_id`, `scale_role`, `photo_entry_path`, `photo_exit_path`, `photo_overview_path`); audit — `app_ticket_audit` (`created` \| `completed` \| `auto_closed` \| `updated`); правки — `app_ticket_revisions`; история водителей ТС — `app_vehicle_drivers`; площадка и весы — `app_sites`, `app_scales`, `app_site_runtime`, `app_site_scale_switches` (частичный POST без ключа соответствующие данные не очищает).
+В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version`, `auto_closed`, nullable audit-stubs (`plate_source`, `site_id`, `scale_id`, `scale_role`, `photo_entry_path`, `photo_exit_path`, `photo_overview_path`); audit — `app_ticket_audit` (`created` \| `completed` \| `auto_closed` \| `updated`); правки — `app_ticket_revisions`; история водителей ТС — `app_vehicle_drivers`; площадка и весы — `app_sites`, `app_scales`, `app_site_runtime`, `app_site_scale_switches`; камеры и фото — `app_cameras`, `app_ticket_photos` (частичный POST без ключа соответствующие данные не очищает; при ротации года `cameras` копируются в новый год, `ticket_photos` остаются в архиве).
 | `GET` | `/api/storage` | — | Объединённое чтение config + database |
 | `POST` | `/api/storage` | `{ "data": { "app_...": "..." } }` | Сохранить; принимаются только строковые `app_*` |
 | `GET` | `/api/storage/export` | — | Резервная копия INI (`format: "ini"`, `content`, `backup`) |
@@ -105,6 +105,20 @@
 - `app_scales[].connection`: framing + `transport` (`web_serial` \| `tcp` \| `serial`) + для `custom`: `parseRegex` / `parseMask`; для TCP: `host`, `tcpPort`.
 - `app_settings.manual_weight_reason_mode`: `off` \| `optional` \| `required` (default `optional`).
 - `weighing_tickets.manual_weight_reason`: nullable TEXT (причина ручного ввода веса).
+
+## Камеры и фотофиксация
+
+Модуль `server/cameras.py`. JPEG на диске в `Photo/ГГГГ/ММ/ДД/…`; метаданные в `ticket_photos` и stubs тикета. Захват не блокирует взвешивание (graceful degrade).
+
+| Метод | Путь | Тело / query | Ответ |
+|-------|------|--------------|-------|
+| `GET` | `/api/cameras/capabilities` | — | `{ success, capture_available, backends, video_enabled, photo_root, opencv_available? }` |
+| `POST` | `/api/cameras/capture` | `{ ticket_id, phase: "gross"\|"tare", site_id? }` | `{ success, photos[], stubs }` — пишет файлы + `ticket_photos` + stubs |
+| `POST` | `/api/cameras/snapshot` | `{ camera_id }` или `{ capture_url, capture_kind? }` | `{ success, relative_path }` во временный `Photo/tmp/` |
+| `POST` | `/api/cameras/reference` | `{ camera_id, mode: "normal"\|"spare" }` | Снимок эталона → `Photo/refs/…`; `{ success, camera }` |
+| `GET` | `/api/cameras/photo` | `path` (относительный от app root, только под `Photo/`) | `image/jpeg` или 404; path traversal → 400 |
+
+Поведение `capture`: при `video_enabled=false` — строки `skipped`, HTTP 200; ошибка одной камеры — `failed`, остальные ок; таймаут HTTP ~3 с; параллельно до 4 камер.
 
 ## Frontend
 

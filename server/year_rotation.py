@@ -29,6 +29,7 @@ COPY_TABLES = (
     'scales',
     'site_runtime',
     'site_scale_switches',
+    'cameras',
 )
 
 ATTENTION_NOTE = '[автозакрытие: тара не определена]'
