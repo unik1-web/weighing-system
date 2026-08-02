@@ -62,6 +62,8 @@ export interface WeighingTicket {
   weighing_mode?: WeighingMode;
   version?: number;
   plate_source?: PlateSource | null;
+  site_id?: string | null;
+  scale_id?: string | null;
   scale_role?: 'primary' | 'spare' | null;
   photo_entry_path?: string | null;
   photo_exit_path?: string | null;
@@ -100,6 +102,10 @@ const STORAGE_KEYS = {
   TICKETS: 'app_weighing_tickets',
   TICKET_AUDIT: 'app_ticket_audit',
   VEHICLE_DRIVERS: 'app_vehicle_drivers',
+  SITES: 'app_sites',
+  SCALES: 'app_scales',
+  SITE_RUNTIME: 'app_site_runtime',
+  SITE_SCALE_SWITCHES: 'app_site_scale_switches',
   VEHICLES: 'app_vehicles',
   DRIVERS: 'app_drivers',
   CARGOS: 'app_cargos',
@@ -109,6 +115,14 @@ const STORAGE_KEYS = {
   SETTINGS: 'app_settings',
   CURRENT_USER: 'app_current_user',
 };
+
+/** Exported for site-runtime and sync keys. */
+export const APP_STORAGE_KEYS = {
+  SITES: STORAGE_KEYS.SITES,
+  SCALES: STORAGE_KEYS.SCALES,
+  SITE_RUNTIME: STORAGE_KEYS.SITE_RUNTIME,
+  SITE_SCALE_SWITCHES: STORAGE_KEYS.SITE_SCALE_SWITCHES,
+} as const;
 
 function normalizeScaleDeviceId(raw: unknown): ScaleDeviceId {
   if (typeof raw === 'string' && raw in SCALE_DEVICES) {
@@ -267,6 +281,13 @@ export const SessionStorage = {
   },
 };
 
+function softReadNullableString(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
   const next: WeighingTicket = {
     ...ticket,
@@ -275,6 +296,8 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     gross_source: normalizeWeightSource(ticket.gross_source),
     tare_source: normalizeWeightSource(ticket.tare_source),
     plate_source: normalizePlateSource(ticket.plate_source),
+    site_id: softReadNullableString(ticket.site_id),
+    scale_id: softReadNullableString(ticket.scale_id),
     scale_role:
       ticket.scale_role === 'primary' || ticket.scale_role === 'spare' ? ticket.scale_role : null,
     photo_entry_path: ticket.photo_entry_path ?? null,
@@ -581,6 +604,270 @@ export const VehicleDriversStorage = {
     links[index] = updated;
     persist(STORAGE_KEYS.VEHICLE_DRIVERS, JSON.stringify(links));
     return updated;
+  },
+};
+
+// ── Sites / scales / runtime (этап 4) ──────────────────────────────────────
+
+export type ScaleRole = 'primary' | 'spare';
+export type ActiveScaleSet = 'primary' | 'spare';
+export type CameraMode = 'normal' | 'rotated_for_spare';
+export type AnprMode = 'enabled' | 'disabled_by_configuration' | 'failed';
+export type SwitchReason = 'repair' | 'cleaning' | 'verification' | 'other';
+export type CameraAck = 'rotated' | 'no_cameras';
+
+export interface Site {
+  id: string;
+  name: string;
+  is_default: boolean;
+  created_at: string;
+}
+
+export interface ScaleConnectionProfile {
+  baudRate: number;
+  parity: 'none' | 'even' | 'odd';
+  dataBits: 7 | 8;
+  stopBits: 1 | 2;
+  lineTerminator: string;
+}
+
+export interface Scale {
+  id: string;
+  site_id: string;
+  role: ScaleRole;
+  name: string;
+  adapter_id: ScaleDeviceId;
+  connection: ScaleConnectionProfile;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface SiteRuntime {
+  site_id: string;
+  active_scale_set: ActiveScaleSet;
+  camera_mode: CameraMode;
+  anpr_mode: AnprMode;
+  switch_reason: SwitchReason | null;
+  switch_by_operator_id: string | null;
+  switch_by_operator_name: string | null;
+  switch_at: string | null;
+}
+
+export interface SiteScaleSwitchEvent {
+  id: string;
+  site_id: string;
+  from_set: ActiveScaleSet;
+  to_set: ActiveScaleSet;
+  reason: SwitchReason;
+  operator_id: string | null;
+  operator_name: string;
+  at: string;
+  camera_ack: CameraAck | null;
+}
+
+function persistJsonArray(key: string, items: unknown[]): void {
+  persist(key, JSON.stringify(items));
+}
+
+function readJsonArray<T>(key: string, guard: (item: unknown) => item is T): T[] {
+  const stored = localStorage.getItem(key);
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(guard);
+  } catch {
+    return [];
+  }
+}
+
+function isSite(item: unknown): item is Site {
+  return (
+    item != null &&
+    typeof item === 'object' &&
+    typeof (item as Site).id === 'string' &&
+    typeof (item as Site).name === 'string' &&
+    typeof (item as Site).is_default === 'boolean' &&
+    typeof (item as Site).created_at === 'string'
+  );
+}
+
+function isScale(item: unknown): item is Scale {
+  if (item == null || typeof item !== 'object') return false;
+  const s = item as Scale;
+  return (
+    typeof s.id === 'string' &&
+    typeof s.site_id === 'string' &&
+    (s.role === 'primary' || s.role === 'spare') &&
+    typeof s.name === 'string' &&
+    typeof s.adapter_id === 'string' &&
+    s.connection != null &&
+    typeof s.connection === 'object' &&
+    typeof s.enabled === 'boolean' &&
+    typeof s.created_at === 'string'
+  );
+}
+
+function isSiteRuntime(item: unknown): item is SiteRuntime {
+  if (item == null || typeof item !== 'object') return false;
+  const r = item as SiteRuntime;
+  return (
+    typeof r.site_id === 'string' &&
+    (r.active_scale_set === 'primary' || r.active_scale_set === 'spare') &&
+    typeof r.camera_mode === 'string' &&
+    typeof r.anpr_mode === 'string'
+  );
+}
+
+function isSiteScaleSwitchEvent(item: unknown): item is SiteScaleSwitchEvent {
+  if (item == null || typeof item !== 'object') return false;
+  const e = item as SiteScaleSwitchEvent;
+  return (
+    typeof e.id === 'string' &&
+    typeof e.site_id === 'string' &&
+    (e.from_set === 'primary' || e.from_set === 'spare') &&
+    (e.to_set === 'primary' || e.to_set === 'spare') &&
+    typeof e.reason === 'string' &&
+    typeof e.operator_name === 'string' &&
+    typeof e.at === 'string'
+  );
+}
+
+export const SitesStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.SITES) === null) {
+      localStorage.setItem(STORAGE_KEYS.SITES, '[]');
+    }
+  },
+
+  getAll(): Site[] {
+    SitesStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.SITES, isSite);
+  },
+
+  replaceAll(sites: Site[]): void {
+    SitesStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.SITES, sites);
+  },
+
+  upsert(site: Site): Site {
+    const sites = SitesStorage.getAll();
+    const index = sites.findIndex((s) => s.id === site.id);
+    if (index === -1) sites.push(site);
+    else sites[index] = site;
+    SitesStorage.replaceAll(sites);
+    return site;
+  },
+};
+
+export const ScalesStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.SCALES) === null) {
+      localStorage.setItem(STORAGE_KEYS.SCALES, '[]');
+    }
+  },
+
+  getAll(): Scale[] {
+    ScalesStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.SCALES, isScale).map((scale) => ({
+      ...scale,
+      adapter_id: normalizeScaleDeviceId(scale.adapter_id),
+      enabled: Boolean(scale.enabled),
+    }));
+  },
+
+  replaceAll(scales: Scale[]): void {
+    ScalesStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.SCALES, scales);
+  },
+
+  upsert(scale: Scale): Scale {
+    const scales = ScalesStorage.getAll();
+    // Application-level: ≤1 enabled scale per (site_id, role)
+    if (scale.enabled) {
+      for (let i = 0; i < scales.length; i++) {
+        const existing = scales[i];
+        if (
+          existing.id !== scale.id &&
+          existing.site_id === scale.site_id &&
+          existing.role === scale.role &&
+          existing.enabled
+        ) {
+          scales[i] = { ...existing, enabled: false };
+        }
+      }
+    }
+    const index = scales.findIndex((s) => s.id === scale.id);
+    if (index === -1) scales.push(scale);
+    else scales[index] = scale;
+    ScalesStorage.replaceAll(scales);
+    return scale;
+  },
+
+  getBySite(siteId: string): Scale[] {
+    return ScalesStorage.getAll().filter((s) => s.site_id === siteId);
+  },
+};
+
+export const SiteRuntimeStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.SITE_RUNTIME) === null) {
+      localStorage.setItem(STORAGE_KEYS.SITE_RUNTIME, '[]');
+    }
+  },
+
+  getAll(): SiteRuntime[] {
+    SiteRuntimeStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.SITE_RUNTIME, isSiteRuntime);
+  },
+
+  replaceAll(rows: SiteRuntime[]): void {
+    SiteRuntimeStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.SITE_RUNTIME, rows);
+  },
+
+  upsert(runtime: SiteRuntime): SiteRuntime {
+    const rows = SiteRuntimeStorage.getAll();
+    const index = rows.findIndex((r) => r.site_id === runtime.site_id);
+    if (index === -1) rows.push(runtime);
+    else rows[index] = runtime;
+    SiteRuntimeStorage.replaceAll(rows);
+    return runtime;
+  },
+
+  getBySite(siteId: string): SiteRuntime | null {
+    return SiteRuntimeStorage.getAll().find((r) => r.site_id === siteId) ?? null;
+  },
+};
+
+export const SiteScaleSwitchesStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.SITE_SCALE_SWITCHES) === null) {
+      localStorage.setItem(STORAGE_KEYS.SITE_SCALE_SWITCHES, '[]');
+    }
+  },
+
+  getAll(): SiteScaleSwitchEvent[] {
+    SiteScaleSwitchesStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.SITE_SCALE_SWITCHES, isSiteScaleSwitchEvent);
+  },
+
+  replaceAll(events: SiteScaleSwitchEvent[]): void {
+    SiteScaleSwitchesStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.SITE_SCALE_SWITCHES, events);
+  },
+
+  append(event: SiteScaleSwitchEvent): SiteScaleSwitchEvent {
+    const events = SiteScaleSwitchesStorage.getAll();
+    events.push(event);
+    SiteScaleSwitchesStorage.replaceAll(events);
+    return event;
+  },
+
+  getBySite(siteId: string): SiteScaleSwitchEvent[] {
+    return SiteScaleSwitchesStorage.getAll()
+      .filter((e) => e.site_id === siteId)
+      .sort((a, b) => a.at.localeCompare(b.at));
   },
 };
 
@@ -940,6 +1227,10 @@ export async function clearAllDictionaries(): Promise<void> {
 export const initializeStorage = () => {
   if (hasStoredData()) {
     TicketAuditStorage.ensureInitialized();
+    SitesStorage.ensureInitialized();
+    ScalesStorage.ensureInitialized();
+    SiteRuntimeStorage.ensureInitialized();
+    SiteScaleSwitchesStorage.ensureInitialized();
     return;
   }
 
@@ -958,4 +1249,8 @@ export const initializeStorage = () => {
 
   SettingsStorage.set('org_name', 'Полигон отходов');
   TicketAuditStorage.ensureInitialized();
+  SitesStorage.ensureInitialized();
+  ScalesStorage.ensureInitialized();
+  SiteRuntimeStorage.ensureInitialized();
+  SiteScaleSwitchesStorage.ensureInitialized();
 };

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from 'rea
 import type { ReactNode } from 'react';
 import { UserStorage, SessionStorage, ProfileStorage, initializeStorage, normalizeVehicleDictionaryPlates, type Session as LocalSession } from '@/lib/storage';
 import { loadStorageFromServer, DICTIONARIES_UPDATED_EVENT } from '@/lib/storage-sync';
+import { ensureSiteMigrated } from '@/lib/site-runtime';
 import { logger } from '@/lib/logger';
 
 export type UserRole = 'user' | 'admin';
@@ -44,6 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       initializeStorage();
+      ensureSiteMigrated();
 
       const storedSession = SessionStorage.getSession();
       if (storedSession) {
