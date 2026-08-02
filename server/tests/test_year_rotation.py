@@ -100,6 +100,42 @@ def _seed_active_year(admin_id: str = 'admin-1'):
                 ],
                 ensure_ascii=False,
             ),
+            'app_cameras': json.dumps(
+                [
+                    {
+                        'id': 'cam-1',
+                        'site_id': 'site-1',
+                        'role': 'overview',
+                        'name': 'Обзор',
+                        'capture_url': 'http://127.0.0.1/snap.jpg',
+                        'capture_kind': 'http_snapshot',
+                        'enabled': True,
+                        'sort_order': 0,
+                        'roi': None,
+                        'reference_normal_path': 'Photo/refs/cam-1_normal.jpg',
+                        'reference_spare_path': None,
+                        'created_at': '2026-01-01T00:00:00',
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+            'app_ticket_photos': json.dumps(
+                [
+                    {
+                        'id': 'ph-1',
+                        'ticket_id': 'open-1',
+                        'phase': 'gross',
+                        'camera_id': 'cam-1',
+                        'camera_role': 'overview',
+                        'relative_path': 'Photo/2026/01/01/open-1_gross_overview_20260101100000.jpg',
+                        'status': 'ok',
+                        'error_message': None,
+                        'camera_mode': 'normal',
+                        'created_at': '2026-01-01T10:00:00',
+                    }
+                ],
+                ensure_ascii=False,
+            ),
             'app_weighing_tickets': json.dumps(
                 [
                     {
@@ -231,6 +267,12 @@ def test_rotate_copies_entities_not_tickets(temp_app_root, api_client):
     assert len(json.loads(active['app_vehicle_drivers'])) == 1
     assert len(json.loads(active['app_sites'])) == 1
     assert len(json.loads(active['app_scales'])) == 1
+    assert len(json.loads(active['app_cameras'])) == 1
+    assert json.loads(active['app_cameras'])[0]['id'] == 'cam-1'
+    # ticket_photos stay in archive year only
+    assert 'app_ticket_photos' not in active or active.get('app_ticket_photos') in ('[]', None)
+    archive_photos = json.loads(archive.get('app_ticket_photos', '[]'))
+    assert len(archive_photos) == 1
     assert year_db.read_active_year() == 2027
 
     # Numbering starts at 1 in new year

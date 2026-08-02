@@ -256,6 +256,25 @@ describe('TicketStorage normalize / create / CAS', () => {
     expect(ticket?.scale_id).toBeNull();
     expect(ticket?.scale_role).toBeNull();
     expect(ticket?.photo_entry_path).toBeNull();
+    expect(ticket?.photo_exit_path).toBeNull();
+    expect(ticket?.photo_overview_path).toBeNull();
+  });
+
+  it('updates photo stubs without wiping other fields', () => {
+    const ticket = TicketStorage.create(
+      baseTicket({
+        site_id: 'site-1',
+        photo_entry_path: null,
+      }),
+    );
+    const updated = TicketStorage.update(ticket.id, {
+      photo_entry_path: 'Photo/2026/08/02/x_gross_entry.jpg',
+      photo_overview_path: 'Photo/2026/08/02/x_gross_overview.jpg',
+    });
+    expect(updated?.photo_entry_path).toBe('Photo/2026/08/02/x_gross_entry.jpg');
+    expect(updated?.photo_overview_path).toBe('Photo/2026/08/02/x_gross_overview.jpg');
+    expect(updated?.photo_exit_path).toBeNull();
+    expect(updated?.vehicle_number).toBe(ticket.vehicle_number);
   });
 
   it('persists site_id/scale_id/scale_role on create', () => {

@@ -137,6 +137,8 @@ const STORAGE_KEYS = {
   SCALES: 'app_scales',
   SITE_RUNTIME: 'app_site_runtime',
   SITE_SCALE_SWITCHES: 'app_site_scale_switches',
+  CAMERAS: 'app_cameras',
+  TICKET_PHOTOS: 'app_ticket_photos',
   VEHICLES: 'app_vehicles',
   DRIVERS: 'app_drivers',
   CARGOS: 'app_cargos',
@@ -153,6 +155,8 @@ export const APP_STORAGE_KEYS = {
   SCALES: STORAGE_KEYS.SCALES,
   SITE_RUNTIME: STORAGE_KEYS.SITE_RUNTIME,
   SITE_SCALE_SWITCHES: STORAGE_KEYS.SITE_SCALE_SWITCHES,
+  CAMERAS: STORAGE_KEYS.CAMERAS,
+  TICKET_PHOTOS: STORAGE_KEYS.TICKET_PHOTOS,
 } as const;
 
 function normalizeScaleDeviceId(raw: unknown): ScaleDeviceId {
@@ -773,6 +777,175 @@ function isSiteScaleSwitchEvent(item: unknown): item is SiteScaleSwitchEvent {
   );
 }
 
+// ── Cameras / ticket photos (этап 7) ───────────────────────────────────────
+
+export type CameraRole = 'entry' | 'exit' | 'overview';
+export type CaptureKind = 'http_snapshot' | 'rtsp' | 'auto';
+export type PhotoPhase = 'gross' | 'tare';
+export type PhotoStatus = 'ok' | 'failed' | 'skipped';
+
+export interface CameraRoi {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface Camera {
+  id: string;
+  site_id: string;
+  role: CameraRole;
+  name: string;
+  capture_url: string;
+  capture_kind: CaptureKind;
+  enabled: boolean;
+  sort_order: number;
+  roi: CameraRoi | null;
+  reference_normal_path: string | null;
+  reference_spare_path: string | null;
+  created_at: string;
+}
+
+export interface TicketPhoto {
+  id: string;
+  ticket_id: string;
+  phase: PhotoPhase;
+  camera_id: string | null;
+  camera_role: CameraRole;
+  relative_path: string | null;
+  status: PhotoStatus;
+  error_message: string | null;
+  camera_mode: CameraMode;
+  created_at: string;
+}
+
+function isCameraRole(value: unknown): value is CameraRole {
+  return value === 'entry' || value === 'exit' || value === 'overview';
+}
+
+function isCamera(item: unknown): item is Camera {
+  if (item == null || typeof item !== 'object') return false;
+  const c = item as Camera;
+  return (
+    typeof c.id === 'string' &&
+    typeof c.site_id === 'string' &&
+    isCameraRole(c.role) &&
+    typeof c.name === 'string' &&
+    typeof c.capture_url === 'string' &&
+    typeof c.enabled === 'boolean' &&
+    typeof c.created_at === 'string'
+  );
+}
+
+function isTicketPhoto(item: unknown): item is TicketPhoto {
+  if (item == null || typeof item !== 'object') return false;
+  const p = item as TicketPhoto;
+  return (
+    typeof p.id === 'string' &&
+    typeof p.ticket_id === 'string' &&
+    (p.phase === 'gross' || p.phase === 'tare') &&
+    isCameraRole(p.camera_role) &&
+    (p.status === 'ok' || p.status === 'failed' || p.status === 'skipped') &&
+    typeof p.created_at === 'string'
+  );
+}
+
+function normalizeCamera(raw: Camera): Camera {
+  const kind =
+    raw.capture_kind === 'http_snapshot' || raw.capture_kind === 'rtsp' || raw.capture_kind === 'auto'
+      ? raw.capture_kind
+      : 'auto';
+  let roi: CameraRoi | null = null;
+  if (raw.roi && typeof raw.roi === 'object') {
+    const r = raw.roi;
+    if (
+      typeof r.x === 'number' &&
+      typeof r.y === 'number' &&
+      typeof r.w === 'number' &&
+      typeof r.h === 'number'
+    ) {
+      roi = { x: r.x, y: r.y, w: r.w, h: r.h };
+    }
+  }
+  return {
+    ...raw,
+    capture_kind: kind,
+    enabled: Boolean(raw.enabled),
+    sort_order: typeof raw.sort_order === 'number' && Number.isFinite(raw.sort_order) ? raw.sort_order : 0,
+    roi,
+    reference_normal_path: raw.reference_normal_path ?? null,
+    reference_spare_path: raw.reference_spare_path ?? null,
+  };
+}
+
+export const CamerasStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.CAMERAS) === null) {
+      localStorage.setItem(STORAGE_KEYS.CAMERAS, '[]');
+    }
+  },
+
+  getAll(): Camera[] {
+    CamerasStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.CAMERAS, isCamera).map(normalizeCamera);
+  },
+
+  replaceAll(cameras: Camera[]): void {
+    CamerasStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.CAMERAS, cameras.map(normalizeCamera));
+  },
+
+  upsert(camera: Camera): Camera {
+    const normalized = normalizeCamera(camera);
+    const list = CamerasStorage.getAll();
+    const index = list.findIndex((c) => c.id === normalized.id);
+    if (index === -1) list.push(normalized);
+    else list[index] = normalized;
+    CamerasStorage.replaceAll(list);
+    return normalized;
+  },
+
+  remove(id: string): void {
+    CamerasStorage.replaceAll(CamerasStorage.getAll().filter((c) => c.id !== id));
+  },
+
+  forSite(siteId: string): Camera[] {
+    return CamerasStorage.getAll()
+      .filter((c) => c.site_id === siteId)
+      .sort((a, b) => a.sort_order - b.sort_order);
+  },
+};
+
+export const TicketPhotosStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.TICKET_PHOTOS) === null) {
+      localStorage.setItem(STORAGE_KEYS.TICKET_PHOTOS, '[]');
+    }
+  },
+
+  getAll(): TicketPhoto[] {
+    TicketPhotosStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.TICKET_PHOTOS, isTicketPhoto);
+  },
+
+  replaceAll(photos: TicketPhoto[]): void {
+    TicketPhotosStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.TICKET_PHOTOS, photos);
+  },
+
+  merge(photos: TicketPhoto[]): void {
+    const byId = new Map(TicketPhotosStorage.getAll().map((p) => [p.id, p]));
+    for (const photo of photos) {
+      byId.set(photo.id, photo);
+    }
+    TicketPhotosStorage.replaceAll([...byId.values()]);
+  },
+
+  forTicket(ticketId: string): TicketPhoto[] {
+    return TicketPhotosStorage.getAll().filter((p) => p.ticket_id === ticketId);
+  },
+};
+
 export const SitesStorage = {
   ensureInitialized(): void {
     if (localStorage.getItem(STORAGE_KEYS.SITES) === null) {
@@ -1130,6 +1303,8 @@ export interface AppSettings {
   scale_device_id: ScaleDeviceId;
   /** When to require/show manual_weight_reason on tickets. Default: optional. */
   manual_weight_reason_mode: ManualWeightReasonMode;
+  /** Enable photo capture on gross/tare fix (full build). Default: false. */
+  video_enabled: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -1165,6 +1340,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   driver_input_mode: 'all',
   scale_device_id: 'microsim-m0601',
   manual_weight_reason_mode: 'optional',
+  video_enabled: false,
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -1235,6 +1411,7 @@ export const SettingsStorage = {
       manual_weight_reason_mode: normalizeManualWeightReasonMode(
         stored.manual_weight_reason_mode,
       ),
+      video_enabled: stored.video_enabled === 'true',
     };
   },
 
@@ -1279,6 +1456,7 @@ export const SettingsStorage = {
       driver_input_mode: next.driver_input_mode,
       scale_device_id: next.scale_device_id,
       manual_weight_reason_mode: next.manual_weight_reason_mode,
+      video_enabled: String(next.video_enabled),
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;

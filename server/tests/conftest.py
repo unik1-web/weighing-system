@@ -22,6 +22,14 @@ def temp_app_root(tmp_path, monkeypatch):
     monkeypatch.setattr(sqlite_store, 'get_app_root', lambda: str(root))
     monkeypatch.setattr(persistence, 'get_app_root', lambda: str(root))
     monkeypatch.setattr(year_db, 'get_app_root', lambda: str(root))
+
+    try:
+        import cameras
+
+        monkeypatch.setattr(cameras, 'get_app_root', lambda: str(root))
+    except ImportError:
+        pass
+
     return root
 
 

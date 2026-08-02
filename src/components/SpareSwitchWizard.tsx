@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import {
   switchScaleSet,
   SWITCH_REASON_LABELS,
+  getActiveScaleContext,
   type SwitchReason,
   type CameraAck,
 } from '@/lib/site-runtime';
 import { useAuth } from '@/hooks/useAuth';
+import { listCamerasForSite, photoUrl, takeSnapshot } from '@/lib/cameras';
 import { AlertCircle, ArrowRight, CheckCircle2, X } from 'lucide-react';
 
 interface Props {
@@ -28,6 +30,10 @@ export function SpareSwitchWizard({ direction, onDone, onCancel }: Props) {
   const [cameraAck, setCameraAck] = useState<CameraAck | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refCompare, setRefCompare] = useState<
+    Array<{ cameraName: string; refUrl: string | null; liveUrl: string | null }>
+  >([]);
+  const [refLoading, setRefLoading] = useState(false);
 
   useEffect(() => {
     setStep('reason');
@@ -35,7 +41,51 @@ export function SpareSwitchWizard({ direction, onDone, onCancel }: Props) {
     setTerminalReady(false);
     setCameraAck(null);
     setError(null);
+    setRefCompare([]);
   }, [direction]);
+
+  useEffect(() => {
+    if (step !== 'cameras') return;
+    const ctx = getActiveScaleContext();
+    const cameras = listCamerasForSite(ctx.site_id);
+    const withRefs = cameras.filter((c) =>
+      direction === 'to_spare' ? c.reference_spare_path || c.reference_normal_path : c.reference_normal_path,
+    );
+    if (withRefs.length === 0) {
+      setRefCompare([]);
+      return;
+    }
+    let cancelled = false;
+    setRefLoading(true);
+    void (async () => {
+      const rows: Array<{ cameraName: string; refUrl: string | null; liveUrl: string | null }> = [];
+      for (const cam of withRefs) {
+        const refPath =
+          direction === 'to_spare'
+            ? cam.reference_spare_path || cam.reference_normal_path
+            : cam.reference_normal_path;
+        let liveUrl: string | null = null;
+        try {
+          const snap = await takeSnapshot(cam.id);
+          liveUrl = photoUrl(snap);
+        } catch {
+          liveUrl = null;
+        }
+        rows.push({
+          cameraName: cam.name,
+          refUrl: photoUrl(refPath),
+          liveUrl,
+        });
+      }
+      if (!cancelled) {
+        setRefCompare(rows);
+        setRefLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [step, direction]);
 
   const operatorName = displayName || 'Оператор';
   const operatorId = user?.id ?? null;
@@ -164,8 +214,42 @@ export function SpareSwitchWizard({ direction, onDone, onCancel }: Props) {
               {step === 'cameras' && (
                 <div className="space-y-3">
                   <p className="text-sm font-medium text-slate-700">3. Камеры</p>
+                  {refLoading && (
+                    <p className="text-xs text-slate-500">Загрузка сверки с эталоном…</p>
+                  )}
+                  {refCompare.length > 0 && (
+                    <div className="max-h-48 space-y-2 overflow-y-auto">
+                      {refCompare.map((row) => (
+                        <div key={row.cameraName} className="rounded-lg border border-slate-200 p-2">
+                          <p className="mb-1 text-xs font-medium text-slate-700">{row.cameraName}</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <p className="text-[10px] text-slate-500">Эталон</p>
+                              {row.refUrl ? (
+                                <img src={row.refUrl} alt="Эталон" className="h-20 w-full rounded object-cover" />
+                              ) : (
+                                <div className="flex h-20 items-center justify-center rounded bg-slate-50 text-[10px] text-slate-400">
+                                  нет
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-slate-500">Сейчас</p>
+                              {row.liveUrl ? (
+                                <img src={row.liveUrl} alt="Live" className="h-20 w-full rounded object-cover" />
+                              ) : (
+                                <div className="flex h-20 items-center justify-center rounded bg-slate-50 text-[10px] text-slate-400">
+                                  недоступно
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <p className="text-sm text-slate-600">
-                    Выберите один вариант. Эталонные снимки не требуются.
+                    Выберите один вариант. Сверка с эталоном необязательна и не блокирует взвешивание.
                   </p>
                   <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 p-3 text-sm">
                     <input

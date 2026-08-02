@@ -10,7 +10,22 @@ import {
   type NavTabMode,
   type PrintLayout,
   type Scale,
+  type Camera,
+  type CameraRole,
+  type CaptureKind,
+  CamerasStorage,
 } from '@/lib/storage';
+import {
+  CAMERA_ROLE_LABELS,
+  createCameraDraft,
+  enforceMaxCameras,
+  fetchCapabilities,
+  removeCamera,
+  saveReference,
+  shouldShowCameraSettings,
+  upsertCamera,
+  type CameraCapabilities,
+} from '@/lib/cameras';
 import { DRIVER_INPUT_MODE_LABELS, type DriverInputMode } from '@/lib/vehicle-resolve';
 import {
   ADAPTER_LIST,
@@ -41,7 +56,7 @@ import {
   isSpareEnabled,
 } from '@/lib/site-runtime';
 import { SpareSwitchWizard } from '@/components/SpareSwitchWizard';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, LayoutPanelTop, Server, ArrowLeftRight, CalendarRange } from 'lucide-react';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, LayoutPanelTop, Server, ArrowLeftRight, CalendarRange, Camera as CameraIcon } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
 import { useAuth } from '@/hooks/useAuth';
@@ -128,6 +143,9 @@ export function SettingsView({ onSaved }: Props) {
   const [wizardDirection, setWizardDirection] = useState<'to_spare' | 'to_primary' | null>(null);
   const [siteMessage, setSiteMessage] = useState<string | null>(null);
   const [activeOnSpare, setActiveOnSpare] = useState(false);
+  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [cameraCaps, setCameraCaps] = useState<CameraCapabilities | null>(null);
+  const [cameraBusyId, setCameraBusyId] = useState<string | null>(null);
 
   const reloadSiteState = () => {
     ensureSiteMigrated();
@@ -143,6 +161,7 @@ export function SettingsView({ onSaved }: Props) {
     setSpareEnabled(isSpareEnabled(site.id));
     setSwitchHistory(listSwitchHistory(site.id).slice().reverse().slice(0, 10));
     setSettings(SettingsStorage.getAppSettings());
+    setCameras(CamerasStorage.forSite(site.id));
   };
 
   useEffect(() => {
@@ -156,6 +175,7 @@ export function SettingsView({ onSaved }: Props) {
       ),
     );
     void fetchStoragePaths().then(setStoragePaths);
+    void fetchCapabilities().then(setCameraCaps);
     void fetchRotatePreview()
       .then((preview) => {
         setRotatePreview(preview);
@@ -302,11 +322,15 @@ export function SettingsView({ onSaved }: Props) {
       SettingsStorage.updateAppSettings({
         scale_device_id: ctx.adapter_id,
         manual_weight_reason_mode: settings.manual_weight_reason_mode,
+        video_enabled: settings.video_enabled,
       });
       setSettings((prev) => ({
         ...prev,
         scale_device_id: ctx.adapter_id,
       }));
+      for (const cam of cameras) {
+        upsertCamera(cam);
+      }
       reloadSiteState();
     } catch (err: unknown) {
       setSettingsError(err instanceof Error ? err.message : 'Ошибка сохранения площадки');
@@ -321,6 +345,7 @@ export function SettingsView({ onSaved }: Props) {
       driver_input_mode: settings.driver_input_mode,
       scale_device_id: settings.scale_device_id,
       manual_weight_reason_mode: settings.manual_weight_reason_mode,
+      video_enabled: settings.video_enabled,
     });
     logger.info('settings', 'Настройки сохранены');
     setSaved(true);
@@ -1128,6 +1153,250 @@ export function SettingsView({ onSaved }: Props) {
           </div>
         )}
       </div>
+
+      {shouldShowCameraSettings(cameraCaps, cameras.length > 0) && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+          <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+            <CameraIcon size={18} className="text-blue-600" />
+            <h3 className="text-sm font-semibold text-slate-800">Камеры и фото</h3>
+          </div>
+          <p className="text-xs text-slate-500">
+            До 4 камер на площадку. Снимки сохраняются в каталог Photo рядом с программой.
+            {cameraCaps && !cameraCaps.opencv_available && (
+              <> RTSP требует полной сборки с OpenCV; HTTP snapshot доступен всегда.</>
+            )}
+            {cameraCaps && cameraCaps.success === false && (
+              <> Не удалось связаться с API камер — проверьте, что запущен backend с модулем cameras.</>
+            )}
+          </p>
+
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={settings.video_enabled}
+              onChange={(e) => updateField('video_enabled', e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              Видеофиксация при сохранении брутто/тары
+              <span className="block text-xs text-slate-500">
+                При выключении взвешивание работает как обычно, фото не снимаются.
+              </span>
+            </span>
+          </label>
+
+          <div className="space-y-3">
+            {cameras.map((cam, index) => (
+              <div key={cam.id} className="rounded-xl border border-slate-200 p-3 space-y-2">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <label className={labelClass}>Имя</label>
+                    <input
+                      type="text"
+                      value={cam.name}
+                      onChange={(e) => {
+                        const name = e.target.value;
+                        setCameras((prev) =>
+                          prev.map((c) => (c.id === cam.id ? { ...c, name } : c)),
+                        );
+                        setSaved(false);
+                      }}
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelClass}>Роль</label>
+                    <select
+                      value={cam.role}
+                      onChange={(e) => {
+                        const role = e.target.value as CameraRole;
+                        setCameras((prev) =>
+                          prev.map((c) =>
+                            c.id === cam.id
+                              ? {
+                                  ...c,
+                                  role,
+                                  roi:
+                                    role === 'overview'
+                                      ? c.roi ?? { x: 0, y: 0, w: 1, h: 1 }
+                                      : null,
+                                }
+                              : c,
+                          ),
+                        );
+                        setSaved(false);
+                      }}
+                      className={inputClass}
+                    >
+                      {(Object.keys(CAMERA_ROLE_LABELS) as CameraRole[]).map((role) => (
+                        <option key={role} value={role}>
+                          {CAMERA_ROLE_LABELS[role]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className={labelClass}>URL захвата (HTTP snapshot или RTSP)</label>
+                    <input
+                      type="text"
+                      value={cam.capture_url}
+                      placeholder="http://camera/snapshot.jpg или rtsp://…"
+                      onChange={(e) => {
+                        const capture_url = e.target.value;
+                        setCameras((prev) =>
+                          prev.map((c) => (c.id === cam.id ? { ...c, capture_url } : c)),
+                        );
+                        setSaved(false);
+                      }}
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className={labelClass}>Тип</label>
+                    <select
+                      value={cam.capture_kind}
+                      onChange={(e) => {
+                        const capture_kind = e.target.value as CaptureKind;
+                        setCameras((prev) =>
+                          prev.map((c) => (c.id === cam.id ? { ...c, capture_kind } : c)),
+                        );
+                        setSaved(false);
+                      }}
+                      className={inputClass}
+                    >
+                      <option value="auto">Авто</option>
+                      <option value="http_snapshot">HTTP snapshot</option>
+                      <option value="rtsp">RTSP</option>
+                    </select>
+                  </div>
+                  <div className="flex items-end">
+                    <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={cam.enabled}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          setCameras((prev) =>
+                            prev.map((c) => (c.id === cam.id ? { ...c, enabled } : c)),
+                          );
+                          setSaved(false);
+                        }}
+                      />
+                      Включена
+                    </label>
+                  </div>
+                  {cam.role === 'overview' && cam.roi && (
+                    <div className="sm:col-span-2 grid grid-cols-4 gap-2">
+                      {(['x', 'y', 'w', 'h'] as const).map((key) => (
+                        <div key={key}>
+                          <label className={labelClass}>ROI {key}</label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={cam.roi?.[key] ?? 0}
+                            onChange={(e) => {
+                              const value = Number(e.target.value);
+                              setCameras((prev) =>
+                                prev.map((c) =>
+                                  c.id === cam.id && c.roi
+                                    ? { ...c, roi: { ...c.roi, [key]: value } }
+                                    : c,
+                                ),
+                              );
+                              setSaved(false);
+                            }}
+                            className={inputClass}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={cameraBusyId === cam.id}
+                    onClick={async () => {
+                      setCameraBusyId(cam.id);
+                      try {
+                        upsertCamera(cam);
+                        const updated = await saveReference(cam.id, 'normal');
+                        if (updated) {
+                          setCameras((prev) =>
+                            prev.map((c) => (c.id === cam.id ? updated : c)),
+                          );
+                        }
+                      } catch (err: unknown) {
+                        setSettingsError(
+                          err instanceof Error ? err.message : 'Не удалось снять эталон',
+                        );
+                      } finally {
+                        setCameraBusyId(null);
+                      }
+                    }}
+                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Эталон primary
+                  </button>
+                  <button
+                    type="button"
+                    disabled={cameraBusyId === cam.id}
+                    onClick={async () => {
+                      setCameraBusyId(cam.id);
+                      try {
+                        upsertCamera(cam);
+                        const updated = await saveReference(cam.id, 'spare');
+                        if (updated) {
+                          setCameras((prev) =>
+                            prev.map((c) => (c.id === cam.id ? updated : c)),
+                          );
+                        }
+                      } catch (err: unknown) {
+                        setSettingsError(
+                          err instanceof Error ? err.message : 'Не удалось снять эталон',
+                        );
+                      } finally {
+                        setCameraBusyId(null);
+                      }
+                    }}
+                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Эталон spare
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      removeCamera(cam.id);
+                      setCameras((prev) => prev.filter((c) => c.id !== cam.id));
+                      setSaved(false);
+                    }}
+                    className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50"
+                  >
+                    Удалить
+                  </button>
+                  <span className="self-center text-[10px] text-slate-400">#{index + 1}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            disabled={!siteId || !enforceMaxCameras(siteId)}
+            onClick={() => {
+              if (!siteId || !enforceMaxCameras(siteId)) return;
+              const draft = createCameraDraft(siteId, 'overview');
+              setCameras((prev) => [...prev, draft]);
+              setSaved(false);
+            }}
+            className="rounded-lg border border-dashed border-slate-300 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            Добавить камеру
+          </button>
+        </div>
+      )}
 
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
