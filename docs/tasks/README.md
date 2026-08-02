@@ -10,8 +10,8 @@
 | Что | Значение |
 |-----|----------|
 | Последний **влитый** этап (base) | **01** — [PR #13](https://github.com/unik1-web/weighing-system/pull/13) (+ [PR #23](https://github.com/unik1-web/weighing-system/pull/23)) |
-| На этой ветке оркестратора | **07** выполнен: задача `37cc69-photo-capture` (см. [docs/37cc69-photo-capture/](../37cc69-photo-capture/)); ранее **06**…**02** |
-| **Следующий прогон** | [08-anpr.md](08-anpr.md) |
+| На этой ветке оркестратора | **08** выполнен: задача `cb0fb4-anpr` (см. [docs/cb0fb4-anpr/](../cb0fb4-anpr/)); ранее **07**…**02** |
+| **Следующий прогон** | [09-audit-reports-security.md](09-audit-reports-security.md) |
 | Не брать как базу | Открытые PR #15–#21 (старый CLI-стек 2–7, не влиты) |
 
 ## Очередь
@@ -25,7 +25,7 @@
 | 05 | [05-scale-adapters.md](05-scale-adapters.md) | 5. Адаптеры терминалов | 04 | **Сделано на ветке** (`20e99b-scale-adapters`) |
 | 06 | [06-yearly-db-archive.md](06-yearly-db-archive.md) | 6. Годовая БД / архив | 01–03 | **Сделано на ветке** (`3aa7f0-yearly-db-archive`) |
 | 07 | [07-photo-capture.md](07-photo-capture.md) | 7. Фотофиксация | 04 (+05) | **Сделано на ветке** (`37cc69-photo-capture`) |
-| 08 | [08-anpr.md](08-anpr.md) | 8. ANPR | 07 + `anpr_mode` из 04 | Порог релиза ≥ 50% |
+| 08 | [08-anpr.md](08-anpr.md) | 8. ANPR | 07 + `anpr_mode` из 04 | **Сделано на ветке** (`cb0fb4-anpr`); порог релиза ≥ 50% |
 | 09 | [09-audit-reports-security.md](09-audit-reports-security.md) | 9. Аудит / отчёты / пароли | 01–08 по факту | Финальный контур |
 
 ```text
@@ -45,7 +45,7 @@
 2. В чате Cursor:
 
 ```text
-/orchestrator создай задачу на доске по docs/tasks/08-anpr.md и начни выполнять
+/orchestrator создай задачу на доске по docs/tasks/09-audit-reports-security.md и начни выполнять
 ```
 
 Прогресс: `memory/TaskBoard.md`, `memory/TASK_MEMORY_*.yml`, UI на `http://127.0.0.1:5174`.

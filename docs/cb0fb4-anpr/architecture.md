@@ -276,6 +276,6 @@ docs/implementation/anpr-spike-checklist.md # NEW — чеклист спайк�
 | ROI | Crop на backend до инференса |
 | Конкретные веса модели | Вне скоупа кода; поставка `models/anpr/`; спайк выбирает/меняет файл |
 
-## Следующий этап: development
+## Статус реализации
 
-Реализовать по этому документу; чеклист спайка — `docs/implementation/anpr-spike-checklist.md`.
+Реализация и тесты этапа 8 завершены (см. `changelog.md`, `issues.md`, `deploy-notes.md`). Чеклист спайка на объекте: `docs/implementation/anpr-spike-checklist.md`. Следующий этап roadmap: **09** (аудит / отчёты / безопасность).

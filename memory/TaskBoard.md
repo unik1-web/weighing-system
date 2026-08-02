@@ -105,7 +105,7 @@ Description: |
 
 ## cb0fb4-anpr
 
-State: testing
+State: done
 Description: |
   Источник: docs/tasks/08-anpr.md
 
@@ -114,5 +114,7 @@ Description: |
   resolveVehicle; на spare движок не вызывается (disabled_by_configuration);
   порог релиза ≥ 50% на спайке объекта; при выкл./ниже порога ручной ввод
   без деградации. Зависимости: этапы 3, 4, 7.
+
+  Завершено: 2026-08-02T17:55:33Z. Артефакты: docs/cb0fb4-anpr/.
 
 ---
