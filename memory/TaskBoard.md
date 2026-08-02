@@ -89,7 +89,7 @@ Description: |
 
 ## 37cc69-photo-capture
 
-State: development
+State: done
 Description: |
   Источник: docs/tasks/07-photo-capture.md
 
@@ -99,7 +99,6 @@ Description: |
   превью в форме и журнале; graceful degrade без блокировки взвешивания;
   эталоны primary/spare для wizard; базовая сборка без тяжёлых deps.
 
-  Зависимости: этап 4 (camera_mode/площадка), желательно 5. Вне скоупа: ANPR.
-  Не коммитить RTSP-секреты и бинарники фото. Артефакты: docs/implementation/.
+  Завершено: 2026-08-02T03:02:58Z. Артефакты: docs/37cc69-photo-capture/.
 
 ---
