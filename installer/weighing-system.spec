@@ -28,6 +28,7 @@ except ImportError:
     pass
 
 hiddenimports = [
+    'anpr',
     'browse',
     'cameras',
     'config_ini',
@@ -55,14 +56,18 @@ hiddenimports = [
 ]
 hiddenimports += collect_submodules('pypxlib')
 
-# Dual-build notes (этап 7 фотофиксация):
-# - Full build (default): may include optional opencv-python-headless for RTSP.
-#   Do NOT add 'cv2' to excludes; optionally add 'cv2' to hiddenimports if packaging OpenCV.
-# - Basic build (without heavy camera deps): set
-#     excludes=['cv2', 'opencv', 'numpy.tests', ...]
-#   and do not install opencv-python-headless. HTTP snapshot via requests still works;
-#   cameras.py lazy-imports cv2 and degrades RTSP to failed with a clear message.
-# - video_enabled is a runtime config.ini flag; switching does not require reinstall.
+# Dual-build notes (этап 7 фотофиксация + этап 8 ANPR):
+# - Full build (default): may include optional opencv-python-headless for RTSP
+#   and onnxruntime for ANPR. Place model at {app_root}/models/anpr/plate.onnx
+#   (outside _MEIPASS / not bundled in git). Do NOT add 'cv2'/'onnxruntime' to
+#   excludes; optionally add them to hiddenimports if packaging those deps.
+# - Basic build (without heavy camera/ANPR deps): set
+#     excludes=['cv2', 'opencv', 'onnxruntime', 'numpy.tests', ...]
+#   and do not install opencv-python-headless / onnxruntime. HTTP snapshot via
+#   requests still works; cameras.py / anpr.py lazy-import and degrade gracefully
+#   (RTSP failed; anpr_available=false → disabled_by_configuration).
+# - video_enabled / anpr_enabled are runtime config.ini flags; switching does
+#   not require reinstall. Keep anpr_enabled=false until spike accuracy ≥ 50%.
 
 a = Analysis(
     [os.path.join(server_dir, 'launcher.py')],
@@ -73,7 +78,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[runtime_hook],
-    excludes=[],  # basic build: excludes=['cv2']
+    excludes=[],  # basic build: excludes=['cv2', 'onnxruntime']
     noarchive=False,
     optimize=0,
 )

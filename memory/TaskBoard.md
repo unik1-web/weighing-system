@@ -105,7 +105,7 @@ Description: |
 
 ## cb0fb4-anpr
 
-State: architect
+State: development
 Description: |
   Источник: docs/tasks/08-anpr.md
 

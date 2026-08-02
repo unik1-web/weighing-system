@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   type WeighingTicket,
   type WeightSource,
+  type AnprStatus,
   TicketStorage,
   SettingsStorage,
   VehicleDriversStorage,
   DictionaryStorage,
+  CamerasStorage,
 } from '@/lib/storage';
 import { logger } from '@/lib/logger';
 import { useDictionary } from '@/hooks/useDictionary';
@@ -21,6 +23,13 @@ import {
   SITE_RUNTIME_UPDATED_EVENT,
   ACTIVE_SCALE_SET_LABELS,
 } from '@/lib/site-runtime';
+import {
+  canOfferAnpr,
+  confidenceToPercent,
+  finalizePlateSource,
+  recognizePlate,
+  type AnprDecision,
+} from '@/lib/anpr';
 import {
   type WeighingMode,
   type WeightPhase,
@@ -147,8 +156,19 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [liveScaleWeight, setLiveScaleWeight] = useState<number | null>(null);
   const [driverCandidates, setDriverCandidates] = useState<string[]>([]);
   const [plateSource, setPlateSource] = useState<PlateSource | null>(null);
+  const [anprPlateRaw, setAnprPlateRaw] = useState<string | null>(null);
+  const [plateConfidence, setPlateConfidence] = useState<number | null>(null);
+  const [anprAccepted, setAnprAccepted] = useState<boolean | null>(null);
+  const [anprStatus, setAnprStatus] = useState<AnprStatus | null>(null);
+  const [anprBusy, setAnprBusy] = useState(false);
+  const [anprPanelOpen, setAnprPanelOpen] = useState(false);
+  const [anprEditMode, setAnprEditMode] = useState(false);
+  const [anprEditValue, setAnprEditValue] = useState('');
+  const [anprError, setAnprError] = useState<string | null>(null);
   /** After operator edits/clears tare (or captures instrument), block autofill until vehicle/mode/reset. */
   const tareAutofillBlocked = useRef(false);
+  /** Keep ANPR plate_source across the vehicleNumber→resolve effect. */
+  const anprPlateOverrideRef = useRef<PlateSource | null>(null);
   const lastAutoValues = useRef<Record<AutofillTextField, string>>({ ...EMPTY_AUTO_VALUES });
   const textFieldsRef = useRef({
     vehicleBrand: '',
@@ -243,6 +263,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
 
   const resetFormFields = useCallback(() => {
     tareAutofillBlocked.current = false;
+    anprPlateOverrideRef.current = null;
     lastAutoValues.current = { ...EMPTY_AUTO_VALUES };
     setActiveField('gross');
     setPhaseOverride(false);
@@ -271,6 +292,15 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setUnstableWarning(null);
     setDriverCandidates([]);
     setPlateSource(null);
+    setAnprPlateRaw(null);
+    setPlateConfidence(null);
+    setAnprAccepted(null);
+    setAnprStatus(null);
+    setAnprBusy(false);
+    setAnprPanelOpen(false);
+    setAnprEditMode(false);
+    setAnprEditValue('');
+    setAnprError(null);
   }, []);
 
   const exitCompletion = useCallback(() => {
@@ -333,6 +363,13 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setNotes(ticket.notes);
       setManualWeightReason(ticket.manual_weight_reason ?? '');
       setPlateSource(ticket.plate_source ?? null);
+      setAnprPlateRaw(ticket.anpr_plate_raw ?? null);
+      setPlateConfidence(ticket.plate_confidence ?? null);
+      setAnprAccepted(ticket.anpr_accepted ?? null);
+      setAnprStatus(ticket.anpr_status ?? null);
+      setAnprPanelOpen(false);
+      setAnprEditMode(false);
+      setAnprError(null);
       setDriverCandidates([]);
 
       const state = classifyOpenWeightState(ticket);
@@ -382,7 +419,10 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   );
 
   const runVehicleResolve = useCallback(
-    (rawPlate: string, options?: { applyTare?: boolean }) => {
+    (
+      rawPlate: string,
+      options?: { applyTare?: boolean; plateSourceOverride?: PlateSource },
+    ) => {
       const plate = formatVehiclePlate(rawPlate);
       if (!plate) {
         setDriverCandidates([]);
@@ -393,14 +433,25 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       const settings = SettingsStorage.getAppSettings();
       // Read dictionaries from storage directly so resolve sees prefs written by
       // applyVehicleLearningOnComplete in the same session (not stale useDictionary state).
-      const result = resolveVehicle(plate, {
-        vehicles: DictionaryStorage.getTable('vehicles'),
-        drivers: DictionaryStorage.getTable('drivers'),
-        vehicleDrivers: VehicleDriversStorage.getAll(),
-        completedTickets: TicketStorage.getAll(),
-        taraDefault: settings.tara_default,
-        driverInputMode: settings.driver_input_mode,
-      });
+      const result = resolveVehicle(
+        plate,
+        {
+          vehicles: DictionaryStorage.getTable('vehicles'),
+          drivers: DictionaryStorage.getTable('drivers'),
+          vehicleDrivers: VehicleDriversStorage.getAll(),
+          completedTickets: TicketStorage.getAll(),
+          taraDefault: settings.tara_default,
+          driverInputMode: settings.driver_input_mode,
+        },
+        (() => {
+          const override =
+            options?.plateSourceOverride ?? anprPlateOverrideRef.current ?? undefined;
+          if (options?.plateSourceOverride) {
+            anprPlateOverrideRef.current = options.plateSourceOverride;
+          }
+          return override ? { plateSourceOverride: override } : undefined;
+        })(),
+      );
 
       const current = textFieldsRef.current;
       applyResolvedTextField(
@@ -443,6 +494,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
 
   const handleVehicleNumberChange = (value: string) => {
     tareAutofillBlocked.current = false;
+    anprPlateOverrideRef.current = null;
     setVehicleNumber(value);
   };
 
@@ -460,8 +512,13 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     | 'photo_entry_path'
     | 'photo_exit_path'
     | 'photo_overview_path'
+    | 'anpr_plate_raw'
+    | 'plate_confidence'
+    | 'anpr_accepted'
+    | 'anpr_status'
   > => {
     const ctx = getActiveScaleContext();
+    const spareDisabled = ctx.runtime.anpr_mode === 'disabled_by_configuration';
     return {
       plate_source: plateSource,
       site_id: ctx.site_id,
@@ -470,20 +527,130 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       photo_entry_path: null,
       photo_exit_path: null,
       photo_overview_path: null,
+      anpr_plate_raw: anprPlateRaw,
+      plate_confidence: plateConfidence,
+      anpr_accepted: anprAccepted,
+      anpr_status:
+        anprStatus ??
+        (spareDisabled || !appSettings.anpr_enabled ? 'disabled_by_configuration' : null),
     };
   };
 
   const auditUpdateFields = (): Pick<
     WeighingTicket,
-    'plate_source' | 'photo_entry_path' | 'photo_exit_path' | 'photo_overview_path'
+    | 'plate_source'
+    | 'photo_entry_path'
+    | 'photo_exit_path'
+    | 'photo_overview_path'
+    | 'anpr_plate_raw'
+    | 'plate_confidence'
+    | 'anpr_accepted'
+    | 'anpr_status'
   > => ({
     plate_source: plateSource,
     // Preserve stubs from first dual pass; capture will refresh after save.
     photo_entry_path: completingTicket?.photo_entry_path ?? null,
     photo_exit_path: completingTicket?.photo_exit_path ?? null,
     photo_overview_path: completingTicket?.photo_overview_path ?? null,
+    anpr_plate_raw: anprPlateRaw ?? completingTicket?.anpr_plate_raw ?? null,
+    plate_confidence: plateConfidence ?? completingTicket?.plate_confidence ?? null,
+    anpr_accepted: anprAccepted ?? completingTicket?.anpr_accepted ?? null,
+    anpr_status: anprStatus ?? completingTicket?.anpr_status ?? null,
   });
 
+  const anprOfferVisible = useMemo(() => {
+    try {
+      const ctx = getActiveScaleContext();
+      const hasOverview = CamerasStorage.forSite(ctx.site_id).some(
+        (c) => c.enabled && c.role === 'overview' && !!c.capture_url.trim(),
+      );
+      return canOfferAnpr({
+        anpr_enabled: appSettings.anpr_enabled,
+        video_enabled: appSettings.video_enabled,
+        anpr_mode: ctx.runtime.anpr_mode,
+        hasOverview,
+      });
+    } catch {
+      return false;
+    }
+  }, [appSettings.anpr_enabled, appSettings.video_enabled, activeScaleLabel]);
+
+  const anprSpareHint = useMemo(() => {
+    try {
+      return getActiveScaleContext().runtime.anpr_mode === 'disabled_by_configuration';
+    } catch {
+      return false;
+    }
+  }, [activeScaleLabel]);
+
+  const applyAnprDecision = useCallback(
+    (decision: AnprDecision, plateValue: string) => {
+      if (decision === 'reject') {
+        anprPlateOverrideRef.current = null;
+        setAnprAccepted(false);
+        setAnprStatus('enabled');
+        setAnprPanelOpen(false);
+        setAnprEditMode(false);
+        setAnprError(null);
+        return;
+      }
+
+      const plate = formatVehiclePlate(plateValue);
+      if (!plate) {
+        setAnprError('Введите корректный номер');
+        return;
+      }
+
+      const override: PlateSource = decision === 'accept' ? 'anpr' : 'operator';
+      anprPlateOverrideRef.current = override;
+      tareAutofillBlocked.current = false;
+      setVehicleNumber(plate);
+      runVehicleResolve(plate, { plateSourceOverride: override });
+      setPlateSource(finalizePlateSource(decision, override));
+      setAnprAccepted(true);
+      setAnprStatus('enabled');
+      setAnprPanelOpen(false);
+      setAnprEditMode(false);
+      setAnprError(null);
+    },
+    [runVehicleResolve],
+  );
+
+  const handleAnprRecognize = async () => {
+    setAnprBusy(true);
+    setAnprError(null);
+    setAnprPanelOpen(false);
+    setAnprEditMode(false);
+    try {
+      const ctx = getActiveScaleContext();
+      const result = await recognizePlate({ site_id: ctx.site_id });
+      setAnprStatus(result.anpr_status);
+      if (!result.engine_invoked) {
+        setAnprPlateRaw(null);
+        setPlateConfidence(null);
+        setAnprAccepted(null);
+        setAnprError(
+          result.reason === 'anpr_mode=disabled_by_configuration'
+            ? 'ANPR отключён на резерве'
+            : 'Распознавание недоступно',
+        );
+        return;
+      }
+      if (result.anpr_status === 'failed' || !result.plate_raw) {
+        setAnprPlateRaw(null);
+        setPlateConfidence(null);
+        setAnprAccepted(null);
+        setAnprError(result.error || 'Не удалось распознать номер');
+        return;
+      }
+      setAnprPlateRaw(result.plate_raw);
+      setPlateConfidence(result.confidence);
+      setAnprEditValue(result.plate_raw);
+      setAnprPanelOpen(true);
+    } finally {
+      setAnprBusy(false);
+    }
+  };
   const handleModeChange = (mode: WeighingMode) => {
     if (isCompleting) return;
     tareAutofillBlocked.current = false;
@@ -907,10 +1074,100 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className={labelClass}>Номер автомобиля *</label>
-              <input list="vehicles-list" value={vehicleNumber} onChange={(e) => handleVehicleNumberChange(e.target.value)} placeholder="А123ВС77" className={inputClass} />
+              <div className="flex gap-2">
+                <input
+                  list="vehicles-list"
+                  value={vehicleNumber}
+                  onChange={(e) => handleVehicleNumberChange(e.target.value)}
+                  placeholder="А123ВС77"
+                  className={inputClass}
+                />
+                {(anprOfferVisible || anprSpareHint) && (
+                  <button
+                    type="button"
+                    disabled={anprBusy || anprSpareHint || isCompleting}
+                    title={
+                      anprSpareHint
+                        ? 'ANPR отключён на резерве'
+                        : 'Распознать номер по камере обзора'
+                    }
+                    onClick={() => void handleAnprRecognize()}
+                    className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {anprBusy ? '…' : 'Распознать номер'}
+                  </button>
+                )}
+              </div>
               <datalist id="vehicles-list">
                 {vehicles.entries.map((v) => <option key={v.id} value={v.vehicle_number} />)}
               </datalist>
+              {anprError && (
+                <p className="mt-1 text-xs text-amber-700">{anprError}</p>
+              )}
+              {anprPanelOpen && anprPlateRaw && (
+                <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  {!anprEditMode ? (
+                    <>
+                      <p className="text-sm font-medium text-slate-800">
+                        Предложение: {anprPlateRaw}
+                      </p>
+                      <p className="text-xs text-slate-500">{confidenceToPercent(plateConfidence)}</p>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                          onClick={() => applyAnprDecision('accept', anprPlateRaw)}
+                        >
+                          Принять
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                          onClick={() => {
+                            setAnprEditMode(true);
+                            setAnprEditValue(anprPlateRaw);
+                          }}
+                        >
+                          Править
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                          onClick={() => applyAnprDecision('reject', '')}
+                        >
+                          Ввести вручную
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <label className="block text-xs text-slate-600">Правка номера</label>
+                      <input
+                        value={anprEditValue}
+                        onChange={(e) => setAnprEditValue(e.target.value)}
+                        className={inputClass}
+                        placeholder="А123ВС77"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                          onClick={() => applyAnprDecision('edit', anprEditValue)}
+                        >
+                          Подтвердить
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                          onClick={() => setAnprEditMode(false)}
+                        >
+                          Отмена
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
             <div>
               <label className={labelClass}>Марка автомобиля</label>

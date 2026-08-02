@@ -34,6 +34,9 @@ export type { DriverInputMode, PlateSource, VehicleDriverLink };
 export type TicketStatus = 'open' | 'completed';
 export type ReoStatus = 'pending' | 'sent';
 export type { WeighingMode };
+export type AnprMode = 'enabled' | 'disabled_by_configuration' | 'failed';
+/** Snapshot of ANPR contour status on a ticket (same enum as runtime anpr_mode). */
+export type AnprStatus = AnprMode;
 
 export const REO_STATUS_LABELS: Record<ReoStatus, string> = {
   pending: 'Не отправлено',
@@ -85,6 +88,14 @@ export interface WeighingTicket {
   manual_weight_reason?: string | null;
   /** Closed during year rotation. Soft-read: missing → false. */
   auto_closed?: boolean | null;
+  /** Raw plate from ANPR model before operator edit. Soft-read nullable. */
+  anpr_plate_raw?: string | null;
+  /** Recognition confidence 0..1. Soft-read nullable. */
+  plate_confidence?: number | null;
+  /** Operator accepted/edited ANPR suggestion. Soft-read: missing → null. */
+  anpr_accepted?: boolean | null;
+  /** ANPR contour status for the trip. Soft-read nullable. */
+  anpr_status?: AnprStatus | null;
 }
 
 export type TicketAuditAction = 'created' | 'completed' | 'auto_closed' | 'updated';
@@ -332,6 +343,29 @@ export function softReadBool(value: unknown): boolean {
   return Boolean(value);
 }
 
+/** Soft-read nullable boolean: missing/null/'' → null. */
+export function softReadNullableBool(value: unknown): boolean | null {
+  if (value == null || value === '') return null;
+  return softReadBool(value);
+}
+
+function softReadNullableNumber(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function softReadAnprStatus(value: unknown): AnprStatus | null {
+  if (value === 'enabled' || value === 'disabled_by_configuration' || value === 'failed') {
+    return value;
+  }
+  return null;
+}
+
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
   const next: WeighingTicket = {
     ...ticket,
@@ -352,6 +386,18 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     ),
     auto_closed: softReadBool(
       (ticket as WeighingTicket & { auto_closed?: unknown }).auto_closed,
+    ),
+    anpr_plate_raw: softReadNullableString(
+      (ticket as WeighingTicket & { anpr_plate_raw?: unknown }).anpr_plate_raw,
+    ),
+    plate_confidence: softReadNullableNumber(
+      (ticket as WeighingTicket & { plate_confidence?: unknown }).plate_confidence,
+    ),
+    anpr_accepted: softReadNullableBool(
+      (ticket as WeighingTicket & { anpr_accepted?: unknown }).anpr_accepted,
+    ),
+    anpr_status: softReadAnprStatus(
+      (ticket as WeighingTicket & { anpr_status?: unknown }).anpr_status,
     ),
   };
   const mode = normalizeWeighingMode(ticket);
@@ -662,7 +708,6 @@ export const VehicleDriversStorage = {
 export type ScaleRole = 'primary' | 'spare';
 export type ActiveScaleSet = 'primary' | 'spare';
 export type CameraMode = 'normal' | 'rotated_for_spare';
-export type AnprMode = 'enabled' | 'disabled_by_configuration' | 'failed';
 export type SwitchReason = 'repair' | 'cleaning' | 'verification' | 'other';
 export type CameraAck = 'rotated' | 'no_cameras';
 
@@ -1305,6 +1350,8 @@ export interface AppSettings {
   manual_weight_reason_mode: ManualWeightReasonMode;
   /** Enable photo capture on gross/tare fix (full build). Default: false. */
   video_enabled: boolean;
+  /** Enable local ANPR (full build + model). Default: false until spike ≥ 50%. */
+  anpr_enabled: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -1341,6 +1388,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   scale_device_id: 'microsim-m0601',
   manual_weight_reason_mode: 'optional',
   video_enabled: false,
+  anpr_enabled: false,
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -1412,6 +1460,7 @@ export const SettingsStorage = {
         stored.manual_weight_reason_mode,
       ),
       video_enabled: stored.video_enabled === 'true',
+      anpr_enabled: stored.anpr_enabled === 'true',
     };
   },
 
@@ -1457,6 +1506,7 @@ export const SettingsStorage = {
       scale_device_id: next.scale_device_id,
       manual_weight_reason_mode: next.manual_weight_reason_mode,
       video_enabled: String(next.video_enabled),
+      anpr_enabled: String(next.anpr_enabled),
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;

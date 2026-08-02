@@ -287,6 +287,38 @@ def cameras_photo():
         return error_response(f'Ошибка чтения фото: {exc}')
 
 
+@app.get('/api/anpr/capabilities')
+def anpr_capabilities():
+    try:
+        import anpr as anpr_mod
+
+        caps = anpr_mod.capabilities()
+        return jsonify({'success': True, **caps})
+    except Exception as exc:
+        logger.exception('anpr capabilities failed')
+        return error_response(f'Ошибка capabilities ANPR: {exc}')
+
+
+@app.post('/api/anpr/recognize')
+def anpr_recognize():
+    body = request.get_json(silent=True) or {}
+    site_id = body.get('site_id')
+    camera_id = body.get('camera_id')
+    try:
+        import anpr as anpr_mod
+
+        result = anpr_mod.recognize(
+            site_id=str(site_id) if site_id else None,
+            camera_id=str(camera_id) if camera_id else None,
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('anpr recognize failed')
+        return error_response(f'Ошибка распознавания ANPR: {exc}')
+
+
 @app.post('/api/shutdown')
 def shutdown_application():
     shutdown_func = request.environ.get('werkzeug.server.shutdown')

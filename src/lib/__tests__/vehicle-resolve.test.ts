@@ -222,4 +222,19 @@ describe('resolveVehicle priorities', () => {
     expect(result.driver_name).toBe('');
     expect(result.driver_candidates).toEqual(['Первый', 'Второй']);
   });
+
+  it('honours plateSourceOverride for ANPR accept', () => {
+    const withCard = resolveVehicle(
+      'А001АА56',
+      baseContext({
+        vehicles: [{ id: 'v1', vehicle_number: 'А001АА56', vehicle_brand: 'КамАЗ' }],
+      }),
+      { plateSourceOverride: 'anpr' },
+    );
+    expect(withCard.plate_source).toBe('anpr');
+    expect(withCard.vehicle_brand).toBe('КамАЗ');
+
+    const without = resolveVehicle('А999ХХ56', baseContext(), { plateSourceOverride: 'anpr' });
+    expect(without.plate_source).toBe('anpr');
+  });
 });
