@@ -13,6 +13,7 @@ def temp_app_root(tmp_path, monkeypatch):
     """Isolate SQLite/config writes to a temporary application root."""
     import sqlite_store
     import persistence
+    import year_db
 
     root = tmp_path / 'app'
     root.mkdir()
@@ -20,6 +21,7 @@ def temp_app_root(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sqlite_store, 'get_app_root', lambda: str(root))
     monkeypatch.setattr(persistence, 'get_app_root', lambda: str(root))
+    monkeypatch.setattr(year_db, 'get_app_root', lambda: str(root))
     return root
 
 

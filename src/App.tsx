@@ -6,17 +6,18 @@ import { WeighingJournal } from '@/components/WeighingJournal';
 import { DictionariesView } from '@/components/DictionariesView';
 import { ReportsView } from '@/components/ReportsView';
 import { SettingsView } from '@/components/SettingsView';
+import { ArchiveView } from '@/components/ArchiveView';
 import { VescomImportView } from '@/components/VescomImportView';
 import { MetraImportView } from '@/components/MetraImportView';
 import { WaImportView } from '@/components/WaImportView';
 import { printTicket } from '@/components/PrintAct';
 import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
-import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive, Server } from 'lucide-react';
+import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive, Server, Archive } from 'lucide-react';
 import { exitApplication } from '@/lib/api';
 import { logger } from '@/lib/logger';
 
-type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
+type Tab = 'weighing' | 'journal' | 'archive' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
 
 function MainApp() {
   const { displayName, signOut, isAdmin } = useAuth();
@@ -88,6 +89,7 @@ function MainApp() {
   const tabs: { id: Tab; label: string; icon: typeof Scale }[] = [
     { id: 'weighing', label: 'Взвешивание', icon: Scale },
     { id: 'journal', label: 'Журнал', icon: BookOpen },
+    { id: 'archive', label: 'Архив', icon: Archive },
     { id: 'reports', label: 'Отчёты', icon: BarChart3 },
     { id: 'dictionaries', label: 'Справочники', icon: Library },
     ...(appSettings.vescom_enabled
@@ -189,6 +191,7 @@ function MainApp() {
         {tab === 'journal' && (
           <WeighingJournal refreshKey={journalKey} onCompleteOpen={handleCompleteOpen} />
         )}
+        {tab === 'archive' && <ArchiveView />}
         {tab === 'reports' && <ReportsView />}
         {tab === 'dictionaries' && <DictionariesView />}
         {tab === 'vescom' && appSettings.vescom_enabled && (

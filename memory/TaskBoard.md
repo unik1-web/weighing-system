@@ -73,7 +73,7 @@ Description: |
 
 ## 3aa7f0-yearly-db-archive
 
-State: architect
+State: code-review
 Description: |
   Источник: docs/tasks/06-yearly-db-archive.md
 

@@ -10,20 +10,27 @@
 |-------|------|----------|
 | `GET` | `/api/health` | `{ success, service }` |
 | `POST` | `/api/shutdown` | Завершение процесса (для exe/локального запуска) |
-| `GET` | `/api/storage/paths` | Абсолютные пути к `config.ini`, БД и каталогам |
+| `GET` | `/api/storage/paths` | Абсолютные пути к `config.ini`, БД и каталогам; также `active_year`, `backups_dir` |
 
 ## Хранение
 
 | Метод | Путь | Тело / параметры | Описание |
 |-------|------|------------------|----------|
 | `GET` | `/api/config` | — | Настройки из `config.ini` → `{ config }` |
-| `POST` | `/api/config` | `{ "config": { ... } }` | Сохранить настройки |
-| `GET` | `/api/database` | — | Данные SQLite → `{ data }` (ключи `app_*`) |
-| `POST` | `/api/database` | `{ "data": { ... } }` | Сохранить БД |
+| `POST` | `/api/config` | `{ "config": { ... } }` | Сохранить настройки (`active_year` через этот API не меняется) |
+| `GET` | `/api/database` | — | Данные **активного** года SQLite → `{ data }` (ключи `app_*`) |
+| `POST` | `/api/database` | `{ "data": { ... } }` | Сохранить активную БД |
+| `GET` | `/api/database/years` | — | `{ years, active_year }` — список `BD/weighing-ГГГГ.db` |
+| `GET` | `/api/database/rotate/preview` | — | `{ active_year, open_count, reo_pending_count, suggested_new_year }` |
+| `POST` | `/api/database/rotate` | `{ target_year, operator_id, operator_name, confirm_reo_pending? }` | Ротация года (admin); 409 если есть pending РЭО без confirm |
+| `GET` | `/api/database/archive/<year>` | — | Read-only снимок архивного (или активного) года |
+| `POST` | `/api/database/archive/<year>/ticket` | `{ ticket, operator_id, operator_name, confirm_reo_sent? }` | Admin-правка архивного тикета + revisions/audit |
 
-Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` | `all` | `free`, default `all`), `scale_device_id` (id модели весов, default `microsim-m0601`).
+Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` | `all` | `free`, default `all`), `scale_device_id` (id модели весов, default `microsim-m0601`), `active_year` (ГГГГ; меняется только ротацией).
 
-В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version`, nullable audit-stubs (`plate_source`, `site_id`, `scale_id`, `scale_role`, `photo_entry_path`, `photo_exit_path`, `photo_overview_path`); audit — `app_ticket_audit`; история водителей ТС — `app_vehicle_drivers`; площадка и весы — `app_sites`, `app_scales`, `app_site_runtime`, `app_site_scale_switches` (частичный POST без ключа соответствующие данные не очищает).
+Файлы БД: `BD/weighing-ГГГГ.db`; бэкапы ротации — `BD/backups/`. Legacy `BD/weighing.db` мигрирует в годовой файл при первом запуске.
+
+В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version`, `auto_closed`, nullable audit-stubs (`plate_source`, `site_id`, `scale_id`, `scale_role`, `photo_entry_path`, `photo_exit_path`, `photo_overview_path`); audit — `app_ticket_audit` (`created` \| `completed` \| `auto_closed` \| `updated`); правки — `app_ticket_revisions`; история водителей ТС — `app_vehicle_drivers`; площадка и весы — `app_sites`, `app_scales`, `app_site_runtime`, `app_site_scale_switches` (частичный POST без ключа соответствующие данные не очищает).
 | `GET` | `/api/storage` | — | Объединённое чтение config + database |
 | `POST` | `/api/storage` | `{ "data": { "app_...": "..." } }` | Сохранить; принимаются только строковые `app_*` |
 | `GET` | `/api/storage/export` | — | Резервная копия INI (`format: "ini"`, `content`, `backup`) |
