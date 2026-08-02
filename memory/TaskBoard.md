@@ -105,7 +105,7 @@ Description: |
 
 ## cb0fb4-anpr
 
-State: code-review
+State: testing
 Description: |
   Источник: docs/tasks/08-anpr.md
 
