@@ -73,7 +73,7 @@ Description: |
 
 ## 3aa7f0-yearly-db-archive
 
-State: code-review
+State: done
 Description: |
   Источник: docs/tasks/06-yearly-db-archive.md
 
@@ -83,7 +83,6 @@ Description: |
   архивный просмотр/перепечатка; admin-правка с audit/revisions и
   предупреждением при reo_status=sent.
 
-  Зависимости: этапы 1–3; параллельно с 4–5. Артефакты: docs/implementation/.
-  Не коммитить BD/, бэкапы, секреты.
+  Завершено: 2026-08-02T02:29:14Z. Артефакты: docs/3aa7f0-yearly-db-archive/.
 
 ---
