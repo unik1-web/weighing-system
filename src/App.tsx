@@ -155,15 +155,23 @@ function MainApp() {
                 )}
               </div>
               <button
+                type="button"
                 onClick={handleExitApplication}
                 disabled={exiting}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
-                title="Закрыть программу"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
+                title={exiting ? 'Выход...' : 'Выход'}
+                aria-label={exiting ? 'Выход...' : 'Выход'}
               >
-                <Power size={15} /> <span className="hidden sm:inline">{exiting ? 'Выход...' : 'Выход'}</span>
+                <Power size={15} />
               </button>
-              <button onClick={signOut} className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-red-50 hover:text-red-600 hover:border-red-200">
-                <LogOut size={15} /> <span className="hidden sm:inline">Сменить пользователя</span>
+              <button
+                type="button"
+                onClick={signOut}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:bg-red-50 hover:text-red-600 hover:border-red-200"
+                title="Сменить пользователя"
+                aria-label="Сменить пользователя"
+              >
+                <LogOut size={15} />
               </button>
             </div>
           </div>
