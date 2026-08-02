@@ -37,9 +37,13 @@ build/
 release/
 dist/WeighingSystem/
 
+# ANPR model weights (full build supplies plate.onnx next to exe)
+/models/
+
 # Multi-agent pipeline working drafts (keep directory via .gitkeep)
 docs/implementation/*
 !docs/implementation/.gitkeep
+!docs/implementation/anpr-spike-checklist.md
 
 # Orchestrator runtime memory (keep TaskBoard template)
 memory/TASK_MEMORY_*.yml

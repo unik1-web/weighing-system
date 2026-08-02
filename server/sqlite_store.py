@@ -52,6 +52,7 @@ TICKET_COLUMNS = [
     'photo_entry_path', 'photo_exit_path', 'photo_overview_path',
     'manual_weight_reason',
     'auto_closed',
+    'anpr_plate_raw', 'plate_confidence', 'anpr_accepted', 'anpr_status',
 ]
 
 AUDIT_COLUMNS = [
@@ -225,6 +226,8 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         'photo_exit_path',
         'photo_overview_path',
         'manual_weight_reason',
+        'anpr_plate_raw',
+        'anpr_status',
     ):
         if column not in existing:
             connection.execute(f'ALTER TABLE weighing_tickets ADD COLUMN {column} TEXT')
@@ -233,6 +236,12 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             'ALTER TABLE weighing_tickets ADD COLUMN auto_closed INTEGER DEFAULT 0'
         )
+
+    if 'plate_confidence' not in existing:
+        connection.execute('ALTER TABLE weighing_tickets ADD COLUMN plate_confidence REAL')
+
+    if 'anpr_accepted' not in existing:
+        connection.execute('ALTER TABLE weighing_tickets ADD COLUMN anpr_accepted INTEGER')
 
     if column_weighing_mode_added:
         # One-shot backfill: only right after ADD COLUMN weighing_mode.
@@ -418,7 +427,11 @@ def init_schema(connection: sqlite3.Connection) -> None:
             photo_exit_path TEXT,
             photo_overview_path TEXT,
             manual_weight_reason TEXT,
-            auto_closed INTEGER DEFAULT 0
+            auto_closed INTEGER DEFAULT 0,
+            anpr_plate_raw TEXT,
+            plate_confidence REAL,
+            anpr_accepted INTEGER,
+            anpr_status TEXT
         );
 
         CREATE TABLE IF NOT EXISTS dictionary_entries (
@@ -627,6 +640,11 @@ def _load_tickets(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     for row in rows:
         ticket = {column: row[column] for column in TICKET_COLUMNS}
         ticket['auto_closed'] = _soft_bool(ticket.get('auto_closed'))
+        accepted = ticket.get('anpr_accepted')
+        if accepted is None or accepted == '':
+            ticket['anpr_accepted'] = None
+        else:
+            ticket['anpr_accepted'] = _soft_bool(accepted)
         tickets.append(ticket)
     return tickets
 
@@ -931,6 +949,12 @@ def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None
                 values.append(ticket.get(column) if ticket.get(column) is not None else 1)
             elif column == 'auto_closed':
                 values.append(1 if _soft_bool(ticket.get('auto_closed')) else 0)
+            elif column == 'anpr_accepted':
+                raw_accepted = ticket.get('anpr_accepted')
+                if raw_accepted is None or raw_accepted == '':
+                    values.append(None)
+                else:
+                    values.append(1 if _soft_bool(raw_accepted) else 0)
             else:
                 values.append(ticket.get(column))
         connection.execute(

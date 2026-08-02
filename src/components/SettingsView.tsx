@@ -26,6 +26,7 @@ import {
   upsertCamera,
   type CameraCapabilities,
 } from '@/lib/cameras';
+import { fetchAnprCapabilities, type AnprCapabilities } from '@/lib/anpr';
 import { DRIVER_INPUT_MODE_LABELS, type DriverInputMode } from '@/lib/vehicle-resolve';
 import {
   ADAPTER_LIST,
@@ -145,6 +146,7 @@ export function SettingsView({ onSaved }: Props) {
   const [activeOnSpare, setActiveOnSpare] = useState(false);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [cameraCaps, setCameraCaps] = useState<CameraCapabilities | null>(null);
+  const [anprCaps, setAnprCaps] = useState<AnprCapabilities | null>(null);
   const [cameraBusyId, setCameraBusyId] = useState<string | null>(null);
 
   const reloadSiteState = () => {
@@ -176,6 +178,7 @@ export function SettingsView({ onSaved }: Props) {
     );
     void fetchStoragePaths().then(setStoragePaths);
     void fetchCapabilities().then(setCameraCaps);
+    void fetchAnprCapabilities(true).then(setAnprCaps);
     void fetchRotatePreview()
       .then((preview) => {
         setRotatePreview(preview);
@@ -323,6 +326,7 @@ export function SettingsView({ onSaved }: Props) {
         scale_device_id: ctx.adapter_id,
         manual_weight_reason_mode: settings.manual_weight_reason_mode,
         video_enabled: settings.video_enabled,
+        anpr_enabled: settings.anpr_enabled,
       });
       setSettings((prev) => ({
         ...prev,
@@ -346,7 +350,9 @@ export function SettingsView({ onSaved }: Props) {
       scale_device_id: settings.scale_device_id,
       manual_weight_reason_mode: settings.manual_weight_reason_mode,
       video_enabled: settings.video_enabled,
+      anpr_enabled: settings.anpr_enabled,
     });
+    void fetchAnprCapabilities(true).then(setAnprCaps);
     logger.info('settings', 'Настройки сохранены');
     setSaved(true);
     onSaved?.();
@@ -1184,6 +1190,31 @@ export function SettingsView({ onSaved }: Props) {
               </span>
             </span>
           </label>
+
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={settings.anpr_enabled}
+              onChange={(e) => updateField('anpr_enabled', e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              Распознавание номеров (ANPR)
+              <span className="block text-xs text-slate-500">
+                Локальное распознавание по камере обзора. По умолчанию выкл.; включать после спайка
+                с точностью ≥ 50%. На резерве движок не вызывается.
+              </span>
+            </span>
+          </label>
+          <p className="text-xs text-slate-500">
+            Модель:{' '}
+            {anprCaps?.model_loaded
+              ? 'загружена'
+              : 'недоступна (нужна полная сборка с onnxruntime и файл models/anpr/plate.onnx)'}
+            {anprCaps && anprCaps.success === false && (
+              <> — не удалось связаться с API ANPR.</>
+            )}
+          </p>
 
           <div className="space-y-3">
             {cameras.map((cam, index) => (

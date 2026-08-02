@@ -102,3 +102,19 @@ Description: |
   Завершено: 2026-08-02T03:02:58Z. Артефакты: docs/37cc69-photo-capture/.
 
 ---
+
+## cb0fb4-anpr
+
+State: done
+Description: |
+  Источник: docs/tasks/08-anpr.md
+
+  Цель: локальное ANPR с кадра overview → номер + confidence →
+  подтверждение/правка оператором → plate_source / anpr_* в тикете →
+  resolveVehicle; на spare движок не вызывается (disabled_by_configuration);
+  порог релиза ≥ 50% на спайке объекта; при выкл./ниже порога ручной ввод
+  без деградации. Зависимости: этапы 3, 4, 7.
+
+  Завершено: 2026-08-02T17:55:33Z. Артефакты: docs/cb0fb4-anpr/.
+
+---

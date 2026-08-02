@@ -26,11 +26,14 @@
 | `GET` | `/api/database/archive/<year>` | — | Read-only снимок архивного (или активного) года |
 | `POST` | `/api/database/archive/<year>/ticket` | `{ ticket, operator_id, operator_name, confirm_reo_sent? }` | Admin-правка архивного тикета + revisions/audit |
 
-Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` | `all` | `free`, default `all`), `scale_device_id` (id модели весов, default `microsim-m0601`), `video_enabled` (`true`/`false`, default `false` — фотофиксация), `active_year` (ГГГГ; меняется только ротацией).
+Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` | `all` | `free`, default `all`), `scale_device_id` (id модели весов, default `microsim-m0601`), `video_enabled` (`true`/`false`, default `false` — фотофиксация), `anpr_enabled` (`true`/`false`, default `false` — локальный ANPR; включать после спайка ≥ 50%), `active_year` (ГГГГ; меняется только ротацией).
+
+Разделение хранилища: `GET/POST /api/config` — только `config.ini` (настройки). `GET/POST /api/database` — только `BD/weighing-{YYYY}.db` (справочники, тикеты, сессия). `GET/POST /api/storage` — объединённый вид (обратная совместимость). При старте UI: `Promise.all` config+database.
+
+В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version`, `auto_closed`, nullable audit-stubs (`plate_source`, `site_id`, `scale_id`, `scale_role`, `photo_entry_path`, `photo_exit_path`, `photo_overview_path`, `anpr_plate_raw`, `plate_confidence`, `anpr_accepted`, `anpr_status`); audit — `app_ticket_audit` (`created` \| `completed` \| `auto_closed` \| `updated`); правки — `app_ticket_revisions`; история водителей ТС — `app_vehicle_drivers`; площадка и весы — `app_sites`, `app_scales`, `app_site_runtime`, `app_site_scale_switches`; камеры и фото — `app_cameras`, `app_ticket_photos` (частичный POST без ключа соответствующие данные не очищает; при ротации года `cameras` копируются в новый год, `ticket_photos` остаются в архиве).
 
 Файлы БД: `BD/weighing-ГГГГ.db`; бэкапы ротации — `BD/backups/`. Legacy `BD/weighing.db` мигрирует в годовой файл при первом запуске. Фото JPEG — каталог `Photo/` рядом с приложением (не в SQLite).
 
-В `data` журнала: тикеты `app_weighing_tickets` включают `weighing_mode`, `version`, `auto_closed`, nullable audit-stubs (`plate_source`, `site_id`, `scale_id`, `scale_role`, `photo_entry_path`, `photo_exit_path`, `photo_overview_path`); audit — `app_ticket_audit` (`created` \| `completed` \| `auto_closed` \| `updated`); правки — `app_ticket_revisions`; история водителей ТС — `app_vehicle_drivers`; площадка и весы — `app_sites`, `app_scales`, `app_site_runtime`, `app_site_scale_switches`; камеры и фото — `app_cameras`, `app_ticket_photos` (частичный POST без ключа соответствующие данные не очищает; при ротации года `cameras` копируются в новый год, `ticket_photos` остаются в архиве).
 | `GET` | `/api/storage` | — | Объединённое чтение config + database |
 | `POST` | `/api/storage` | `{ "data": { "app_...": "..." } }` | Сохранить; принимаются только строковые `app_*` |
 | `GET` | `/api/storage/export` | — | Резервная копия INI (`format: "ini"`, `content`, `backup`) |
@@ -119,6 +122,19 @@
 | `GET` | `/api/cameras/photo` | `path` (относительный от app root, только под `Photo/`) | `image/jpeg` или 404; path traversal → 400 |
 
 Поведение `capture`: при `video_enabled=false` — строки `skipped`, HTTP 200; ошибка одной камеры — `failed`, остальные ок; таймаут HTTP ~3 с; параллельно до 4 камер.
+
+## ANPR (локальное распознавание номеров)
+
+Модуль `server/anpr.py`. Захват overview (+ ROI crop) и инференс на backend; тикет не пишет. Feature-flag `anpr_enabled` (default `false`) + runtime `anpr_mode` (spare → `disabled_by_configuration`). Модель: `{app_root}/models/anpr/plate.onnx` (вне git; полная сборка с `onnxruntime`).
+
+| Метод | Путь | Тело / query | Ответ |
+|-------|------|--------------|-------|
+| `GET` | `/api/anpr/capabilities` | — | `{ success, anpr_available, anpr_enabled, video_enabled, engine, model_loaded, backends?, model_path? }` |
+| `POST` | `/api/anpr/recognize` | `{ site_id?, camera_id? }` | `{ success, engine_invoked, anpr_status, plate_raw, confidence, camera_id, error, reason }` |
+
+Gate (все обязательны для `engine_invoked=true`): `anpr_enabled` ∧ `video_enabled` ∧ `anpr_mode=enabled` ∧ overview с `capture_url` ∧ `anpr_available`. Иначе HTTP 200, `engine_invoked=false`, `anpr_status=disabled_by_configuration`. Ошибка кадра/модели → `anpr_status=failed` (HTTP 200, взвешивание не блокируется). Таймаут recognize ~5 с. Confidence REAL 0..1.
+
+Поля тикета (nullable soft-read): `anpr_plate_raw`, `plate_confidence`, `anpr_accepted`, `anpr_status` (`enabled` \| `disabled_by_configuration` \| `failed`); `plate_source` = `anpr` \| `operator` \| `directory`.
 
 ## Frontend
 
