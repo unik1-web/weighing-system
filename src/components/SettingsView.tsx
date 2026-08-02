@@ -352,7 +352,8 @@ export function SettingsView({ onSaved }: Props) {
       video_enabled: settings.video_enabled,
       anpr_enabled: settings.anpr_enabled,
     });
-    void fetchAnprCapabilities(true).then(setAnprCaps);    logger.info('settings', 'Настройки сохранены');
+    void fetchAnprCapabilities(true).then(setAnprCaps);
+    logger.info('settings', 'Настройки сохранены');
     setSaved(true);
     onSaved?.();
     setTimeout(() => setSaved(false), 2500);
