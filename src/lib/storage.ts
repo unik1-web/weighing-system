@@ -13,8 +13,21 @@ import {
   type VehicleDriverLink,
 } from './vehicle-resolve';
 import { applyVehicleLearningOnComplete } from './vehicle-learning';
-import { SCALE_DEVICES, type ScaleDeviceId } from './scales';
+import {
+  SCALE_DEVICES,
+  normalizeAdapterId,
+  type ScaleDeviceId,
+  type ScaleConnectionProfile as ScalesConnectionProfile,
+  type ScaleTransportKind,
+} from './scales';
+import {
+  normalizeManualWeightReasonMode,
+  type ManualWeightReasonMode,
+} from './manual-weight-reason';
 import { logger } from './logger';
+
+export type { ManualWeightReasonMode };
+export type { ScaleTransportKind };
 
 export type { WeightSource };
 export type { DriverInputMode, PlateSource, VehicleDriverLink };
@@ -68,6 +81,8 @@ export interface WeighingTicket {
   photo_entry_path?: string | null;
   photo_exit_path?: string | null;
   photo_overview_path?: string | null;
+  /** Reason for keyboard weight entry; null when off / not applicable. Soft-read for old tickets. */
+  manual_weight_reason?: string | null;
 }
 
 export interface TicketAuditEvent {
@@ -125,10 +140,7 @@ export const APP_STORAGE_KEYS = {
 } as const;
 
 function normalizeScaleDeviceId(raw: unknown): ScaleDeviceId {
-  if (typeof raw === 'string' && raw in SCALE_DEVICES) {
-    return raw as ScaleDeviceId;
-  }
-  return 'microsim-m0601';
+  return normalizeAdapterId(raw);
 }
 
 function persist(key: string, value: string): void {
@@ -303,6 +315,9 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     photo_entry_path: ticket.photo_entry_path ?? null,
     photo_exit_path: ticket.photo_exit_path ?? null,
     photo_overview_path: ticket.photo_overview_path ?? null,
+    manual_weight_reason: softReadNullableString(
+      (ticket as WeighingTicket & { manual_weight_reason?: unknown }).manual_weight_reason,
+    ),
   };
   const mode = normalizeWeighingMode(ticket);
   if (ticket.weighing_mode !== mode) {
@@ -623,13 +638,7 @@ export interface Site {
   created_at: string;
 }
 
-export interface ScaleConnectionProfile {
-  baudRate: number;
-  parity: 'none' | 'even' | 'odd';
-  dataBits: 7 | 8;
-  stopBits: 1 | 2;
-  lineTerminator: string;
-}
+export type ScaleConnectionProfile = ScalesConnectionProfile;
 
 export interface Scale {
   id: string;
@@ -769,11 +778,46 @@ export const ScalesStorage = {
 
   getAll(): Scale[] {
     ScalesStorage.ensureInitialized();
-    return readJsonArray(STORAGE_KEYS.SCALES, isScale).map((scale) => ({
-      ...scale,
-      adapter_id: normalizeScaleDeviceId(scale.adapter_id),
-      enabled: Boolean(scale.enabled),
-    }));
+    return readJsonArray(STORAGE_KEYS.SCALES, isScale).map((scale) => {
+      const adapter_id = normalizeScaleDeviceId(scale.adapter_id);
+      const defaults = SCALE_DEVICES[adapter_id];
+      const conn = (scale.connection ?? {}) as ScaleConnectionProfile;
+      const transport =
+        conn.transport === 'web_serial' || conn.transport === 'serial' || conn.transport === 'tcp'
+          ? conn.transport
+          : 'web_serial';
+      const connection: ScaleConnectionProfile = {
+        transport,
+        baudRate:
+          typeof conn.baudRate === 'number' && Number.isFinite(conn.baudRate)
+            ? conn.baudRate
+            : defaults.baudRate,
+        parity:
+          conn.parity === 'none' || conn.parity === 'even' || conn.parity === 'odd'
+            ? conn.parity
+            : defaults.parity,
+        dataBits: conn.dataBits === 7 || conn.dataBits === 8 ? conn.dataBits : defaults.dataBits,
+        stopBits: conn.stopBits === 1 || conn.stopBits === 2 ? conn.stopBits : defaults.stopBits,
+        lineTerminator:
+          typeof conn.lineTerminator === 'string'
+            ? conn.lineTerminator
+            : defaults.lineTerminator,
+        parseRegex: conn.parseRegex,
+        parseStableGroup: conn.parseStableGroup,
+        parseUnitGroup: conn.parseUnitGroup,
+        parseSignGroup: conn.parseSignGroup,
+        parseMask: conn.parseMask,
+        host: conn.host,
+        tcpPort: conn.tcpPort,
+        serialPath: conn.serialPath,
+      };
+      return {
+        ...scale,
+        adapter_id,
+        connection,
+        enabled: Boolean(scale.enabled),
+      };
+    });
   },
 
   replaceAll(scales: Scale[]): void {
@@ -1053,6 +1097,8 @@ export interface AppSettings {
   tara_default: number;
   driver_input_mode: DriverInputMode;
   scale_device_id: ScaleDeviceId;
+  /** When to require/show manual_weight_reason on tickets. Default: optional. */
+  manual_weight_reason_mode: ManualWeightReasonMode;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -1087,6 +1133,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   tara_default: 0,
   driver_input_mode: 'all',
   scale_device_id: 'microsim-m0601',
+  manual_weight_reason_mode: 'optional',
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -1154,6 +1201,9 @@ export const SettingsStorage = {
       tara_default: parseNumber(stored.tara_default, DEFAULT_APP_SETTINGS.tara_default),
       driver_input_mode: normalizeDriverInputMode(stored.driver_input_mode),
       scale_device_id: normalizeScaleDeviceId(stored.scale_device_id),
+      manual_weight_reason_mode: normalizeManualWeightReasonMode(
+        stored.manual_weight_reason_mode,
+      ),
     };
   },
 
@@ -1162,6 +1212,9 @@ export const SettingsStorage = {
     const next = { ...current, ...updates };
     next.driver_input_mode = normalizeDriverInputMode(next.driver_input_mode);
     next.scale_device_id = normalizeScaleDeviceId(next.scale_device_id);
+    next.manual_weight_reason_mode = normalizeManualWeightReasonMode(
+      next.manual_weight_reason_mode,
+    );
     const flat: Record<string, string> = {
       org_name: next.org_name,
       org_address: next.org_address,
@@ -1194,6 +1247,7 @@ export const SettingsStorage = {
       tara_default: String(next.tara_default),
       driver_input_mode: next.driver_input_mode,
       scale_device_id: next.scale_device_id,
+      manual_weight_reason_mode: next.manual_weight_reason_mode,
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;

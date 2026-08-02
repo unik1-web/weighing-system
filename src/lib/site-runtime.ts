@@ -20,7 +20,15 @@ import {
   type CameraAck,
   type ScaleConnectionProfile,
 } from './storage';
-import { SCALE_DEVICES, type ScaleDeviceId } from './scales';
+import {
+  SCALE_DEVICES,
+  getAdapter,
+  normalizeAdapterId as normalizeAdapterIdFromRegistry,
+  connectionFromAdapter,
+  type ScaleDeviceId,
+  type ScaleAdapterId,
+  type ScaleTransportKind,
+} from './scales';
 import { logger } from './logger';
 
 export type {
@@ -71,21 +79,45 @@ function dispatchRuntimeUpdated(): void {
 }
 
 export function connectionFromDevice(deviceId: ScaleDeviceId): ScaleConnectionProfile {
-  const device = SCALE_DEVICES[deviceId];
-  return {
-    baudRate: device.baudRate,
-    parity: device.parity,
-    dataBits: device.dataBits,
-    stopBits: device.stopBits,
-    lineTerminator: device.lineTerminator,
-  };
+  return connectionFromAdapter(deviceId as ScaleAdapterId);
 }
 
 function normalizeAdapterId(raw: unknown): ScaleDeviceId {
-  if (typeof raw === 'string' && raw in SCALE_DEVICES) {
-    return raw as ScaleDeviceId;
-  }
-  return 'microsim-m0601';
+  return normalizeAdapterIdFromRegistry(raw);
+}
+
+function normalizeTransport(raw: unknown): ScaleTransportKind {
+  if (raw === 'web_serial' || raw === 'serial' || raw === 'tcp') return raw;
+  return 'web_serial';
+}
+
+/** Soft-normalize connection: default transport, fill framing gaps from adapter defaults. */
+export function normalizeScaleConnection(
+  adapterId: ScaleDeviceId,
+  connection: Partial<ScaleConnectionProfile> | null | undefined,
+): ScaleConnectionProfile {
+  const defaults = connectionFromDevice(adapterId);
+  const src = connection ?? {};
+  const parity =
+    src.parity === 'none' || src.parity === 'even' || src.parity === 'odd'
+      ? src.parity
+      : defaults.parity;
+  const dataBits = src.dataBits === 7 || src.dataBits === 8 ? src.dataBits : defaults.dataBits;
+  const stopBits = src.stopBits === 1 || src.stopBits === 2 ? src.stopBits : defaults.stopBits;
+  return {
+    ...defaults,
+    ...src,
+    transport: normalizeTransport(src.transport ?? defaults.transport),
+    baudRate:
+      typeof src.baudRate === 'number' && Number.isFinite(src.baudRate)
+        ? src.baudRate
+        : defaults.baudRate,
+    parity,
+    dataBits,
+    stopBits,
+    lineTerminator:
+      typeof src.lineTerminator === 'string' ? src.lineTerminator : defaults.lineTerminator,
+  };
 }
 
 function ensureRuntimeRow(siteId: string): SiteRuntime {
@@ -277,7 +309,7 @@ export function upsertScale(
   const next: Scale = {
     ...scale,
     adapter_id: adapterId,
-    connection: scale.connection ?? connectionFromDevice(adapterId),
+    connection: normalizeScaleConnection(adapterId, scale.connection),
     created_at: scale.created_at ?? new Date().toISOString(),
   };
   const saved = ScalesStorage.upsert(next);
@@ -297,13 +329,19 @@ export function enableSpareScale(input: {
   const adapterId = normalizeAdapterId(input.adapter_id);
   const now = new Date().toISOString();
 
+  const keepConnection =
+    existing &&
+    normalizeAdapterId(existing.adapter_id) === adapterId &&
+    existing.connection
+      ? existing.connection
+      : connectionFromDevice(adapterId);
   const spare: Scale = {
     id: existing?.id ?? crypto.randomUUID(),
     site_id: site.id,
     role: 'spare',
     name: (input.name?.trim() || existing?.name || DEFAULT_SPARE_SCALE_NAME),
     adapter_id: adapterId,
-    connection: connectionFromDevice(adapterId),
+    connection: normalizeScaleConnection(adapterId, keepConnection),
     enabled: true,
     created_at: existing?.created_at ?? now,
   };
@@ -332,11 +370,15 @@ export function disableSpareScale(input?: {
     throw new Error('Резервные весы не найдены');
   }
   const adapterId = normalizeAdapterId(input?.adapter_id ?? existing.adapter_id);
+  const keepConnection =
+    normalizeAdapterId(existing.adapter_id) === adapterId && existing.connection
+      ? existing.connection
+      : connectionFromDevice(adapterId);
   return upsertScale({
     ...existing,
     adapter_id: adapterId,
     name: input?.name?.trim() || existing.name,
-    connection: connectionFromDevice(adapterId),
+    connection: normalizeScaleConnection(adapterId, keepConnection),
     enabled: false,
   });
 }
@@ -346,14 +388,17 @@ export function updateActiveScaleDevice(deviceId: ScaleDeviceId): Scale {
   ensureSiteMigrated();
   const ctx = getActiveScaleContext();
   const adapterId = normalizeAdapterId(deviceId);
+  const adapterChanged = normalizeAdapterId(ctx.activeScale.adapter_id) !== adapterId;
   const updated = upsertScale({
     ...ctx.activeScale,
     adapter_id: adapterId,
     name:
       ctx.activeScale.role === 'spare' && ctx.activeScale.name === DEFAULT_SPARE_SCALE_NAME
         ? DEFAULT_SPARE_SCALE_NAME
-        : SCALE_DEVICES[adapterId].name,
-    connection: connectionFromDevice(adapterId),
+        : getAdapter(adapterId).name,
+    connection: adapterChanged
+      ? connectionFromDevice(adapterId)
+      : normalizeScaleConnection(adapterId, ctx.activeScale.connection),
   });
   SettingsStorage.updateAppSettings({ scale_device_id: adapterId });
   dispatchRuntimeUpdated();

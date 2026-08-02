@@ -12,7 +12,17 @@ import {
   type Scale,
 } from '@/lib/storage';
 import { DRIVER_INPUT_MODE_LABELS, type DriverInputMode } from '@/lib/vehicle-resolve';
-import { SCALE_DEVICE_LIST, SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
+import {
+  ADAPTER_LIST,
+  SCALE_DEVICES,
+  type ScaleDeviceId,
+  type ScaleTransportKind,
+  type ScaleConnectionProfile,
+} from '@/lib/scales';
+import {
+  MANUAL_WEIGHT_REASON_MODE_LABELS,
+  type ManualWeightReasonMode,
+} from '@/lib/manual-weight-reason';
 import {
   ensureSiteMigrated,
   getDefaultSite,
@@ -46,6 +56,25 @@ import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 const NAV_TAB_OPTIONS: NavTabMode[] = ['full', 'compact'];
+const TRANSPORT_OPTIONS: { id: ScaleTransportKind; label: string }[] = [
+  { id: 'web_serial', label: 'Web Serial (браузер)' },
+  { id: 'tcp', label: 'TCP (сервер)' },
+  { id: 'serial', label: 'Serial COM (сервер, задел)' },
+];
+
+function patchScaleConnection(
+  scale: Scale,
+  patch: Partial<ScaleConnectionProfile>,
+): Scale {
+  return {
+    ...scale,
+    connection: {
+      ...connectionFromDevice(scale.adapter_id),
+      ...scale.connection,
+      ...patch,
+    },
+  };
+}
 
 interface Props {
   onSaved?: () => void;
@@ -161,11 +190,22 @@ export function SettingsView({ onSaved }: Props) {
         upsertScale({
           ...primaryScale,
           adapter_id: primaryScale.adapter_id,
-          connection: connectionFromDevice(primaryScale.adapter_id),
-          name: SCALE_DEVICES[primaryScale.adapter_id]?.name ?? primaryScale.name,
+          connection: primaryScale.connection ?? connectionFromDevice(primaryScale.adapter_id),
+          name:
+            primaryScale.adapter_id === 'custom'
+              ? primaryScale.name || 'Произвольный разбор'
+              : (SCALE_DEVICES[primaryScale.adapter_id]?.name ?? primaryScale.name),
         });
       }
       if (spareScale) {
+        // Persist spare connection/adapter before enable/disable toggles
+        upsertScale({
+          ...spareScale,
+          adapter_id: spareScale.adapter_id,
+          connection: spareScale.connection ?? connectionFromDevice(spareScale.adapter_id),
+          name: spareScale.name || DEFAULT_SPARE_SCALE_NAME,
+          enabled: spareEnabled,
+        });
         if (spareEnabled) {
           enableSpareScale({
             adapter_id: spareScale.adapter_id,
@@ -180,8 +220,14 @@ export function SettingsView({ onSaved }: Props) {
       }
       // Keep settings cache in sync with active scale adapter
       const ctx = getActiveScaleContext();
-      SettingsStorage.updateAppSettings({ scale_device_id: ctx.adapter_id });
-      setSettings((prev) => ({ ...prev, scale_device_id: ctx.adapter_id }));
+      SettingsStorage.updateAppSettings({
+        scale_device_id: ctx.adapter_id,
+        manual_weight_reason_mode: settings.manual_weight_reason_mode,
+      });
+      setSettings((prev) => ({
+        ...prev,
+        scale_device_id: ctx.adapter_id,
+      }));
       reloadSiteState();
     } catch (err: unknown) {
       setSettingsError(err instanceof Error ? err.message : 'Ошибка сохранения площадки');
@@ -195,6 +241,7 @@ export function SettingsView({ onSaved }: Props) {
       tara_default: settings.tara_default,
       driver_input_mode: settings.driver_input_mode,
       scale_device_id: settings.scale_device_id,
+      manual_weight_reason_mode: settings.manual_weight_reason_mode,
     });
     logger.info('settings', 'Настройки сохранены');
     setSaved(true);
@@ -555,7 +602,7 @@ export function SettingsView({ onSaved }: Props) {
           </div>
 
           <div>
-            <label className={labelClass}>Основные весы — профиль</label>
+            <label className={labelClass}>Основные весы — адаптер</label>
             <select
               value={primaryScale?.adapter_id ?? settings.scale_device_id}
               onChange={(e) => {
@@ -574,7 +621,7 @@ export function SettingsView({ onSaved }: Props) {
               }}
               className={inputClass}
             >
-              {SCALE_DEVICE_LIST.map((device) => (
+              {ADAPTER_LIST.map((device) => (
                 <option key={device.id} value={device.id}>
                   {device.name}
                 </option>
@@ -583,7 +630,7 @@ export function SettingsView({ onSaved }: Props) {
           </div>
 
           <div>
-            <label className={labelClass}>Резервные весы — профиль</label>
+            <label className={labelClass}>Резервные весы — адаптер</label>
             <select
               value={spareScale?.adapter_id ?? 'microsim-m0601'}
               onChange={(e) => {
@@ -601,7 +648,7 @@ export function SettingsView({ onSaved }: Props) {
               }}
               className={inputClass}
             >
-              {SCALE_DEVICE_LIST.map((device) => (
+              {ADAPTER_LIST.map((device) => (
                 <option key={device.id} value={device.id}>
                   {device.name}
                 </option>
@@ -648,6 +695,314 @@ export function SettingsView({ onSaved }: Props) {
               </p>
             )}
           </div>
+
+          {primaryScale && (
+            <div className="sm:col-span-2 space-y-3 rounded-xl border border-slate-100 bg-slate-50/80 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Подключение основных весов
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className={labelClass}>Транспорт</label>
+                  <select
+                    value={primaryScale.connection?.transport ?? 'web_serial'}
+                    onChange={(e) => {
+                      const transport = e.target.value as ScaleTransportKind;
+                      setPrimaryScale((prev) =>
+                        prev ? patchScaleConnection(prev, { transport }) : prev,
+                      );
+                      setSaved(false);
+                    }}
+                    className={inputClass}
+                  >
+                    {TRANSPORT_OPTIONS.map((t) => (
+                      <option key={t.id} value={t.id}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelClass}>Скорость (baud)</label>
+                  <input
+                    type="number"
+                    value={primaryScale.connection?.baudRate ?? 9600}
+                    onChange={(e) => {
+                      const baudRate = Number(e.target.value) || 9600;
+                      setPrimaryScale((prev) =>
+                        prev ? patchScaleConnection(prev, { baudRate }) : prev,
+                      );
+                      setSaved(false);
+                    }}
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label className={labelClass}>Parity</label>
+                  <select
+                    value={primaryScale.connection?.parity ?? 'none'}
+                    onChange={(e) => {
+                      const parity = e.target.value as ScaleConnectionProfile['parity'];
+                      setPrimaryScale((prev) =>
+                        prev ? patchScaleConnection(prev, { parity }) : prev,
+                      );
+                      setSaved(false);
+                    }}
+                    className={inputClass}
+                  >
+                    <option value="none">none</option>
+                    <option value="even">even</option>
+                    <option value="odd">odd</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={labelClass}>Data / Stop bits</label>
+                  <div className="flex gap-2">
+                    <select
+                      value={primaryScale.connection?.dataBits ?? 8}
+                      onChange={(e) => {
+                        const dataBits = Number(e.target.value) === 7 ? 7 : 8;
+                        setPrimaryScale((prev) =>
+                          prev ? patchScaleConnection(prev, { dataBits }) : prev,
+                        );
+                        setSaved(false);
+                      }}
+                      className={inputClass}
+                    >
+                      <option value={7}>7</option>
+                      <option value={8}>8</option>
+                    </select>
+                    <select
+                      value={primaryScale.connection?.stopBits ?? 1}
+                      onChange={(e) => {
+                        const stopBits = Number(e.target.value) === 2 ? 2 : 1;
+                        setPrimaryScale((prev) =>
+                          prev ? patchScaleConnection(prev, { stopBits }) : prev,
+                        );
+                        setSaved(false);
+                      }}
+                      className={inputClass}
+                    >
+                      <option value={1}>1</option>
+                      <option value={2}>2</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className={labelClass}>Окончание строки (escape: \\r \\n)</label>
+                  <input
+                    type="text"
+                    value={(primaryScale.connection?.lineTerminator ?? '\r')
+                      .replace(/\r/g, '\\r')
+                      .replace(/\n/g, '\\n')}
+                    onChange={(e) => {
+                      const lineTerminator = e.target.value
+                        .replace(/\\r/g, '\r')
+                        .replace(/\\n/g, '\n');
+                      setPrimaryScale((prev) =>
+                        prev ? patchScaleConnection(prev, { lineTerminator }) : prev,
+                      );
+                      setSaved(false);
+                    }}
+                    className={inputClass}
+                  />
+                </div>
+                {(primaryScale.connection?.transport ?? 'web_serial') === 'tcp' && (
+                  <>
+                    <div>
+                      <label className={labelClass}>TCP host</label>
+                      <input
+                        type="text"
+                        value={primaryScale.connection?.host ?? '127.0.0.1'}
+                        onChange={(e) => {
+                          setPrimaryScale((prev) =>
+                            prev ? patchScaleConnection(prev, { host: e.target.value }) : prev,
+                          );
+                          setSaved(false);
+                        }}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>TCP port</label>
+                      <input
+                        type="number"
+                        value={primaryScale.connection?.tcpPort ?? 9001}
+                        onChange={(e) => {
+                          const tcpPort = Number(e.target.value) || 9001;
+                          setPrimaryScale((prev) =>
+                            prev ? patchScaleConnection(prev, { tcpPort }) : prev,
+                          );
+                          setSaved(false);
+                        }}
+                        className={inputClass}
+                      />
+                    </div>
+                  </>
+                )}
+                {(primaryScale.connection?.transport ?? 'web_serial') === 'serial' && (
+                  <div className="sm:col-span-2">
+                    <label className={labelClass}>COM-порт (только локально / exe)</label>
+                    <input
+                      type="text"
+                      value={primaryScale.connection?.serialPath ?? ''}
+                      onChange={(e) => {
+                        setPrimaryScale((prev) =>
+                          prev ? patchScaleConnection(prev, { serialPath: e.target.value }) : prev,
+                        );
+                        setSaved(false);
+                      }}
+                      placeholder="COM3"
+                      className={inputClass}
+                    />
+                    <p className="mt-1 text-xs text-amber-700">
+                      Транспорт serial пока не реализован на сервере (ответ 501).
+                    </p>
+                  </div>
+                )}
+                {primaryScale.adapter_id === 'custom' && (
+                  <>
+                    <div className="sm:col-span-2">
+                      <label className={labelClass}>Regex разбора (группа weight)</label>
+                      <textarea
+                        value={primaryScale.connection?.parseRegex ?? ''}
+                        onChange={(e) => {
+                          setPrimaryScale((prev) =>
+                            prev ? patchScaleConnection(prev, { parseRegex: e.target.value }) : prev,
+                          );
+                          setSaved(false);
+                        }}
+                        rows={2}
+                        placeholder={'(?<stable>ST|US),(?<weight>-?\\d+(?:[.,]\\d+)?)\\s*(?<unit>kg)?'}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className={labelClass}>Маска (если regex пуст): # = цифра</label>
+                      <input
+                        type="text"
+                        value={primaryScale.connection?.parseMask ?? ''}
+                        onChange={(e) => {
+                          setPrimaryScale((prev) =>
+                            prev ? patchScaleConnection(prev, { parseMask: e.target.value }) : prev,
+                          );
+                          setSaved(false);
+                        }}
+                        placeholder="ST,######.#kg"
+                        className={inputClass}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {spareScale && spareEnabled && (
+            <div className="sm:col-span-2 space-y-3 rounded-xl border border-slate-100 bg-slate-50/80 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Подключение резервных весов
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className={labelClass}>Транспорт</label>
+                  <select
+                    value={spareScale.connection?.transport ?? 'web_serial'}
+                    onChange={(e) => {
+                      const transport = e.target.value as ScaleTransportKind;
+                      setSpareScale((prev) =>
+                        prev ? patchScaleConnection(prev, { transport }) : prev,
+                      );
+                      setSaved(false);
+                    }}
+                    className={inputClass}
+                  >
+                    {TRANSPORT_OPTIONS.map((t) => (
+                      <option key={t.id} value={t.id}>{t.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className={labelClass}>Скорость (baud)</label>
+                  <input
+                    type="number"
+                    value={spareScale.connection?.baudRate ?? 9600}
+                    onChange={(e) => {
+                      const baudRate = Number(e.target.value) || 9600;
+                      setSpareScale((prev) =>
+                        prev ? patchScaleConnection(prev, { baudRate }) : prev,
+                      );
+                      setSaved(false);
+                    }}
+                    className={inputClass}
+                  />
+                </div>
+                {(spareScale.connection?.transport ?? 'web_serial') === 'tcp' && (
+                  <>
+                    <div>
+                      <label className={labelClass}>TCP host</label>
+                      <input
+                        type="text"
+                        value={spareScale.connection?.host ?? '127.0.0.1'}
+                        onChange={(e) => {
+                          setSpareScale((prev) =>
+                            prev ? patchScaleConnection(prev, { host: e.target.value }) : prev,
+                          );
+                          setSaved(false);
+                        }}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelClass}>TCP port</label>
+                      <input
+                        type="number"
+                        value={spareScale.connection?.tcpPort ?? 9001}
+                        onChange={(e) => {
+                          const tcpPort = Number(e.target.value) || 9001;
+                          setSpareScale((prev) =>
+                            prev ? patchScaleConnection(prev, { tcpPort }) : prev,
+                          );
+                          setSaved(false);
+                        }}
+                        className={inputClass}
+                      />
+                    </div>
+                  </>
+                )}
+                {spareScale.adapter_id === 'custom' && (
+                  <>
+                    <div className="sm:col-span-2">
+                      <label className={labelClass}>Regex разбора (группа weight)</label>
+                      <textarea
+                        value={spareScale.connection?.parseRegex ?? ''}
+                        onChange={(e) => {
+                          setSpareScale((prev) =>
+                            prev ? patchScaleConnection(prev, { parseRegex: e.target.value }) : prev,
+                          );
+                          setSaved(false);
+                        }}
+                        rows={2}
+                        className={inputClass}
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className={labelClass}>Маска (если regex пуст)</label>
+                      <input
+                        type="text"
+                        value={spareScale.connection?.parseMask ?? ''}
+                        onChange={(e) => {
+                          setSpareScale((prev) =>
+                            prev ? patchScaleConnection(prev, { parseMask: e.target.value }) : prev,
+                          );
+                          setSaved(false);
+                        }}
+                        className={inputClass}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -778,6 +1133,27 @@ export function SettingsView({ onSaved }: Props) {
             </select>
           </div>
           <div>
+            <label className={labelClass}>Причина ручного ввода веса</label>
+            <select
+              value={settings.manual_weight_reason_mode}
+              onChange={(e) =>
+                updateField(
+                  'manual_weight_reason_mode',
+                  e.target.value as ManualWeightReasonMode,
+                )
+              }
+              className={inputClass}
+            >
+              {(Object.keys(MANUAL_WEIGHT_REASON_MODE_LABELS) as ManualWeightReasonMode[]).map(
+                (mode) => (
+                  <option key={mode} value={mode}>
+                    {MANUAL_WEIGHT_REASON_MODE_LABELS[mode]}
+                  </option>
+                ),
+              )}
+            </select>
+          </div>
+          <div>
             <label className={labelClass}>Модель весов активного комплекта</label>
             <select
               value={settings.scale_device_id}
@@ -810,7 +1186,7 @@ export function SettingsView({ onSaved }: Props) {
               }}
               className={inputClass}
             >
-              {SCALE_DEVICE_LIST.map((device) => (
+              {ADAPTER_LIST.map((device) => (
                 <option key={device.id} value={device.id}>
                   {device.name}
                 </option>
