@@ -202,11 +202,14 @@ export async function takeSnapshot(cameraId: string): Promise<string | null> {
   }
 }
 
-/** Whether settings UI for cameras should be interactive. */
+/**
+ * Whether settings UI for cameras should be shown.
+ * Always true: HTTP snapshot is always available, and hiding the block when
+ * capabilities fail made it impossible to add the first camera.
+ */
 export function shouldShowCameraSettings(
-  caps: CameraCapabilities | null,
-  hasSavedCameras: boolean,
+  _caps: CameraCapabilities | null,
+  _hasSavedCameras: boolean,
 ): boolean {
-  if (hasSavedCameras) return true;
-  return Boolean(caps?.capture_available);
+  return true;
 }

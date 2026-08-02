@@ -82,8 +82,8 @@ describe('cameras domain', () => {
     expect(url).toContain('path=Photo');
   });
 
-  it('shouldShowCameraSettings respects capabilities and saved cameras', () => {
-    expect(shouldShowCameraSettings(null, false)).toBe(false);
+  it('shouldShowCameraSettings always shows the settings block', () => {
+    expect(shouldShowCameraSettings(null, false)).toBe(true);
     expect(
       shouldShowCameraSettings(
         { success: true, capture_available: true, backends: [], video_enabled: false, photo_root: 'Photo' },
@@ -92,8 +92,8 @@ describe('cameras domain', () => {
     ).toBe(true);
     expect(
       shouldShowCameraSettings(
-        { success: true, capture_available: false, backends: [], video_enabled: false, photo_root: 'Photo' },
-        true,
+        { success: false, capture_available: false, backends: [], video_enabled: false, photo_root: 'Photo' },
+        false,
       ),
     ).toBe(true);
   });

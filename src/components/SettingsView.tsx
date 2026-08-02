@@ -1154,7 +1154,7 @@ export function SettingsView({ onSaved }: Props) {
         )}
       </div>
 
-      {(shouldShowCameraSettings(cameraCaps, cameras.length > 0) || cameras.length > 0) && (
+      {shouldShowCameraSettings(cameraCaps, cameras.length > 0) && (
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
           <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
             <CameraIcon size={18} className="text-blue-600" />
@@ -1164,6 +1164,9 @@ export function SettingsView({ onSaved }: Props) {
             До 4 камер на площадку. Снимки сохраняются в каталог Photo рядом с программой.
             {cameraCaps && !cameraCaps.opencv_available && (
               <> RTSP требует полной сборки с OpenCV; HTTP snapshot доступен всегда.</>
+            )}
+            {cameraCaps && cameraCaps.success === false && (
+              <> Не удалось связаться с API камер — проверьте, что запущен backend с модулем cameras.</>
             )}
           </p>
 
