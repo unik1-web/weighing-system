@@ -57,7 +57,7 @@ Description: |
 
 ## 20e99b-scale-adapters
 
-State: development
+State: done
 Description: |
   Источник: docs/tasks/05-scale-adapters.md
 
@@ -67,7 +67,6 @@ Description: |
   backend I/O (pyserial/TCP) и /api/scales/* для primary+spare и exe;
   ручной ввод с опциональной/обязательной причиной (manual_weight_reason).
 
-  Зависимости: этап 4 (активный комплект), этапы 1–2 (WeightSource).
-  Вне скоупа: камеры, ANPR, ротация, этап 9. Артефакты: docs/implementation/.
+  Завершено: 2026-08-02T01:53:04Z. Артефакты: docs/20e99b-scale-adapters/.
 
 ---
