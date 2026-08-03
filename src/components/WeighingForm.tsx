@@ -61,6 +61,7 @@ import {
 } from '@/lib/vehicle-resolve';
 import { triggerCaptureAfterSave } from '@/lib/cameras';
 import { TicketPhotoPreview } from '@/components/TicketPhotoPreview';
+import { WeighingCameraMonitor } from '@/components/WeighingCameraMonitor';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
 
 type AutofillTextField = 'vehicle_brand' | 'driver_name' | 'cargo_name' | 'shipper_name';
@@ -1566,6 +1567,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             window.setTimeout(() => setUnstableWarning(null), 4000);
           }}
         />
+        <WeighingCameraMonitor />
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="text-sm font-semibold text-slate-800 mb-3">Порядок работы</h3>
           <ol className="space-y-2 text-sm text-slate-600">
