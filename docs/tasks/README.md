@@ -10,8 +10,8 @@
 | Что | Значение |
 |-----|----------|
 | Последний **влитый** этап (base) | **01** — [PR #13](https://github.com/unik1-web/weighing-system/pull/13) (+ [PR #23](https://github.com/unik1-web/weighing-system/pull/23)) |
-| На этой ветке оркестратора | **09** выполнен: задача `abd91a-audit-reports-security` (см. [docs/abd91a-audit-reports-security/](../abd91a-audit-reports-security/)); ранее **08**…**02**; UI-фиксы камер/шапки по отдельным PR |
-| **Следующий прогон** | [10-photo-proveska-settings.md](10-photo-proveska-settings.md) |
+| На этой ветке оркестратора | **10** выполнен: задача `875cc5-photo-proveska-settings` (см. [docs/875cc5-photo-proveska-settings/](../875cc5-photo-proveska-settings/)); ранее **09**…**02**; UI-фиксы камер/шапки по отдельным PR |
+| **Следующий прогон** | Очередь roadmap **01–10** закрыта. Новых постановок в `docs/tasks/` нет — добавить файл этапа или взять follow-up вне очереди |
 | Не брать как базу | Открытые PR #15–#21 (старый CLI-стек 2–7, не влиты) |
 
 ## Очередь
@@ -27,7 +27,7 @@
 | 07 | [07-photo-capture.md](07-photo-capture.md) | 7. Фотофиксация | 04 (+05) | **Сделано на ветке** (`37cc69-photo-capture`) |
 | 08 | [08-anpr.md](08-anpr.md) | 8. ANPR | 07 + `anpr_mode` из 04 | **Сделано на ветке** (`cb0fb4-anpr`); порог релиза ≥ 50% |
 | 09 | [09-audit-reports-security.md](09-audit-reports-security.md) | 9. Аудит / отчёты / пароли | 01–08 по факту | **Сделано на ветке** (`abd91a-audit-reports-security`) |
-| 10 | [10-photo-proveska-settings.md](10-photo-proveska-settings.md) | 10. Фото / провеска / настройки | 07 (+ UI камер) | Постобработка UX: фото, термин «провеска», README, вкладки настроек |
+| 10 | [10-photo-proveska-settings.md](10-photo-proveska-settings.md) | 10. Фото / провеска / настройки | 07 (+ UI камер) | **Сделано на ветке** (`875cc5-photo-proveska-settings`) |
 
 ```text
 01 → 02 → 03 → 04 ──┐
@@ -40,15 +40,18 @@
 Этапы **04–05** — железо и протоколы.  
 Этапы **07–08** — полная сборка после камер и спайка ANPR.  
 Этап **09** — аудит, отчёты/фильтры, docs, серверные пароли.  
-Этап **10** — надёжность фото, термин «провеска», README по камерам, вкладки настроек.
+Этап **10** — надёжность фото, термин «провеска», README по камерам, вкладки настроек (**выполнен**).
 
 ## Как запускать следующий этап
 
-1. Дашборд (опционально): `npm run orchestrator:dashboard`
-2. В чате Cursor:
+Очередь **01–10** закрыта. Чтобы продолжить:
+
+1. Добавить новую постановку в `docs/tasks/` (или взять follow-up вне roadmap).
+2. Дашборд (опционально): `npm run orchestrator:dashboard`
+3. В чате Cursor:
 
 ```text
-/orchestrator создай задачу на доске по docs/tasks/10-photo-proveska-settings.md и начни выполнять
+/orchestrator создай задачу на доске по docs/tasks/<новый-файл>.md и начни выполнять
 ```
 
 Прогресс: `memory/TaskBoard.md`, `memory/TASK_MEMORY_*.yml`, UI на `http://127.0.0.1:5174`.
