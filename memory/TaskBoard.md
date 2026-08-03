@@ -138,7 +138,7 @@ Description: |
 
 ## 875cc5-photo-proveska-settings
 
-State: tech-writer
+State: done
 Description: |
   Источник: docs/tasks/10-photo-proveska-settings.md
 
@@ -147,5 +147,7 @@ Description: |
   в UI заменить «тикет» на «провеска»; README — настройка камер и кнопки;
   настройки разнести по вкладкам, открываемым по выбору.
   Зависимости: этап 7 (+ UI камер).
+
+  Завершено: 2026-08-03T07:38:57Z. Артефакты: docs/875cc5-photo-proveska-settings/.
 
 ---
