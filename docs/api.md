@@ -12,19 +12,31 @@
 | `POST` | `/api/shutdown` | Завершение процесса (для exe/локального запуска) |
 | `GET` | `/api/storage/paths` | Абсолютные пути к `config.ini`, БД и каталогам; также `active_year`, `backups_dir` |
 
+## Auth
+
+Пароли хранятся только на сервере (PBKDF2-HMAC-SHA256). Sync `app_users` **не** содержит `passwordHash`.
+
+| Метод | Путь | Тело | Ответ |
+|-------|------|------|-------|
+| `POST` | `/api/auth/login` | `{ username, password }` | `{ success, user, profile, must_change_password }` или 401 |
+| `POST` | `/api/auth/change-password` | `{ user_id, new_password, current_password? }` | `{ success, must_change_password: false }`; при `must_change_password=1` текущий пароль не обязателен; `new_password` ≥ 6 и ≠ `admin123` |
+| `POST` | `/api/auth/register` | `{ username, password, display_name }` | создаёт user+profile (первый — admin); hash на сервере |
+
+Дефолтный bootstrap: при пустой таблице `users` сервер создаёт `admin` / `admin123` с `must_change_password=1`. Legacy hash (`btoa`) при успешном login перехешируется в PBKDF2.
+
 ## Хранение
 
 | Метод | Путь | Тело / параметры | Описание |
 |-------|------|------------------|----------|
 | `GET` | `/api/config` | — | Настройки из `config.ini` → `{ config }` |
 | `POST` | `/api/config` | `{ "config": { ... } }` | Сохранить настройки (`active_year` через этот API не меняется) |
-| `GET` | `/api/database` | — | Данные **активного** года SQLite → `{ data }` (ключи `app_*`) |
-| `POST` | `/api/database` | `{ "data": { ... } }` | Сохранить активную БД |
+| `GET` | `/api/database` | — | Данные **активного** года SQLite → `{ data }` (ключи `app_*`); `app_users` без hash, с `mustChangePassword` |
+| `POST` | `/api/database` | `{ "data": { ... } }` | Сохранить активную БД (клиентский `passwordHash` игнорируется) |
 | `GET` | `/api/database/years` | — | `{ years, active_year }` — список `BD/weighing-ГГГГ.db` |
 | `GET` | `/api/database/rotate/preview` | — | `{ active_year, open_count, reo_pending_count, suggested_new_year }` |
 | `POST` | `/api/database/rotate` | `{ target_year, operator_id, operator_name, confirm_reo_pending? }` | Ротация года (admin); 409 если есть pending РЭО без confirm |
 | `GET` | `/api/database/archive/<year>` | — | Read-only снимок архивного (или активного) года |
-| `POST` | `/api/database/archive/<year>/ticket` | `{ ticket, operator_id, operator_name, confirm_reo_sent? }` | Admin-правка архивного тикета + revisions/audit |
+| `POST` | `/api/database/archive/<year>/ticket` | `{ ticket, operator_id, operator_name, confirm_reo_sent? }` | Admin-правка архивного тикета + revisions/audit; пустой diff — без `updated` и без bump version |
 
 Ключи режимов взвешивания в `config` (опциональны; клиент подставляет defaults): `weighing_mode_default`, `stable_mode`, `tara_threshold`, `max_time_between`, `tara_default`, `driver_input_mode` (`vehicle` | `all` | `free`, default `all`), `scale_device_id` (id модели весов, default `microsim-m0601`), `video_enabled` (`true`/`false`, default `false` — фотофиксация), `anpr_enabled` (`true`/`false`, default `false` — локальный ANPR; включать после спайка ≥ 50%), `active_year` (ГГГГ; меняется только ротацией).
 

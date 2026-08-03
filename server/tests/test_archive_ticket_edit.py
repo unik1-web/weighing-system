@@ -207,3 +207,28 @@ def test_archive_edit_forbidden_for_user(temp_app_root, api_client):
         },
     )
     assert response.status_code == 403
+
+
+def test_archive_edit_noop_skips_audit_and_version(temp_app_root, api_client):
+    _seed()
+    response = api_client.post(
+        '/api/database/archive/2025/ticket',
+        json={
+            'ticket': {
+                'id': 'arch-1',
+                'version': 1,
+                'notes': '',  # same as seeded
+                'driver_name': 'Иванов',
+            },
+            'operator_id': 'admin-1',
+            'operator_name': 'Админ',
+        },
+    )
+    assert response.status_code == 200, response.get_json()
+    body = response.get_json()
+    assert body['ticket']['version'] == 1
+    assert body['revisions'] == []
+
+    archive = api_client.get('/api/database/archive/2025').get_json()['data']
+    audit = json.loads(archive.get('app_ticket_audit') or '[]')
+    assert not any(e['action'] == 'updated' for e in audit)

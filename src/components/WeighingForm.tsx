@@ -23,9 +23,11 @@ import {
   SITE_RUNTIME_UPDATED_EVENT,
   ACTIVE_SCALE_SET_LABELS,
 } from '@/lib/site-runtime';
+import { fetchCapabilities } from '@/lib/cameras';
 import {
   canOfferAnpr,
   confidenceToPercent,
+  fetchAnprCapabilities,
   finalizePlateSource,
   recognizePlate,
   type AnprDecision,
@@ -244,6 +246,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       return ACTIVE_SCALE_SET_LABELS.primary;
     }
   });
+  const [siteAnprLabel, setSiteAnprLabel] = useState<string | null>(null);
+  const [siteCamerasLabel, setSiteCamerasLabel] = useState<string | null>(null);
 
   useEffect(() => {
     const syncFromRuntime = () => {
@@ -252,6 +256,30 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         setDeviceId(ctx.adapter_id);
         setActiveScaleLabel(ACTIVE_SCALE_SET_LABELS[ctx.runtime.active_scale_set]);
         setAppSettings(SettingsStorage.getAppSettings());
+
+        const settings = SettingsStorage.getAppSettings();
+        const anprMode = ctx.runtime.anpr_mode;
+        if (settings.anpr_enabled) {
+          const anprText =
+            anprMode === 'enabled'
+              ? 'включён'
+              : anprMode === 'disabled_by_configuration'
+                ? 'выкл. конфигурацией'
+                : anprMode === 'failed'
+                  ? 'ошибка'
+                  : 'недоступен';
+          setSiteAnprLabel(anprText);
+        } else {
+          setSiteAnprLabel(null);
+        }
+
+        if (settings.video_enabled) {
+          const cams = CamerasStorage.forSite(ctx.site_id).filter((c) => c.enabled);
+          if (cams.length === 0) setSiteCamerasLabel('нет камер');
+          else setSiteCamerasLabel('вкл.');
+        } else {
+          setSiteCamerasLabel(null);
+        }
       } catch {
         // migration may not be ready in tests without crypto
       }
@@ -260,6 +288,34 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     window.addEventListener(SITE_RUNTIME_UPDATED_EVENT, syncFromRuntime);
     return () => window.removeEventListener(SITE_RUNTIME_UPDATED_EVENT, syncFromRuntime);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (!appSettings.anpr_enabled && !appSettings.video_enabled) return;
+      try {
+        if (appSettings.anpr_enabled) {
+          const caps = await fetchAnprCapabilities();
+          if (cancelled) return;
+          if (!caps.success || !caps.anpr_available) {
+            setSiteAnprLabel((prev) => prev ?? 'недоступен');
+          }
+        }
+        if (appSettings.video_enabled) {
+          const caps = await fetchCapabilities();
+          if (cancelled) return;
+          if (!caps.success || !caps.video_enabled) {
+            setSiteCamerasLabel((prev) => (prev === 'вкл.' ? 'выкл.' : prev ?? 'выкл.'));
+          }
+        }
+      } catch {
+        // graceful
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [appSettings.anpr_enabled, appSettings.video_enabled, activeScaleLabel]);
 
   const resetFormFields = useCallback(() => {
     tareAutofillBlocked.current = false;
@@ -1056,6 +1112,16 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
                 Комплект: {activeScaleLabel}
               </span>
+              {siteAnprLabel != null && (
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                  ANPR: {siteAnprLabel}
+                </span>
+              )}
+              {siteCamerasLabel != null && (
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                  Камеры: {siteCamerasLabel}
+                </span>
+              )}
             </div>
           </div>
 

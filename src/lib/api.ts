@@ -46,7 +46,11 @@ export async function apiGet<T>(path: string, params?: Record<string, string>): 
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  logger.debug('api', `POST ${path}`, body);
+  const logBody =
+    path.startsWith('/api/auth/') && body && typeof body === 'object'
+      ? { ...(body as Record<string, unknown>), password: undefined, new_password: undefined, current_password: undefined }
+      : body;
+  logger.debug('api', `POST ${path}`, logBody);
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       method: 'POST',

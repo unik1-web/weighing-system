@@ -1,5 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage, softReadBool } from '@/lib/storage';
+import {
+  type WeighingTicket,
+  TicketStorage,
+  REO_STATUS_LABELS,
+  SettingsStorage,
+  softReadBool,
+  SitesStorage,
+  ScalesStorage,
+} from '@/lib/storage';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import {
   type WeightSource,
@@ -8,9 +16,20 @@ import {
   normalizeWeightSource,
   ticketMatchesWeightSources,
 } from '@/lib/weight-source';
+import {
+  ANPR_STATUS_LABELS,
+  DEFAULT_JOURNAL_FILTERS,
+  matchJournalFilters,
+  SCALE_ROLE_LABELS,
+  ticketHasPhotos,
+  WEIGHING_MODE_LABELS,
+  type JournalFilterState,
+} from '@/lib/journal-filters';
+import { ACTIVE_SCALE_SET_LABELS } from '@/lib/site-runtime';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
 import { TicketPhotoPreview } from '@/components/TicketPhotoPreview';
+import { TicketHistoryPanel } from '@/components/TicketHistoryPanel';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson, Eye, X } from 'lucide-react';
 
@@ -22,6 +41,35 @@ const LABEL_TO_SOURCE = Object.fromEntries(
 function sourceLabelForWeight(weight: number | null, source: unknown): string {
   if (weight == null) return '—';
   return WEIGHT_SOURCE_LABELS[normalizeWeightSource(source)];
+}
+
+function siteNameFor(ticket: WeighingTicket): string {
+  if (!ticket.site_id) return '—';
+  const site = SitesStorage.getAll().find((s) => s.id === ticket.site_id);
+  return site?.name || ticket.site_id;
+}
+
+function scaleNameFor(ticket: WeighingTicket): string {
+  if (!ticket.scale_id) return '—';
+  const scale = ScalesStorage.getAll().find((s) => s.id === ticket.scale_id);
+  return scale?.name || ticket.scale_id;
+}
+
+function scaleRoleLabel(ticket: WeighingTicket): string {
+  if (ticket.scale_role === 'primary' || ticket.scale_role === 'spare') {
+    return SCALE_ROLE_LABELS[ticket.scale_role] ?? ACTIVE_SCALE_SET_LABELS[ticket.scale_role];
+  }
+  return '—';
+}
+
+function anprLabel(ticket: WeighingTicket): string {
+  if (!ticket.anpr_status) return 'не задано';
+  return ANPR_STATUS_LABELS[ticket.anpr_status] ?? ticket.anpr_status;
+}
+
+function modeLabel(ticket: WeighingTicket): string {
+  const mode = ticket.weighing_mode ?? 'single';
+  return WEIGHING_MODE_LABELS[mode] ?? mode;
 }
 
 interface Props {
@@ -38,6 +86,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'completed'>('all');
   const [reoFilter, setReoFilter] = useState<'all' | 'pending' | 'sent'>('all');
   const [sourceFilter, setSourceFilter] = useState<WeightSource[]>([]);
+  const [extraFilters, setExtraFilters] = useState<JournalFilterState>(DEFAULT_JOURNAL_FILTERS);
   const [sendingBulk, setSendingBulk] = useState(false);
   const [viewTicket, setViewTicket] = useState<WeighingTicket | null>(null);
 
@@ -45,6 +94,9 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
     () => sourceFilter.map((source) => WEIGHT_SOURCE_LABELS[source]),
     [sourceFilter],
   );
+
+  const siteOptions = useMemo(() => SitesStorage.getAll(), [refreshKey, tickets.length]);
+  const scaleOptions = useMemo(() => ScalesStorage.getAll(), [refreshKey, tickets.length]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -76,6 +128,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
 
   const filtered = tickets.filter((t) => {
     if (!ticketMatchesWeightSources(t, sourceFilter)) return false;
+    if (!matchJournalFilters(t, extraFilters)) return false;
     if (!search) return true;
     const s = search.toLowerCase();
     return t.vehicle_number?.toLowerCase().includes(s) || t.driver_name?.toLowerCase().includes(s) || t.cargo_name?.toLowerCase().includes(s) || t.shipper_name?.toLowerCase().includes(s) || t.receiver_name?.toLowerCase().includes(s) || t.carrier_name?.toLowerCase().includes(s) || t.operator_name?.toLowerCase().includes(s) || String(t.ticket_number ?? '').includes(s);
@@ -141,10 +194,26 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   };
 
   const exportCSV = () => {
+    const extraHeaders = [
+      'Площадка',
+      'Роль весов',
+      'Весы',
+      'Есть фото',
+      'ANPR',
+      'Режим',
+    ];
     const headers = reoEnabled
-      ? ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Источник брутто', 'Источник тары', 'Устройство весов', 'Статус', 'РЭО', 'Дата отправки в РЭО']
-      : ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Источник брутто', 'Источник тары', 'Устройство весов', 'Статус'];
+      ? ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Источник брутто', 'Источник тары', 'Устройство весов', ...extraHeaders, 'Статус', 'РЭО', 'Дата отправки в РЭО']
+      : ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Источник брутто', 'Источник тары', 'Устройство весов', ...extraHeaders, 'Статус'];
     const rows = filtered.map((t) => {
+      const extra = [
+        siteNameFor(t),
+        scaleRoleLabel(t),
+        scaleNameFor(t),
+        ticketHasPhotos(t) ? 'да' : 'нет',
+        anprLabel(t),
+        modeLabel(t),
+      ];
       const base = [
         t.ticket_number,
         new Date(t.created_at).toLocaleString('ru-RU'),
@@ -163,6 +232,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
         sourceLabelForWeight(t.gross_weight, t.gross_source),
         sourceLabelForWeight(t.tare_weight, t.tare_source),
         t.scale_device || '',
+        ...extra,
         t.status === 'completed' ? 'Завершён' : 'Открыт',
       ];
       if (!reoEnabled) return base;
@@ -183,6 +253,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   };
 
   const tableColSpan = reoEnabled ? 13 : 12;
+  const selectClass =
+    'rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500';
 
   return (
     <div className="space-y-4">
@@ -211,6 +283,100 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
             emptyMessage="Нет источников"
           />
         </div>
+        <select
+          className={selectClass}
+          value={extraFilters.siteId}
+          onChange={(e) =>
+            setExtraFilters((f) => ({ ...f, siteId: e.target.value as JournalFilterState['siteId'] }))
+          }
+          title="Площадка"
+        >
+          <option value="all">Площадка: все</option>
+          <option value="unset">Площадка: не задано</option>
+          {siteOptions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.scaleRole}
+          onChange={(e) =>
+            setExtraFilters((f) => ({
+              ...f,
+              scaleRole: e.target.value as JournalFilterState['scaleRole'],
+            }))
+          }
+          title="Роль весов"
+        >
+          <option value="all">Весы: все</option>
+          <option value="primary">Основные</option>
+          <option value="spare">Резервные</option>
+          <option value="unset">Роль не задана</option>
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.scaleId}
+          onChange={(e) => setExtraFilters((f) => ({ ...f, scaleId: e.target.value }))}
+          title="Весы"
+        >
+          <option value="">Весы: все</option>
+          <option value="unset">Весы: не задано</option>
+          {scaleOptions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.photo}
+          onChange={(e) =>
+            setExtraFilters((f) => ({ ...f, photo: e.target.value as JournalFilterState['photo'] }))
+          }
+        >
+          <option value="all">Фото: все</option>
+          <option value="has">Есть фото</option>
+          <option value="none">Нет фото</option>
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.anprStatus}
+          onChange={(e) =>
+            setExtraFilters((f) => ({
+              ...f,
+              anprStatus: e.target.value as JournalFilterState['anprStatus'],
+            }))
+          }
+        >
+          <option value="all">ANPR: все</option>
+          <option value="unset">ANPR: не задано</option>
+          <option value="enabled">Включён</option>
+          <option value="disabled_by_configuration">Выкл. конфигурацией</option>
+          <option value="failed">Ошибка</option>
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.weighingMode}
+          onChange={(e) =>
+            setExtraFilters((f) => ({
+              ...f,
+              weighingMode: e.target.value as JournalFilterState['weighingMode'],
+            }))
+          }
+        >
+          <option value="all">Режим: все</option>
+          <option value="single">Одиночное</option>
+          <option value="dual">Двойное</option>
+        </select>
+        <input
+          type="text"
+          value={extraFilters.operator}
+          onChange={(e) => setExtraFilters((f) => ({ ...f, operator: e.target.value }))}
+          placeholder="Оператор"
+          className="w-[140px] rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+        />
         {reoEnabled && (
           <>
             <div className="flex rounded-lg border border-slate-300 overflow-hidden">
@@ -381,7 +547,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
           onClick={() => setViewTicket(null)}
         >
           <div
-            className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white shadow-xl"
+            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
@@ -443,6 +609,28 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                   <div className="font-medium">{viewTicket.scale_device || '—'}</div>
                 </div>
                 <div>
+                  <div className="text-xs text-slate-500">Площадка</div>
+                  <div className="font-medium">{siteNameFor(viewTicket)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Весы / роль</div>
+                  <div className="font-medium">
+                    {scaleNameFor(viewTicket)} / {scaleRoleLabel(viewTicket)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Фото</div>
+                  <div className="font-medium">{ticketHasPhotos(viewTicket) ? 'есть' : 'нет'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">ANPR</div>
+                  <div className="font-medium">{anprLabel(viewTicket)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Режим</div>
+                  <div className="font-medium">{modeLabel(viewTicket)}</div>
+                </div>
+                <div>
                   <div className="text-xs text-slate-500">Оператор</div>
                   <div className="font-medium">{viewTicket.operator_name || '—'}</div>
                 </div>
@@ -467,6 +655,9 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                 )}
                 <div className="col-span-2">
                   <TicketPhotoPreview ticket={viewTicket} />
+                </div>
+                <div className="col-span-2">
+                  <TicketHistoryPanel ticketId={viewTicket.id} />
                 </div>
               </div>
             </div>
