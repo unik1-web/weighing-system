@@ -105,9 +105,8 @@ function MainApp() {
     { id: 'settings', label: 'Настройки', icon: Settings },
   ];
 
-  // Settings "compact" always icon-only; otherwise labels appear from lg up.
-  // Below lg the header auto-collapses: brand → truck icon, tabs → icons, user → icon.
-  const settingsCompactTabs = appSettings.nav_tab_mode === 'compact';
+  // Auto icon mode below xl; labels from xl up. No settings override.
+  // Nav scrolls from the start (weighing) — avoid justify-center clipping the first tabs.
   const brandTitle = 'Автомобильные весы';
   const brandSubtitle =
     appSettings.org_name && appSettings.org_name !== 'Полигон отходов'
@@ -118,65 +117,66 @@ function MainApp() {
     <div className="min-h-screen bg-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
         <div className="mx-auto max-w-7xl px-3 sm:px-6">
-          <div className="flex h-14 items-center gap-2 sm:h-16 sm:gap-3 lg:gap-4">
+          <div className="flex h-14 items-center gap-2 sm:h-16 sm:gap-3 xl:gap-4">
             <div
-              className="flex shrink-0 items-center gap-2 lg:gap-3"
+              className="flex shrink-0 items-center gap-2 xl:gap-3"
               title={`${brandTitle} — ${brandSubtitle}`}
             >
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-sm sm:h-10 sm:w-10">
-                <Truck size={20} className="sm:hidden" aria-hidden />
-                <Truck size={22} className="hidden sm:block" aria-hidden />
+                <Truck size={22} aria-hidden />
               </div>
-              <div className="hidden min-w-0 lg:block">
+              <div className="hidden min-w-0 max-w-[14rem] xl:block">
                 <h1 className="text-base font-bold leading-tight text-slate-800">{brandTitle}</h1>
                 <p className="truncate text-xs text-slate-500">{brandSubtitle}</p>
               </div>
             </div>
 
             <nav
-              className="flex min-w-0 flex-1 justify-center gap-0.5 overflow-x-auto rounded-xl bg-slate-100 p-1 sm:gap-1"
+              className="min-w-0 flex-1 overflow-x-auto rounded-xl bg-slate-100 p-1"
               aria-label="Разделы"
             >
-              {tabs.map((t) => {
-                const Icon = t.icon;
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    title={t.label}
-                    aria-label={t.label}
-                    aria-current={tab === t.id ? 'page' : undefined}
-                    onClick={() => setTab(t.id)}
-                    className={`flex shrink-0 items-center rounded-lg py-2 text-sm font-semibold transition whitespace-nowrap ${
-                      settingsCompactTabs
-                        ? 'justify-center gap-0 px-2.5'
-                        : 'justify-center gap-0 px-2.5 lg:gap-2 lg:px-3 xl:px-4'
-                    } ${tab === t.id ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
-                  >
-                    <Icon size={16} aria-hidden />
-                    {!settingsCompactTabs && (
-                      <span className="hidden lg:inline">{t.label}</span>
-                    )}
-                  </button>
-                );
-              })}
+              <div className="flex w-max min-w-full justify-start gap-0.5 sm:gap-1">
+                {tabs.map((t) => {
+                  const Icon = t.icon;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      title={t.label}
+                      aria-label={t.label}
+                      aria-current={tab === t.id ? 'page' : undefined}
+                      onClick={() => setTab(t.id)}
+                      className={`flex shrink-0 items-center justify-center gap-0 rounded-lg px-2.5 py-2 text-sm font-semibold transition whitespace-nowrap xl:gap-2 xl:px-3 ${
+                        tab === t.id
+                          ? 'bg-white text-blue-700 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-800'
+                      }`}
+                    >
+                      <Icon size={16} aria-hidden />
+                      <span className="hidden xl:inline">{t.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </nav>
 
             <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
               <div
-                className="flex items-center gap-2 rounded-lg bg-slate-100 p-2 lg:px-3 lg:py-1.5"
+                className="flex items-center gap-2 rounded-lg bg-slate-100 p-2 xl:px-3 xl:py-1.5"
                 title={displayName}
                 aria-label={displayName}
               >
                 <User size={15} className="text-slate-500" aria-hidden />
-                <span className="hidden text-sm font-medium text-slate-700 lg:inline">{displayName}</span>
+                <span className="hidden max-w-[8rem] truncate text-sm font-medium text-slate-700 xl:inline">
+                  {displayName}
+                </span>
                 {isAdmin && (
                   <span
-                    className="flex items-center gap-0.5 rounded-full bg-blue-600 p-1 text-[10px] font-bold text-white lg:px-1.5 lg:py-0.5"
+                    className="flex items-center gap-0.5 rounded-full bg-blue-600 p-1 text-[10px] font-bold text-white xl:px-1.5 xl:py-0.5"
                     title="Администратор"
                   >
                     <ShieldCheck size={10} aria-hidden />
-                    <span className="hidden lg:inline">АДМ</span>
+                    <span className="hidden xl:inline">АДМ</span>
                   </span>
                 )}
               </div>
