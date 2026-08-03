@@ -115,7 +115,7 @@ export function ArchiveView() {
       let confirmReo = false;
       if (editTicket.reo_status === 'sent') {
         confirmReo = window.confirm(
-          'Тикет уже отправлен в РЭО. Сохранить изменения?',
+          'Провеска уже отправлена в РЭО. Сохранить изменения?',
         );
         if (!confirmReo) {
           setSaving(false);
@@ -141,7 +141,7 @@ export function ArchiveView() {
     } catch (err: unknown) {
       const e = err as Error & { error?: string };
       if (e.error === 'reo_sent_confirm_required') {
-        setError('Требуется подтверждение изменения отправленного в РЭО тикета');
+        setError('Требуется подтверждение изменения отправленной в РЭО провески');
       } else {
         setError(e.message || 'Не удалось сохранить');
       }
@@ -194,7 +194,7 @@ export function ArchiveView() {
       </div>
 
       <p className="text-xs text-slate-500">
-        Просмотр и печать архивных тикетов.
+        Просмотр и печать архивных провесок.
         {isAdmin ? ' Администратор может править записи с записью аудита.' : ' Изменение данных недоступно.'}
       </p>
 
@@ -298,7 +298,7 @@ export function ArchiveView() {
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
               <h3 className="text-sm font-semibold text-slate-800">
-                Архив · тикет №{viewTicket.ticket_number ?? '—'}
+                Архив · провеска №{viewTicket.ticket_number ?? '—'}
               </h3>
               <button type="button" onClick={() => setViewTicket(null)} className="rounded p-1 text-slate-400 hover:bg-slate-100">
                 <X size={16} />
@@ -387,7 +387,7 @@ export function ArchiveView() {
               </label>
               {editTicket.reo_status === 'sent' && (
                 <p className="text-xs text-amber-700">
-                  Тикет отправлен в РЭО — при сохранении потребуется подтверждение.
+                  Провеска отправлена в РЭО — при сохранении потребуется подтверждение.
                 </p>
               )}
             </div>

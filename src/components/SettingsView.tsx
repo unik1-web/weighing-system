@@ -55,7 +55,7 @@ import {
   isSpareEnabled,
 } from '@/lib/site-runtime';
 import { SpareSwitchWizard } from '@/components/SpareSwitchWizard';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, Server, ArrowLeftRight, CalendarRange, Camera as CameraIcon } from 'lucide-react';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, Server, ArrowLeftRight, CalendarRange, Camera as CameraIcon, Link2 } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
 import { useAuth } from '@/hooks/useAuth';
@@ -84,6 +84,32 @@ const TRANSPORT_OPTIONS: { id: ScaleTransportKind; label: string }[] = [
   { id: 'serial', label: 'Serial COM (сервер, задел)' },
 ];
 
+const SETTINGS_TAB_IDS = ['org', 'site', 'cameras', 'weighing', 'integrations', 'data'] as const;
+type SettingsTabId = (typeof SETTINGS_TAB_IDS)[number];
+const SETTINGS_TAB_STORAGE_KEY = 'app_settings_tab';
+
+const SETTINGS_TABS: { id: SettingsTabId; label: string; Icon: typeof Building2 }[] = [
+  { id: 'org', label: 'Организация и печать', Icon: Building2 },
+  { id: 'site', label: 'Площадка и весы', Icon: ArrowLeftRight },
+  { id: 'cameras', label: 'Камеры и фото', Icon: CameraIcon },
+  { id: 'weighing', label: 'Режимы взвешивания', Icon: ScaleIcon },
+  { id: 'integrations', label: 'Интеграции', Icon: Link2 },
+  { id: 'data', label: 'Год и данные', Icon: Database },
+];
+
+function readSettingsTab(): SettingsTabId {
+  try {
+    const raw = sessionStorage.getItem(SETTINGS_TAB_STORAGE_KEY);
+    if (raw && (SETTINGS_TAB_IDS as readonly string[]).includes(raw)) {
+      return raw as SettingsTabId;
+    }
+  } catch {
+    // ignore
+  }
+  return 'org';
+}
+
+
 function patchScaleConnection(
   scale: Scale,
   patch: Partial<ScaleConnectionProfile>,
@@ -105,6 +131,7 @@ interface Props {
 export function SettingsView({ onSaved }: Props) {
   const { isAdmin, session, displayName } = useAuth();
   const [settings, setSettings] = useState<AppSettings>(() => SettingsStorage.getAppSettings());
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId>(() => readSettingsTab());
   const [cargoOptions, setCargoOptions] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
   const [rotatePreview, setRotatePreview] = useState<RotatePreview | null>(null);
@@ -202,13 +229,13 @@ export function SettingsView({ onSaved }: Props) {
     let confirmReo = true;
     if (rotatePreview.reo_pending_count > 0) {
       confirmReo = window.confirm(
-        `Есть ${rotatePreview.reo_pending_count} тикетов с ожидающей отправкой в РЭО. Продолжить ротацию?`,
+        `Есть ${rotatePreview.reo_pending_count} провесок с ожидающей отправкой в РЭО. Продолжить ротацию?`,
       );
       if (!confirmReo) return;
     }
     if (
       !window.confirm(
-        `Закрыть год ${rotatePreview.active_year} и открыть ${target}? Открытые тикеты будут автозакрыты, журнал останется в архиве.`,
+        `Закрыть год ${rotatePreview.active_year} и открыть ${target}? Открытые провески будут автозакрыты, журнал останется в архиве.`,
       )
     ) {
       return;
@@ -240,7 +267,7 @@ export function SettingsView({ onSaved }: Props) {
       if (e.error === 'reo_pending_confirm_required') {
         setRotateMessage({
           type: 'error',
-          text: 'Подтвердите ротацию при наличии тикетов, ожидающих РЭО',
+          text: 'Подтвердите ротацию при наличии провесок, ожидающих РЭО',
         });
       } else {
         setRotateMessage({ type: 'error', text: e.message || 'Не удалось выполнить ротацию' });
@@ -599,6 +626,15 @@ export function SettingsView({ onSaved }: Props) {
     'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition';
   const labelClass = 'block text-xs font-medium text-slate-600 mb-1';
 
+  const selectSettingsTab = (id: SettingsTabId) => {
+    setSettingsTab(id);
+    try {
+      sessionStorage.setItem(SETTINGS_TAB_STORAGE_KEY, id);
+    } catch {
+      // ignore
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-2xl">
       <div className="flex items-center gap-2">
@@ -606,13 +642,41 @@ export function SettingsView({ onSaved }: Props) {
         <h2 className="text-lg font-bold text-slate-800">Настройки</h2>
       </div>
 
+      <div
+        role="tablist"
+        aria-label="Разделы настроек"
+        className="flex gap-1 overflow-x-auto pb-1 -mx-1 px-1"
+      >
+        {SETTINGS_TABS.map(({ id, label, Icon }) => {
+          const selected = settingsTab === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              onClick={() => selectSettingsTab(id)}
+              className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition ${
+                selected
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              <Icon size={14} />
+              <span className="whitespace-nowrap">{label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {settingsTab === 'org' && (
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <Building2 size={18} className="text-blue-600" />
           <h3 className="text-sm font-semibold text-slate-800">Реквизиты организации</h3>
         </div>
         <p className="text-xs text-slate-500">
-          Используются в шапке талона (макет «Квитанция») и в актах взвешивания.
+          Используются в шапке печатного талона (макет «Квитанция») и в актах взвешивания.
         </p>
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -685,6 +749,8 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
+      )}
+      {settingsTab === 'site' && (
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <ArrowLeftRight size={18} className="text-blue-600" />
@@ -1171,7 +1237,8 @@ export function SettingsView({ onSaved }: Props) {
         )}
       </div>
 
-      {shouldShowCameraSettings(cameraCaps, cameras.length > 0) && (
+      )}
+      {settingsTab === 'cameras' && shouldShowCameraSettings(cameraCaps, cameras.length > 0) && (
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
           <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
             <CameraIcon size={18} className="text-blue-600" />
@@ -1454,6 +1521,7 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       )}
 
+      {settingsTab === 'weighing' && (
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <ScaleIcon size={18} className="text-blue-600" />
@@ -1603,6 +1671,8 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
+      )}
+      {settingsTab === 'org' && (
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <Printer size={18} className="text-blue-600" />
@@ -1642,6 +1712,9 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
+      )}
+      {settingsTab === 'integrations' && (
+        <>
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <Radio size={18} className="text-indigo-600" />
@@ -1958,18 +2031,22 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
+        </>
+      )}
+      {settingsTab === 'data' && (
+        <>
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <CalendarRange size={18} className="text-slate-600" />
           <h3 className="text-sm font-semibold text-slate-800">Год и архив</h3>
         </div>
         <p className="text-xs text-slate-500">
-          Рабочие данные хранятся в годовом файле <code>BD/weighing-ГГГГ.db</code>. Смена года — операция администратора: автозакрытие открытых тикетов, бэкап и перенос справочников.
+          Рабочие данные хранятся в годовом файле <code>BD/weighing-ГГГГ.db</code>. Смена года — операция администратора: автозакрытие открытых провесок, бэкап и перенос справочников.
         </p>
         {rotatePreview && (
           <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 space-y-1">
             <div><span className="font-medium">Активный год:</span> {rotatePreview.active_year}</div>
-            <div><span className="font-medium">Открытых тикетов:</span> {rotatePreview.open_count}</div>
+            <div><span className="font-medium">Открытых провесок:</span> {rotatePreview.open_count}</div>
             <div><span className="font-medium">Ожидают РЭО:</span> {rotatePreview.reo_pending_count}</div>
             {rotatePreview.active_year < new Date().getFullYear() && (
               <div className="text-amber-700 font-medium">
@@ -2085,6 +2162,8 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
+        </>
+      )}
       <PathBrowserModal
         open={pathPicker === 'vescom'}
         mode="file"
