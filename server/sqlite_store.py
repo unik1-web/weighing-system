@@ -235,6 +235,82 @@ def _migrate_legacy_camera_urls(connection: sqlite3.Connection) -> None:
             )
 
 
+def _ticket_photo_values(photo: dict[str, Any]) -> dict[str, Any]:
+    """Canonical + legacy aliases for ticket_photos INSERT (event/file_path/captured_at)."""
+    phase = str(photo.get('phase') or photo.get('event') or '')
+    relative = photo.get('relative_path')
+    if relative is None:
+        relative = photo.get('file_path')
+    created = str(photo.get('created_at') or photo.get('captured_at') or '')
+    error_message = photo.get('error_message')
+    if error_message is None:
+        error_message = photo.get('error_code')
+    return {
+        'id': str(photo.get('id', '')),
+        'ticket_id': str(photo.get('ticket_id', '')),
+        'phase': phase,
+        'event': phase,  # legacy stage-7 column name
+        'camera_id': photo.get('camera_id'),
+        'camera_role': str(photo.get('camera_role', '')),
+        'relative_path': relative,
+        'file_path': relative,  # legacy
+        'status': str(photo.get('status', 'skipped')),
+        'error_message': error_message,
+        'error_code': str(error_message or ''),
+        'camera_mode': str(photo.get('camera_mode', 'normal')),
+        'created_at': created,
+        'captured_at': created,  # legacy
+    }
+
+
+def write_ticket_photo_row(connection: sqlite3.Connection, photo: dict[str, Any]) -> None:
+    """Insert one ticket_photos row, filling legacy NOT NULL columns when present."""
+    _insert_compat(connection, 'ticket_photos', _ticket_photo_values(photo))
+
+
+def _migrate_legacy_ticket_photo_columns(connection: sqlite3.Connection) -> None:
+    """Backfill modern columns from legacy event/file_path/captured_at when empty."""
+    cols = _table_column_names(connection, 'ticket_photos')
+    if not cols:
+        return
+    if 'phase' in cols and 'event' in cols:
+        connection.execute(
+            '''
+            UPDATE ticket_photos
+            SET phase = event
+            WHERE (phase IS NULL OR phase = '')
+              AND event IS NOT NULL AND event != ''
+            '''
+        )
+    if 'relative_path' in cols and 'file_path' in cols:
+        connection.execute(
+            '''
+            UPDATE ticket_photos
+            SET relative_path = file_path
+            WHERE (relative_path IS NULL OR relative_path = '')
+              AND file_path IS NOT NULL AND file_path != ''
+            '''
+        )
+    if 'created_at' in cols and 'captured_at' in cols:
+        connection.execute(
+            '''
+            UPDATE ticket_photos
+            SET created_at = captured_at
+            WHERE (created_at IS NULL OR created_at = '')
+              AND captured_at IS NOT NULL AND captured_at != ''
+            '''
+        )
+    if 'error_message' in cols and 'error_code' in cols:
+        connection.execute(
+            '''
+            UPDATE ticket_photos
+            SET error_message = error_code
+            WHERE (error_message IS NULL OR error_message = '')
+              AND error_code IS NOT NULL AND error_code != ''
+            '''
+        )
+
+
 def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     """Ensure weighing_tickets columns, ticket_audit, revisions, vehicle_drivers, sites/scales."""
     connection.execute(
@@ -537,6 +613,7 @@ def _ensure_camera_tables(connection: sqlite3.Connection) -> None:
             'created_at': "TEXT NOT NULL DEFAULT ''",
         },
     )
+    _migrate_legacy_ticket_photo_columns(connection)
     connection.execute(
         '''
         CREATE INDEX IF NOT EXISTS idx_ticket_photos_ticket
@@ -1100,11 +1177,61 @@ def _load_cameras(connection: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def _load_ticket_photos(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    cols = _table_column_names(connection, 'ticket_photos')
+    if not cols:
+        return []
+    order_col = 'created_at' if 'created_at' in cols else (
+        'captured_at' if 'captured_at' in cols else 'rowid'
+    )
+    select_cols = [c for c in TICKET_PHOTO_COLUMNS if c in cols]
+    # Pull legacy aliases when modern columns are absent.
+    for legacy, modern in (
+        ('event', 'phase'),
+        ('file_path', 'relative_path'),
+        ('captured_at', 'created_at'),
+        ('error_code', 'error_message'),
+    ):
+        if modern not in select_cols and legacy in cols:
+            select_cols.append(legacy)
+    # Always include legacy aliases when present so we can backfill empty modern cols.
+    for legacy in ('event', 'file_path', 'captured_at', 'error_code'):
+        if legacy in cols and legacy not in select_cols:
+            select_cols.append(legacy)
+    if not select_cols:
+        return []
     rows = connection.execute(
-        f'SELECT {", ".join(TICKET_PHOTO_COLUMNS)} FROM ticket_photos'
-        ' ORDER BY created_at ASC'
+        f'SELECT {", ".join(select_cols)} FROM ticket_photos ORDER BY {order_col} ASC'
     ).fetchall()
-    return [{column: row[column] for column in TICKET_PHOTO_COLUMNS} for row in rows]
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        keys = set(row.keys())
+
+        def _get(*names: str) -> Any:
+            for name in names:
+                if name in keys:
+                    value = row[name]
+                    if value is not None and value != '':
+                        return value
+            for name in names:
+                if name in keys:
+                    return row[name]
+            return None
+
+        result.append(
+            {
+                'id': str(_get('id') or ''),
+                'ticket_id': str(_get('ticket_id') or ''),
+                'phase': str(_get('phase', 'event') or ''),
+                'camera_id': _get('camera_id'),
+                'camera_role': str(_get('camera_role') or ''),
+                'relative_path': _get('relative_path', 'file_path'),
+                'status': str(_get('status') or 'skipped'),
+                'error_message': _get('error_message', 'error_code'),
+                'camera_mode': str(_get('camera_mode') or 'normal'),
+                'created_at': str(_get('created_at', 'captured_at') or ''),
+            }
+        )
+    return result
 
 
 def _load_dictionary(connection: sqlite3.Connection, category: str) -> list[dict[str, Any]]:
@@ -1605,24 +1732,7 @@ def _replace_ticket_photos(connection: sqlite3.Connection, photos: list[Any]) ->
     for photo in photos:
         if not isinstance(photo, dict):
             continue
-        connection.execute(
-            f'''
-            INSERT INTO ticket_photos ({", ".join(TICKET_PHOTO_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(TICKET_PHOTO_COLUMNS))})
-            ''',
-            (
-                str(photo.get('id', '')),
-                str(photo.get('ticket_id', '')),
-                str(photo.get('phase', '')),
-                photo.get('camera_id'),
-                str(photo.get('camera_role', '')),
-                photo.get('relative_path'),
-                str(photo.get('status', 'skipped')),
-                photo.get('error_message'),
-                str(photo.get('camera_mode', 'normal')),
-                str(photo.get('created_at', '')),
-            ),
-        )
+        write_ticket_photo_row(connection, photo)
 
 
 def _replace_dictionary(connection: sqlite3.Connection, category: str, items: list[Any]) -> None:
