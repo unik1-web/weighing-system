@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera as CameraIcon, Loader2, RefreshCw } from 'lucide-react';
 import {
   CAMERA_ROLE_LABELS,
+  CAPTURE_PAUSE_EVENT,
+  CAPTURE_RESUME_EVENT,
   fetchCapabilities,
   photoUrl,
   takeSnapshot,
@@ -72,11 +74,19 @@ export function WeighingCameraMonitor({ className = '' }: { className?: string }
     void fetchCapabilities().then(setCaps);
     const onSite = () => refreshList();
     const onVis = () => setPaused(document.visibilityState === 'hidden');
+    const onCapturePause = () => setPaused(true);
+    const onCaptureResume = () => {
+      if (document.visibilityState !== 'hidden') setPaused(false);
+    };
     window.addEventListener(SITE_RUNTIME_UPDATED_EVENT, onSite);
     document.addEventListener('visibilitychange', onVis);
+    window.addEventListener(CAPTURE_PAUSE_EVENT, onCapturePause);
+    window.addEventListener(CAPTURE_RESUME_EVENT, onCaptureResume);
     return () => {
       window.removeEventListener(SITE_RUNTIME_UPDATED_EVENT, onSite);
       document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener(CAPTURE_PAUSE_EVENT, onCapturePause);
+      window.removeEventListener(CAPTURE_RESUME_EVENT, onCaptureResume);
     };
   }, [refreshList]);
 

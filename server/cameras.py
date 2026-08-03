@@ -25,10 +25,12 @@ logger = logging.getLogger('cameras')
 PHOTO_SUBDIR = 'Photo'
 JPEG_QUALITY = 85
 MAX_WIDTH = 1920
-CONNECT_TIMEOUT = 1.0
-READ_TIMEOUT = 3.0
-PER_CAMERA_TIMEOUT = 3.0
-CAPTURE_WALL_CLOCK = 6.0
+CONNECT_TIMEOUT = 2.0
+READ_TIMEOUT = 5.0
+PER_CAMERA_TIMEOUT = 5.0
+# Live monitor snapshots (~2–4 s each) often overlap ticket capture; keep headroom
+# for two slow HTTP cameras under contention.
+CAPTURE_WALL_CLOCK = 15.0
 MAX_WORKERS = 4
 
 CAMERA_ROLES = ('entry', 'exit', 'overview')
