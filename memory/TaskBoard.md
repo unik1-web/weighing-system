@@ -121,7 +121,7 @@ Description: |
 
 ## abd91a-audit-reports-security
 
-State: code-review
+State: tech-writer
 Description: |
   Источник: docs/tasks/09-audit-reports-security.md
 
