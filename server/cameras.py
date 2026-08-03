@@ -17,6 +17,7 @@ from sqlite_store import (
     connect,
     get_app_root,
     init_schema,
+    write_ticket_photo_row,
 )
 
 logger = logging.getLogger('cameras')
@@ -312,26 +313,7 @@ def _write_photo_row(
     connection: Any,
     photo: dict[str, Any],
 ) -> None:
-    connection.execute(
-        '''
-        INSERT INTO ticket_photos (
-            id, ticket_id, phase, camera_id, camera_role, relative_path,
-            status, error_message, camera_mode, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''',
-        (
-            photo['id'],
-            photo['ticket_id'],
-            photo['phase'],
-            photo.get('camera_id'),
-            photo['camera_role'],
-            photo.get('relative_path'),
-            photo['status'],
-            photo.get('error_message'),
-            photo['camera_mode'],
-            photo['created_at'],
-        ),
-    )
+    write_ticket_photo_row(connection, photo)
 
 
 def _update_ticket_stubs(connection: Any, ticket_id: str, photos: list[dict[str, Any]]) -> dict[str, str | None]:
