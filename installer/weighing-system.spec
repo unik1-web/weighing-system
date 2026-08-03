@@ -31,6 +31,8 @@ hiddenimports = [
     'anpr',
     'browse',
     'cameras',
+    'camera_discover',
+    'camera_templates',
     'config_ini',
     'dictionary_import',
     'metra',

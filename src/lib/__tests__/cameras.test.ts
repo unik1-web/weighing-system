@@ -9,6 +9,7 @@ import {
   CAMERA_ROLE_LABELS,
   createCameraDraft,
   enforceMaxCameras,
+  maskCameraUrl,
   photoUrl,
   shouldShowCameraSettings,
   triggerCaptureAfterSave,
@@ -131,6 +132,29 @@ describe('cameras domain', () => {
     expect(cam.role).toBe('entry');
     expect(cam.name).toBe(CAMERA_ROLE_LABELS.entry);
     expect(cam.roi).toBeNull();
+  });
+
+  it('maskCameraUrl hides password in userinfo', () => {
+    expect(maskCameraUrl('http://admin:secret@192.168.1.1/snap.jpg')).toBe(
+      'http://admin:***@192.168.1.1/snap.jpg',
+    );
+    expect(maskCameraUrl('rtsp://u:p@10.0.0.2:554/stream1')).toBe(
+      'rtsp://u:***@10.0.0.2:554/stream1',
+    );
+    expect(maskCameraUrl('http://192.168.1.1/snap.jpg')).toBe('http://192.168.1.1/snap.jpg');
+  });
+
+  it('apply-style patch updates capture_url and kind on draft', () => {
+    const cam = createCameraDraft('site-1', 'overview');
+    const patched: Camera = {
+      ...cam,
+      capture_url: 'http://admin:x@192.168.1.64/ISAPI/Streaming/channels/101/picture',
+      capture_kind: 'http_snapshot',
+    };
+    upsertCamera(patched);
+    const stored = CamerasStorage.forSite('site-1').find((c) => c.id === cam.id);
+    expect(stored?.capture_url).toContain('ISAPI');
+    expect(stored?.capture_kind).toBe('http_snapshot');
   });
 
   it('triggerCaptureAfterSave skips when video disabled', async () => {
