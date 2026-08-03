@@ -552,7 +552,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
               <h3 className="text-sm font-semibold text-slate-800">
-                Просмотр тикета №{viewTicket.ticket_number ?? '—'}
+                Просмотр провески №{viewTicket.ticket_number ?? '—'}
               </h3>
               <button
                 type="button"

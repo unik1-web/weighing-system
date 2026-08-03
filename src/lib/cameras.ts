@@ -4,6 +4,7 @@
 import { apiGet, apiPost } from './api';
 import {
   CamerasStorage,
+  SettingsStorage,
   TicketPhotosStorage,
   TicketStorage,
   type Camera,
@@ -12,6 +13,11 @@ import {
   type PhotoPhase,
   type TicketPhoto,
 } from './storage';
+import {
+  flushDatabaseSync,
+  pauseDatabaseSync,
+  resumeDatabaseSync,
+} from './storage-sync';
 import { logger } from './logger';
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
@@ -142,24 +148,58 @@ export async function captureForTicket(
   }
 }
 
-/** Fire-and-forget capture after successful ticket save; never throws. */
+/**
+ * Capture after successful ticket save; never throws.
+ * Flushes the ticket to SQLite before POST /api/cameras/capture (FK ticket_photos).
+ * Callers may fire-and-forget (`void …then`) — awaits happen inside.
+ */
 export async function triggerCaptureAfterSave(
   ticketId: string,
   phases: PhotoPhase[],
   siteId?: string | null,
 ): Promise<{ ok: boolean; message?: string }> {
+  if (!SettingsStorage.getAppSettings().video_enabled) {
+    return { ok: true };
+  }
+  const enabledCameras = siteId
+    ? CamerasStorage.forSite(siteId).filter((c) => c.enabled)
+    : CamerasStorage.getAll().filter((c) => c.enabled);
+  if (enabledCameras.length === 0) {
+    return { ok: true };
+  }
+
   let anyOk = false;
   let anyFail = false;
-  for (const phase of phases) {
-    const result = await captureForTicket(ticketId, phase, siteId);
-    if (result == null) {
-      anyFail = true;
-    } else {
-      anyOk = true;
-      const failed = result.photos.some((p) => p.status === 'failed');
-      if (failed) anyFail = true;
+
+  pauseDatabaseSync();
+  try {
+    try {
+      await flushDatabaseSync();
+    } catch (err) {
+      logger.warn('cameras', `flush before capture failed ticket=${ticketId}`, err);
+      return { ok: false, message: 'Фото недоступно' };
     }
+
+    for (const phase of phases) {
+      const result = await captureForTicket(ticketId, phase, siteId);
+      if (result == null) {
+        anyFail = true;
+      } else {
+        anyOk = true;
+        const failed = result.photos.some((p) => p.status === 'failed');
+        if (failed) anyFail = true;
+      }
+    }
+  } finally {
+    resumeDatabaseSync();
   }
+
+  try {
+    await flushDatabaseSync();
+  } catch (err) {
+    logger.warn('cameras', `flush after capture failed ticket=${ticketId}`, err);
+  }
+
   if (anyFail && !anyOk) {
     return { ok: false, message: 'Фото недоступно' };
   }

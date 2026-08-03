@@ -261,6 +261,39 @@ def test_sync_after_capture_ok(api_client, temp_app_root):
     assert len(json.loads(db2['app_weighing_tickets'])) == 1
 
 
+def test_tickets_only_sync_preserves_capture_photos(api_client, temp_app_root):
+    """Partial POST with tickets but without app_ticket_photos must not wipe capture rows."""
+    _seed_site_and_ticket(api_client)
+    _set_video_enabled(temp_app_root, True)
+
+    with patch('cameras.grab_frame', return_value=FAKE_JPEG):
+        cap = api_client.post(
+            '/api/cameras/capture',
+            json={'ticket_id': 't-photo-1', 'phase': 'gross', 'site_id': 'site-1'},
+        )
+    assert cap.status_code == 200
+    assert len(cap.get_json()['photos']) == 2
+
+    db = api_client.get('/api/database').get_json()['data']
+    tickets = json.loads(db['app_weighing_tickets'])
+    assert len(json.loads(db['app_ticket_photos'])) == 2
+    tickets[0]['notes'] = 'updated-after-capture'
+
+    sync = api_client.post(
+        '/api/database',
+        json={'data': {'app_weighing_tickets': json.dumps(tickets, ensure_ascii=False)}},
+    )
+    assert sync.status_code == 200, sync.get_json()
+    assert sync.get_json()['success'] is True
+
+    db2 = api_client.get('/api/database').get_json()['data']
+    photos2 = json.loads(db2['app_ticket_photos'])
+    assert len(photos2) == 2
+    assert all(p['ticket_id'] == 't-photo-1' for p in photos2)
+    ticket2 = json.loads(db2['app_weighing_tickets'])[0]
+    assert ticket2['notes'] == 'updated-after-capture'
+
+
 def test_full_site_camera_sync_twice(api_client, temp_app_root):
     """cameras/scales FK must not block repeated full sync of site graph."""
     _seed_site_and_ticket(api_client)

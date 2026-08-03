@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CamerasStorage,
   TicketPhotosStorage,
@@ -11,8 +11,32 @@ import {
   enforceMaxCameras,
   photoUrl,
   shouldShowCameraSettings,
+  triggerCaptureAfterSave,
   upsertCamera,
 } from '../cameras';
+
+const flushMock = vi.fn(async () => {});
+const pauseMock = vi.fn();
+const resumeMock = vi.fn();
+const apiPostMock = vi.fn();
+
+vi.mock('../storage-sync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../storage-sync')>();
+  return {
+    ...actual,
+    flushDatabaseSync: () => flushMock(),
+    pauseDatabaseSync: () => pauseMock(),
+    resumeDatabaseSync: () => resumeMock(),
+  };
+});
+
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>();
+  return {
+    ...actual,
+    apiPost: (url: string, body?: unknown) => apiPostMock(url, body),
+  };
+});
 
 function installLocalStorage(): void {
   const store = new Map<string, string>();
@@ -43,6 +67,10 @@ installLocalStorage();
 describe('cameras domain', () => {
   beforeEach(() => {
     localStorage.clear();
+    flushMock.mockReset().mockResolvedValue(undefined);
+    pauseMock.mockReset();
+    resumeMock.mockReset();
+    apiPostMock.mockReset();
   });
 
   it('enforces max 4 cameras per site', () => {
@@ -103,5 +131,99 @@ describe('cameras domain', () => {
     expect(cam.role).toBe('entry');
     expect(cam.name).toBe(CAMERA_ROLE_LABELS.entry);
     expect(cam.roi).toBeNull();
+  });
+
+  it('triggerCaptureAfterSave skips when video disabled', async () => {
+    SettingsStorage.updateAppSettings({ video_enabled: false });
+    upsertCamera(createCameraDraft('site-1', 'entry'));
+    const result = await triggerCaptureAfterSave('t1', ['gross'], 'site-1');
+    expect(result).toEqual({ ok: true });
+    expect(flushMock).not.toHaveBeenCalled();
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it('triggerCaptureAfterSave skips when no enabled cameras', async () => {
+    SettingsStorage.updateAppSettings({ video_enabled: true });
+    const cam = createCameraDraft('site-1', 'entry');
+    cam.enabled = false;
+    upsertCamera(cam);
+    const result = await triggerCaptureAfterSave('t1', ['gross'], 'site-1');
+    expect(result).toEqual({ ok: true });
+    expect(apiPostMock).not.toHaveBeenCalled();
+  });
+
+  it('triggerCaptureAfterSave flushes before capture and reports partial fail', async () => {
+    SettingsStorage.updateAppSettings({ video_enabled: true });
+    upsertCamera(createCameraDraft('site-1', 'entry'));
+
+    const callOrder: string[] = [];
+    flushMock.mockImplementation(async () => {
+      callOrder.push('flush');
+    });
+    pauseMock.mockImplementation(() => {
+      callOrder.push('pause');
+    });
+    resumeMock.mockImplementation(() => {
+      callOrder.push('resume');
+    });
+    apiPostMock.mockImplementation(async (url: string) => {
+      callOrder.push(`post:${url}`);
+      if (url === '/api/cameras/capture') {
+        return {
+          success: true,
+          photos: [
+            {
+              id: 'p1',
+              ticket_id: 't1',
+              phase: 'gross',
+              camera_id: 'c1',
+              camera_role: 'entry',
+              relative_path: 'Photo/x.jpg',
+              status: 'failed',
+              error_message: 'timeout',
+              camera_mode: 'normal',
+              created_at: '2026-08-02T10:00:00',
+            },
+            {
+              id: 'p2',
+              ticket_id: 't1',
+              phase: 'gross',
+              camera_id: 'c2',
+              camera_role: 'overview',
+              relative_path: 'Photo/y.jpg',
+              status: 'ok',
+              error_message: null,
+              camera_mode: 'normal',
+              created_at: '2026-08-02T10:00:00',
+            },
+          ],
+          stubs: {
+            photo_entry_path: null,
+            photo_exit_path: null,
+            photo_overview_path: 'Photo/y.jpg',
+          },
+        };
+      }
+      return {};
+    });
+
+    const result = await triggerCaptureAfterSave('t1', ['gross'], 'site-1');
+    expect(result).toEqual({ ok: true, message: 'Часть фото недоступна' });
+    expect(callOrder[0]).toBe('pause');
+    expect(callOrder[1]).toBe('flush');
+    expect(callOrder).toContain('post:/api/cameras/capture');
+    const postIdx = callOrder.indexOf('post:/api/cameras/capture');
+    expect(postIdx).toBeGreaterThan(callOrder.indexOf('flush'));
+    expect(callOrder).toContain('resume');
+    expect(flushMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('triggerCaptureAfterSave returns Фото недоступно when capture API fails', async () => {
+    SettingsStorage.updateAppSettings({ video_enabled: true });
+    upsertCamera(createCameraDraft('site-1', 'entry'));
+    apiPostMock.mockRejectedValue(new Error('network'));
+    const result = await triggerCaptureAfterSave('t1', ['gross'], 'site-1');
+    expect(result).toEqual({ ok: false, message: 'Фото недоступно' });
+    expect(resumeMock).toHaveBeenCalled();
   });
 });

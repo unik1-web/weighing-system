@@ -1041,36 +1041,107 @@ def _default_weighing_mode(ticket: dict[str, Any]) -> str:
     return 'dual' if status == 'open' else 'single'
 
 
-def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None:
-    # ticket_photos.ticket_id → weighing_tickets(id): clear children first
-    connection.execute('DELETE FROM ticket_photos')
-    connection.execute('DELETE FROM weighing_tickets')
-    for ticket in tickets:
-        if not isinstance(ticket, dict):
-            continue
-        values = []
-        for column in TICKET_COLUMNS:
-            if column == 'weighing_mode':
-                values.append(_default_weighing_mode(ticket))
-            elif column == 'version':
-                values.append(ticket.get(column) if ticket.get(column) is not None else 1)
-            elif column == 'auto_closed':
-                values.append(1 if _soft_bool(ticket.get('auto_closed')) else 0)
-            elif column == 'anpr_accepted':
-                raw_accepted = ticket.get('anpr_accepted')
-                if raw_accepted is None or raw_accepted == '':
-                    values.append(None)
-                else:
-                    values.append(1 if _soft_bool(raw_accepted) else 0)
+def _ticket_column_values(ticket: dict[str, Any]) -> list[Any]:
+    values: list[Any] = []
+    for column in TICKET_COLUMNS:
+        if column == 'weighing_mode':
+            values.append(_default_weighing_mode(ticket))
+        elif column == 'version':
+            values.append(ticket.get(column) if ticket.get(column) is not None else 1)
+        elif column == 'auto_closed':
+            values.append(1 if _soft_bool(ticket.get('auto_closed')) else 0)
+        elif column == 'anpr_accepted':
+            raw_accepted = ticket.get('anpr_accepted')
+            if raw_accepted is None or raw_accepted == '':
+                values.append(None)
             else:
-                values.append(ticket.get(column))
-        connection.execute(
-            f'''
-            INSERT INTO weighing_tickets ({", ".join(TICKET_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(TICKET_COLUMNS))})
-            ''',
-            values,
-        )
+                values.append(1 if _soft_bool(raw_accepted) else 0)
+        else:
+            values.append(ticket.get(column))
+    return values
+
+
+def _insert_ticket_row(connection: sqlite3.Connection, ticket: dict[str, Any]) -> None:
+    values = _ticket_column_values(ticket)
+    connection.execute(
+        f'''
+        INSERT INTO weighing_tickets ({", ".join(TICKET_COLUMNS)})
+        VALUES ({", ".join(['?'] * len(TICKET_COLUMNS))})
+        ''',
+        values,
+    )
+
+
+def _update_ticket_row(connection: sqlite3.Connection, ticket: dict[str, Any]) -> None:
+    values = _ticket_column_values(ticket)
+    ticket_id = values[0]
+    non_id_columns = TICKET_COLUMNS[1:]
+    non_id_values = values[1:]
+    connection.execute(
+        f'''
+        UPDATE weighing_tickets
+        SET {", ".join(f"{column} = ?" for column in non_id_columns)}
+        WHERE id = ?
+        ''',
+        (*non_id_values, ticket_id),
+    )
+
+
+def _replace_tickets(
+    connection: sqlite3.Connection,
+    tickets: list[Any],
+    *,
+    preserve_photos: bool = False,
+) -> None:
+    """Replace weighing_tickets.
+
+    When preserve_photos is False (full tickets+photos sync), wipe ticket_photos
+    then tickets and re-insert (photos replaced later by _replace_ticket_photos).
+
+    When preserve_photos is True (tickets-only partial POST), keep existing
+    ticket_photos for surviving ticket ids; drop photos only for removed tickets.
+    """
+    if not preserve_photos:
+        # ticket_photos.ticket_id → weighing_tickets(id): clear children first
+        connection.execute('DELETE FROM ticket_photos')
+        connection.execute('DELETE FROM weighing_tickets')
+        for ticket in tickets:
+            if isinstance(ticket, dict):
+                _insert_ticket_row(connection, ticket)
+        return
+
+    new_ids = {
+        str(ticket.get('id', ''))
+        for ticket in tickets
+        if isinstance(ticket, dict) and ticket.get('id')
+    }
+    old_ids = [
+        row[0]
+        for row in connection.execute('SELECT id FROM weighing_tickets').fetchall()
+    ]
+    for old_id in old_ids:
+        if old_id not in new_ids:
+            connection.execute(
+                'DELETE FROM ticket_photos WHERE ticket_id = ?',
+                (old_id,),
+            )
+            connection.execute(
+                'DELETE FROM weighing_tickets WHERE id = ?',
+                (old_id,),
+            )
+
+    existing_ids = {
+        row[0]
+        for row in connection.execute('SELECT id FROM weighing_tickets').fetchall()
+    }
+    for ticket in tickets:
+        if not isinstance(ticket, dict) or not ticket.get('id'):
+            continue
+        ticket_id = str(ticket.get('id'))
+        if ticket_id in existing_ids:
+            _update_ticket_row(connection, ticket)
+        else:
+            _insert_ticket_row(connection, ticket)
 
 
 def _replace_ticket_audit(connection: sqlite3.Connection, events: list[Any]) -> None:
@@ -1369,7 +1440,13 @@ def write_database(data: dict[str, Any]) -> None:
             try:
                 tickets = json.loads(str(data[STORAGE_KEYS['tickets']]))
                 if isinstance(tickets, list):
-                    _replace_tickets(connection, tickets)
+                    # Partial POST without app_ticket_photos must not wipe capture rows.
+                    preserve_photos = STORAGE_KEYS['ticket_photos'] not in data
+                    _replace_tickets(
+                        connection,
+                        tickets,
+                        preserve_photos=preserve_photos,
+                    )
             except json.JSONDecodeError:
                 pass
 

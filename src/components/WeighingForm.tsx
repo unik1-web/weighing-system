@@ -382,12 +382,12 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     (ticketId: string) => {
       const ticket = TicketStorage.getById(ticketId);
       if (!ticket) {
-        setError('Тикет не найден. Обновите список.');
+        setError('Провеска не найдена. Обновите список.');
         exitCompletion();
         return;
       }
       if (ticket.status === 'completed') {
-        setError('Тикет уже завершён.');
+        setError('Провеска уже завершена.');
         exitCompletion();
         setIncompleteRefresh((n) => n + 1);
         return;
@@ -923,13 +923,15 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       });
       setSaving(false);
       setLastTicket(ticket);
-      setSuccess('Первый проход сохранён. Тикет в незавершённых.');
+      setSuccess('Первый проход сохранён. Провеска в незавершённых.');
       onSaved(ticket);
       const phase = hasGross ? 'gross' as const : 'tare' as const;
       void triggerCaptureAfterSave(ticket.id, [phase], ticket.site_id).then((cap) => {
         if (cap.message) {
-          setSuccess(`Первый проход сохранён. Тикет в незавершённых. ${cap.message}`);
+          setSuccess(`Первый проход сохранён. Провеска в незавершённых. ${cap.message}`);
         }
+        const refreshed = TicketStorage.getById(ticket.id);
+        if (refreshed) setLastTicket(refreshed);
       });
       resetFormFields();
       setIncompleteRefresh((n) => n + 1);
@@ -1019,7 +1021,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       });
       if (!ticket) {
         setSaving(false);
-        setError('Тикет изменён или удалён. Обновите список и повторите.');
+        setError('Провеска изменена или удалена. Обновите список и повторите.');
         setIncompleteRefresh((n) => n + 1);
         return;
       }
@@ -1128,7 +1130,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
 
           {isCompleting && (
             <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-              Дозавершение талона №{completingTicket.ticket_number ?? '—'} ({completingTicket.vehicle_number})
+              Дозавершение провески №{completingTicket.ticket_number ?? '—'} ({completingTicket.vehicle_number})
             </div>
           )}
 
@@ -1460,7 +1462,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
                 <table className="min-w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs text-slate-500 border-b border-slate-100">
-                      <th className="py-2 pr-3 font-medium">Талон</th>
+                      <th className="py-2 pr-3 font-medium">Провеска</th>
                       <th className="py-2 pr-3 font-medium">Госномер</th>
                       <th className="py-2 pr-3 font-medium">Первый вес</th>
                       <th className="py-2 pr-3 font-medium">Есть</th>
