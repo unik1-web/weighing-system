@@ -154,7 +154,7 @@ Description: |
 
 ## aee213-camera-discovery
 
-State: development
+State: code-review
 Description: |
   Источник: docs/tasks/11-camera-discovery.md
 
