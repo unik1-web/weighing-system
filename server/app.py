@@ -520,18 +520,22 @@ def anpr_recognize():
 
 @app.post('/api/shutdown')
 def shutdown_application():
-    shutdown_func = request.environ.get('werkzeug.server.shutdown')
+    """Stop the local API process after the HTTP response is sent.
+
+    Werkzeug removed ``werkzeug.server.shutdown``; always exit the process.
+    Delay long enough for the client to read the JSON body — otherwise the
+    browser shows ``Failed to fetch`` and the exit UI aborts.
+    """
 
     def _stop() -> None:
-        time.sleep(0.4)
-        if shutdown_func is not None:
-            shutdown_func()
-            return
+        time.sleep(1.2)
         os._exit(0)
 
     logger.info('Application shutdown requested from %s', request.remote_addr)
     threading.Thread(target=_stop, daemon=True).start()
-    return jsonify({'success': True, 'message': 'Приложение завершает работу'})
+    response = jsonify({'success': True, 'message': 'Приложение завершает работу'})
+    response.headers['Connection'] = 'close'
+    return response
 
 
 @app.get('/api/storage/paths')

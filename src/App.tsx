@@ -52,6 +52,14 @@ function MainApp() {
       await exitApplication();
       logger.info('app', 'Завершение работы приложения');
       window.close();
+      // Browsers refuse to close tabs the user opened manually.
+      window.setTimeout(() => {
+        document.title = 'Программа завершена';
+        document.body.innerHTML =
+          '<main style="font-family:system-ui,sans-serif;padding:2.5rem;text-align:center;color:#0f172a">' +
+          '<p style="font-size:1.125rem;margin:0 0 0.5rem">Программа завершена.</p>' +
+          '<p style="margin:0;color:#64748b">Закройте эту вкладку.</p></main>';
+      }, 200);
     } catch (err: unknown) {
       setExiting(false);
       const message = err instanceof Error ? err.message : 'Не удалось закрыть программу';

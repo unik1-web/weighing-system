@@ -134,6 +134,27 @@ def connect(path: str | None = None):
         connection.close()
 
 
+def _table_column_names(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        row['name']
+        for row in connection.execute(f'PRAGMA table_info({table})').fetchall()
+    }
+
+
+def _ensure_columns(
+    connection: sqlite3.Connection,
+    table: str,
+    column_defs: dict[str, str],
+) -> None:
+    """ADD COLUMN for missing fields. CREATE TABLE IF NOT EXISTS does not alter legacy tables."""
+    existing = _table_column_names(connection, table)
+    if not existing:
+        return
+    for name, typedef in column_defs.items():
+        if name not in existing:
+            connection.execute(f'ALTER TABLE {table} ADD COLUMN {name} {typedef}')
+
+
 def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     """Ensure weighing_tickets columns, ticket_audit, revisions, vehicle_drivers, sites/scales."""
     connection.execute(
@@ -257,6 +278,15 @@ def _ensure_site_tables(connection: sqlite3.Connection) -> None:
         )
         '''
     )
+    _ensure_columns(
+        connection,
+        'sites',
+        {
+            'name': "TEXT NOT NULL DEFAULT ''",
+            'is_default': 'INTEGER NOT NULL DEFAULT 0',
+            'created_at': "TEXT NOT NULL DEFAULT ''",
+        },
+    )
     connection.execute(
         '''
         CREATE TABLE IF NOT EXISTS scales (
@@ -271,6 +301,19 @@ def _ensure_site_tables(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (site_id) REFERENCES sites(id)
         )
         '''
+    )
+    _ensure_columns(
+        connection,
+        'scales',
+        {
+            'site_id': "TEXT NOT NULL DEFAULT ''",
+            'role': "TEXT NOT NULL DEFAULT ''",
+            'name': "TEXT NOT NULL DEFAULT ''",
+            'adapter_id': "TEXT NOT NULL DEFAULT ''",
+            'connection': "TEXT NOT NULL DEFAULT '{}'",
+            'enabled': 'INTEGER NOT NULL DEFAULT 1',
+            'created_at': "TEXT NOT NULL DEFAULT ''",
+        },
     )
     connection.execute(
         'CREATE INDEX IF NOT EXISTS idx_scales_site_role ON scales(site_id, role)'
@@ -290,6 +333,19 @@ def _ensure_site_tables(connection: sqlite3.Connection) -> None:
         )
         '''
     )
+    _ensure_columns(
+        connection,
+        'site_runtime',
+        {
+            'active_scale_set': "TEXT NOT NULL DEFAULT 'primary'",
+            'camera_mode': "TEXT NOT NULL DEFAULT 'normal'",
+            'anpr_mode': "TEXT NOT NULL DEFAULT 'enabled'",
+            'switch_reason': 'TEXT',
+            'switch_by_operator_id': 'TEXT',
+            'switch_by_operator_name': 'TEXT',
+            'switch_at': 'TEXT',
+        },
+    )
     connection.execute(
         '''
         CREATE TABLE IF NOT EXISTS site_scale_switches (
@@ -305,6 +361,20 @@ def _ensure_site_tables(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (site_id) REFERENCES sites(id)
         )
         '''
+    )
+    _ensure_columns(
+        connection,
+        'site_scale_switches',
+        {
+            'site_id': "TEXT NOT NULL DEFAULT ''",
+            'from_set': "TEXT NOT NULL DEFAULT ''",
+            'to_set': "TEXT NOT NULL DEFAULT ''",
+            'reason': "TEXT NOT NULL DEFAULT ''",
+            'operator_id': 'TEXT',
+            'operator_name': "TEXT NOT NULL DEFAULT ''",
+            'at': "TEXT NOT NULL DEFAULT ''",
+            'camera_ack': 'TEXT',
+        },
     )
     connection.execute(
         '''
@@ -334,6 +404,23 @@ def _ensure_camera_tables(connection: sqlite3.Connection) -> None:
         )
         '''
     )
+    _ensure_columns(
+        connection,
+        'cameras',
+        {
+            'site_id': "TEXT NOT NULL DEFAULT ''",
+            'role': "TEXT NOT NULL DEFAULT ''",
+            'name': "TEXT NOT NULL DEFAULT ''",
+            'capture_url': "TEXT NOT NULL DEFAULT ''",
+            'capture_kind': "TEXT NOT NULL DEFAULT 'auto'",
+            'enabled': 'INTEGER NOT NULL DEFAULT 1',
+            'sort_order': 'INTEGER NOT NULL DEFAULT 0',
+            'roi_json': 'TEXT',
+            'reference_normal_path': 'TEXT',
+            'reference_spare_path': 'TEXT',
+            'created_at': "TEXT NOT NULL DEFAULT ''",
+        },
+    )
     connection.execute(
         'CREATE INDEX IF NOT EXISTS idx_cameras_site ON cameras(site_id, sort_order)'
     )
@@ -353,6 +440,21 @@ def _ensure_camera_tables(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (ticket_id) REFERENCES weighing_tickets(id)
         )
         '''
+    )
+    _ensure_columns(
+        connection,
+        'ticket_photos',
+        {
+            'ticket_id': "TEXT NOT NULL DEFAULT ''",
+            'phase': "TEXT NOT NULL DEFAULT ''",
+            'camera_id': 'TEXT',
+            'camera_role': "TEXT NOT NULL DEFAULT ''",
+            'relative_path': 'TEXT',
+            'status': "TEXT NOT NULL DEFAULT ''",
+            'error_message': 'TEXT',
+            'camera_mode': "TEXT NOT NULL DEFAULT 'normal'",
+            'created_at': "TEXT NOT NULL DEFAULT ''",
+        },
     )
     connection.execute(
         '''
