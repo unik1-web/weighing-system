@@ -223,12 +223,12 @@ def auth_change_password():
             if not row:
                 return error_response('Пользователь не найден', 404)
 
-            must_change = bool(row['must_change_password'])
-            if not must_change:
-                if not isinstance(current_password, str) or not verify_password(
-                    current_password, row['password_hash']
-                ):
-                    return error_response('Неверный текущий пароль', 401)
+            # Always prove identity: never allow reset by public user_id alone
+            # (must_change_password=1 previously skipped this and enabled LAN takeover).
+            if not isinstance(current_password, str) or not verify_password(
+                current_password, row['password_hash']
+            ):
+                return error_response('Неверный текущий пароль', 401)
 
             connection.execute(
                 '''

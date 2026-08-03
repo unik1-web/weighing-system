@@ -104,6 +104,7 @@ Flask API  ──►  config.ini          (настройки)
 
 - Пароли: PBKDF2-HMAC-SHA256 на сервере (`server/auth_passwords.py`); endpoints `/api/auth/login|change-password|register`.
 - Sync `app_users` **без** `passwordHash`; колонка `must_change_password`; дефолтный `admin`/`admin123` требует смены при первом входе.
+- `must_change_password` серверный: sync с клиента не сбрасывает флаг; `POST /api/auth/change-password` всегда требует `current_password`.
 - Legacy `btoa`-hash при login прозрачно перехешируется.
 
 ## Весы (Web Serial)

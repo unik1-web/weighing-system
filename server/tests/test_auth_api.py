@@ -24,21 +24,50 @@ def test_bootstrap_admin_and_force_change(temp_app_root, api_client):
     assert body['must_change_password'] is True
     user_id = body['user']['id']
 
+    # CRITICAL: must_change=1 must NOT allow reset without proving current password.
+    unauth = api_client.post(
+        '/api/auth/change-password',
+        json={'user_id': user_id, 'new_password': 'hijacked1'},
+    )
+    assert unauth.status_code == 401
+
+    wrong_current = api_client.post(
+        '/api/auth/change-password',
+        json={
+            'user_id': user_id,
+            'current_password': 'not-the-password',
+            'new_password': 'hijacked1',
+        },
+    )
+    assert wrong_current.status_code == 401
+
     bad = api_client.post(
         '/api/auth/change-password',
-        json={'user_id': user_id, 'new_password': DEFAULT_ADMIN_PASSWORD},
+        json={
+            'user_id': user_id,
+            'current_password': DEFAULT_ADMIN_PASSWORD,
+            'new_password': DEFAULT_ADMIN_PASSWORD,
+        },
     )
     assert bad.status_code == 400
 
     short = api_client.post(
         '/api/auth/change-password',
-        json={'user_id': user_id, 'new_password': '123'},
+        json={
+            'user_id': user_id,
+            'current_password': DEFAULT_ADMIN_PASSWORD,
+            'new_password': '123',
+        },
     )
     assert short.status_code == 400
 
     ok = api_client.post(
         '/api/auth/change-password',
-        json={'user_id': user_id, 'new_password': 'newpass1'},
+        json={
+            'user_id': user_id,
+            'current_password': DEFAULT_ADMIN_PASSWORD,
+            'new_password': 'newpass1',
+        },
     )
     assert ok.status_code == 200
     assert ok.get_json()['must_change_password'] is False
@@ -49,6 +78,74 @@ def test_bootstrap_admin_and_force_change(temp_app_root, api_client):
     )
     assert again.status_code == 200
     assert again.get_json()['must_change_password'] is False
+
+
+def test_change_password_requires_current_even_with_public_user_id(temp_app_root, api_client):
+    """LAN attacker with only GET /api/database user_id cannot reset bootstrap admin."""
+    data = read_database()
+    users = json.loads(data['app_users'])
+    user_id = users[0]['id']
+    assert users[0]['mustChangePassword'] is True
+
+    # Public id alone + new password must fail.
+    attack = api_client.post(
+        '/api/auth/change-password',
+        json={'user_id': user_id, 'new_password': 'attacker-takeover'},
+    )
+    assert attack.status_code == 401
+
+    # Default password still works for legitimate first change.
+    ok = api_client.post(
+        '/api/auth/login',
+        json={'username': 'admin', 'password': DEFAULT_ADMIN_PASSWORD},
+    )
+    assert ok.status_code == 200
+
+    with connect() as connection:
+        row = connection.execute(
+            'SELECT password_hash FROM users WHERE id = ?', (user_id,)
+        ).fetchone()
+        assert verify_password(DEFAULT_ADMIN_PASSWORD, row['password_hash'])
+
+
+def test_sync_cannot_clear_must_change_password(temp_app_root, api_client):
+    """Client sync must not clear mustChangePassword while keeping default hash."""
+    data = read_database()
+    users = json.loads(data['app_users'])
+    assert users[0]['mustChangePassword'] is True
+    user_id = users[0]['id']
+
+    # Preserve default hash, try to clear the force-change gate via sync.
+    with connect() as connection:
+        before = connection.execute(
+            'SELECT password_hash, must_change_password FROM users WHERE id = ?',
+            (user_id,),
+        ).fetchone()
+        assert before['must_change_password'] == 1
+        default_hash = before['password_hash']
+
+    payload = api_client.get('/api/database').get_json()['data']
+    synced_users = json.loads(payload['app_users'])
+    synced_users[0]['mustChangePassword'] = False
+    payload['app_users'] = json.dumps(synced_users)
+
+    write_resp = api_client.post('/api/database', json={'data': payload})
+    assert write_resp.status_code == 200, write_resp.get_json()
+
+    with connect() as connection:
+        after = connection.execute(
+            'SELECT password_hash, must_change_password FROM users WHERE id = ?',
+            (user_id,),
+        ).fetchone()
+        assert after['must_change_password'] == 1
+        assert after['password_hash'] == default_hash
+
+    # Gate still enforced on next login + change still needs current password.
+    login = api_client.post(
+        '/api/auth/login',
+        json={'username': 'admin', 'password': DEFAULT_ADMIN_PASSWORD},
+    )
+    assert login.get_json()['must_change_password'] is True
 
 
 def test_legacy_btoa_login_rehashes(temp_app_root, api_client):
@@ -141,3 +238,38 @@ def test_sync_users_without_password_hash(temp_app_root, api_client):
             "SELECT password_hash FROM users WHERE username = 'admin'"
         ).fetchone()
         assert verify_password('keep-me', row['password_hash'])
+
+
+def test_normal_change_password_requires_current(temp_app_root, api_client):
+    read_database()
+    # Set a non-default password and clear must_change.
+    with connect() as connection:
+        init_schema(connection)
+        connection.execute(
+            '''
+            UPDATE users
+            SET password_hash = ?, must_change_password = 0
+            WHERE username = ?
+            ''',
+            (hash_password('oldpass1'), 'admin'),
+        )
+        user_id = connection.execute(
+            "SELECT id FROM users WHERE username = 'admin'"
+        ).fetchone()['id']
+
+    missing = api_client.post(
+        '/api/auth/change-password',
+        json={'user_id': user_id, 'new_password': 'newpass2'},
+    )
+    assert missing.status_code == 401
+
+    ok = api_client.post(
+        '/api/auth/change-password',
+        json={
+            'user_id': user_id,
+            'current_password': 'oldpass1',
+            'new_password': 'newpass2',
+        },
+    )
+    assert ok.status_code == 200
+    assert ok.get_json()['must_change_password'] is False

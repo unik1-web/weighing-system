@@ -39,7 +39,7 @@ export async function authLogin(username: string, password: string): Promise<Aut
 export async function authChangePassword(args: {
   user_id: string;
   new_password: string;
-  current_password?: string;
+  current_password: string;
 }): Promise<AuthChangePasswordResult> {
   return apiPost<AuthChangePasswordResult>('/api/auth/change-password', args);
 }

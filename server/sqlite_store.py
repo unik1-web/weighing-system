@@ -995,10 +995,9 @@ def _replace_users(connection: sqlite3.Connection, users: list[Any]) -> None:
             continue
         # Ignore client passwordHash; keep server hash or leave placeholder for orphan rows.
         password_hash = existing_hashes.get(user_id) or ''
-        if 'mustChangePassword' in user:
-            must_change = 1 if user.get('mustChangePassword') else 0
-        else:
-            must_change = existing_flags.get(user_id, 0)
+        # must_change_password is server-owned: login may force=1, change-password
+        # clears to 0. Client sync must never clear the gate while keeping the default hash.
+        must_change = existing_flags.get(user_id, 0)
         connection.execute(
             '''
             INSERT INTO users (id, email, username, password_hash, must_change_password)

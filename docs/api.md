@@ -19,7 +19,7 @@
 | Метод | Путь | Тело | Ответ |
 |-------|------|------|-------|
 | `POST` | `/api/auth/login` | `{ username, password }` | `{ success, user, profile, must_change_password }` или 401 |
-| `POST` | `/api/auth/change-password` | `{ user_id, new_password, current_password? }` | `{ success, must_change_password: false }`; при `must_change_password=1` текущий пароль не обязателен; `new_password` ≥ 6 и ≠ `admin123` |
+| `POST` | `/api/auth/change-password` | `{ user_id, new_password, current_password }` | `{ success, must_change_password: false }`; `current_password` обязателен всегда (в т.ч. при `must_change_password=1`); `new_password` ≥ 6 и ≠ `admin123` |
 | `POST` | `/api/auth/register` | `{ username, password, display_name }` | создаёт user+profile (первый — admin); hash на сервере |
 
 Дефолтный bootstrap: при пустой таблице `users` сервер создаёт `admin` / `admin123` с `must_change_password=1`. Legacy hash (`btoa`) при успешном login перехешируется в PBKDF2.

@@ -31,7 +31,7 @@ interface AuthContextValue {
   signOut: () => Promise<void>;
   changePassword: (args: {
     newPassword: string;
-    currentPassword?: string;
+    currentPassword: string;
   }) => Promise<{ error: string | null }>;
   displayName: string;
   username: string;
@@ -133,7 +133,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const changePassword = useCallback(
-    async (args: { newPassword: string; currentPassword?: string }) => {
+    async (args: { newPassword: string; currentPassword: string }) => {
       if (!session?.user?.id) {
         return { error: 'Нет активной сессии' };
       }
