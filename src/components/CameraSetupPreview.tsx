@@ -1,16 +1,24 @@
 /**
  * Live/test snapshot panel for camera setup in Settings.
  */
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Eye, Loader2, RefreshCw } from 'lucide-react';
-import { photoUrl, takeSnapshot } from '@/lib/cameras';
+import { photoUrl, takeSnapshot, type CameraCapabilities } from '@/lib/cameras';
 import type { Camera, CameraRoi } from '@/lib/storage';
 
 interface Props {
   camera: Camera;
+  caps?: CameraCapabilities | null;
   /** Persist draft before snapshot-by-id; parent may upsert. */
   onBeforeCapture?: () => void;
   className?: string;
+}
+
+function looksLikeRtsp(url: string, kind: string): boolean {
+  const u = url.trim().toLowerCase();
+  if (kind === 'rtsp') return true;
+  if (kind === 'http_snapshot') return false;
+  return u.startsWith('rtsp://');
 }
 
 function RoiOverlay({ roi }: { roi: CameraRoi }) {
@@ -27,15 +35,32 @@ function RoiOverlay({ roi }: { roi: CameraRoi }) {
   );
 }
 
-export function CameraSetupPreview({ camera, onBeforeCapture, className = '' }: Props) {
+export function CameraSetupPreview({
+  camera,
+  caps,
+  onBeforeCapture,
+  className = '',
+}: Props) {
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
 
+  const needsOpenCv = useMemo(
+    () => looksLikeRtsp(camera.capture_url, camera.capture_kind),
+    [camera.capture_url, camera.capture_kind],
+  );
+  const opencvMissing = needsOpenCv && caps != null && caps.opencv_available === false;
+
   const runSnapshot = useCallback(async () => {
     if (!camera.capture_url.trim()) {
       setError('Укажите URL захвата');
+      return;
+    }
+    if (opencvMissing) {
+      setError(
+        'RTSP требует OpenCV. Установите: pip install opencv-python-headless — или укажите HTTP snapshot URL и тип «HTTP snapshot».',
+      );
       return;
     }
     setBusy(true);
@@ -55,11 +80,18 @@ export function CameraSetupPreview({ camera, onBeforeCapture, className = '' }: 
       setCapturedAt(new Date().toLocaleTimeString('ru-RU'));
     } catch (err: unknown) {
       setPreviewPath(null);
-      setError(err instanceof Error ? err.message : 'Не удалось получить снимок');
+      const message = err instanceof Error ? err.message : 'Не удалось получить снимок';
+      if (/opencv|rtsp недоступен/i.test(message)) {
+        setError(
+          `${message} Установите opencv-python-headless или используйте HTTP snapshot URL.`,
+        );
+      } else {
+        setError(message);
+      }
     } finally {
       setBusy(false);
     }
-  }, [camera.capture_url, camera.capture_kind, onBeforeCapture]);
+  }, [camera.capture_url, camera.capture_kind, onBeforeCapture, opencvMissing]);
 
   const src = photoUrl(previewPath);
   const refNormal = photoUrl(camera.reference_normal_path);
@@ -72,14 +104,32 @@ export function CameraSetupPreview({ camera, onBeforeCapture, className = '' }: 
         <div className="text-xs font-semibold text-slate-700">Проверка изображения</div>
         <button
           type="button"
-          disabled={busy || !camera.capture_url.trim()}
+          disabled={busy || !camera.capture_url.trim() || opencvMissing}
           onClick={() => void runSnapshot()}
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
         >
-          {busy ? <Loader2 size={14} className="animate-spin" /> : previewPath ? <RefreshCw size={14} /> : <Eye size={14} />}
+          {busy ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : previewPath ? (
+            <RefreshCw size={14} />
+          ) : (
+            <Eye size={14} />
+          )}
           {busy ? 'Съёмка…' : previewPath ? 'Обновить снимок' : 'Показать снимок'}
         </button>
       </div>
+
+      {opencvMissing && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          URL выглядит как RTSP, а в этой сборке нет OpenCV — снимок недоступен. Варианты:{' '}
+          <code className="rounded bg-amber-100 px-1">pip install opencv-python-headless</code> и
+          перезапуск сервера, либо HTTP snapshot URL (тип «HTTP snapshot»), например{' '}
+          <code className="rounded bg-amber-100 px-1">
+            http://IP/ISAPI/Streaming/channels/101/picture
+          </code>
+          .
+        </div>
+      )}
 
       <div className="relative aspect-video overflow-hidden rounded-md border border-slate-200 bg-slate-900/90">
         {src ? (

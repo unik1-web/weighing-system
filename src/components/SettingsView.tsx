@@ -1363,6 +1363,7 @@ export function SettingsView({ onSaved }: Props) {
 
                 <CameraSetupPreview
                   camera={cam}
+                  caps={cameraCaps}
                   onBeforeCapture={() => {
                     try {
                       upsertCamera(cam);
