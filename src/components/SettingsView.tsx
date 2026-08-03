@@ -75,6 +75,7 @@ import {
 } from '@/lib/year-archive';
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
+import { CameraSetupPreview } from '@/components/CameraSetupPreview';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 const TRANSPORT_OPTIONS: { id: ScaleTransportKind; label: string }[] = [
@@ -1178,6 +1179,7 @@ export function SettingsView({ onSaved }: Props) {
           </div>
           <p className="text-xs text-slate-500">
             До 4 камер на площадку. Снимки сохраняются в каталог Photo рядом с программой.
+            Для каждой камеры можно открыть окно проверки изображения по текущему URL.
             {cameraCaps && !cameraCaps.opencv_available && (
               <> RTSP требует полной сборки с OpenCV; HTTP snapshot доступен всегда.</>
             )}
@@ -1355,6 +1357,19 @@ export function SettingsView({ onSaved }: Props) {
                     </div>
                   )}
                 </div>
+
+                <CameraSetupPreview
+                  camera={cam}
+                  caps={cameraCaps}
+                  onBeforeCapture={() => {
+                    try {
+                      upsertCamera(cam);
+                    } catch {
+                      /* draft may exceed max only on add; ignore here */
+                    }
+                  }}
+                />
+
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"

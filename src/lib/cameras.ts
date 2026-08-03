@@ -189,11 +189,30 @@ export async function saveReference(
   }
 }
 
-export async function takeSnapshot(cameraId: string): Promise<string | null> {
+export async function takeSnapshot(
+  cameraIdOrOpts:
+    | string
+    | {
+        cameraId?: string;
+        captureUrl?: string;
+        captureKind?: CaptureKind | string;
+      },
+): Promise<string | null> {
+  const opts =
+    typeof cameraIdOrOpts === 'string'
+      ? { cameraId: cameraIdOrOpts }
+      : cameraIdOrOpts;
+  const body: Record<string, string> = {};
+  if (opts.cameraId) body.camera_id = opts.cameraId;
+  if (opts.captureUrl?.trim()) body.capture_url = opts.captureUrl.trim();
+  if (opts.captureKind) body.capture_kind = String(opts.captureKind);
+  if (!body.camera_id && !body.capture_url) {
+    throw new Error('Укажите URL камеры или сохранённую камеру');
+  }
   try {
     const result = await apiPost<{ success: boolean; relative_path?: string }>(
       '/api/cameras/snapshot',
-      { camera_id: cameraId },
+      body,
     );
     return result.relative_path ?? null;
   } catch (err) {
