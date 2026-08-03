@@ -218,6 +218,36 @@ describe('cameras domain', () => {
     expect(flushMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('triggerCaptureAfterSave returns Фото недоступно when all captures failed', async () => {
+    SettingsStorage.updateAppSettings({ video_enabled: true });
+    upsertCamera(createCameraDraft('site-1', 'entry'));
+    apiPostMock.mockResolvedValue({
+      success: true,
+      photos: [
+        {
+          id: 'p1',
+          ticket_id: 't1',
+          phase: 'gross',
+          camera_id: 'c1',
+          camera_role: 'entry',
+          relative_path: null,
+          status: 'failed',
+          error_message: 'Таймаут захвата (15 с)',
+          camera_mode: 'normal',
+          created_at: '2026-08-02T10:00:00',
+        },
+      ],
+      stubs: {
+        photo_entry_path: null,
+        photo_exit_path: null,
+        photo_overview_path: null,
+      },
+    });
+    const result = await triggerCaptureAfterSave('t1', ['gross'], 'site-1');
+    expect(result).toEqual({ ok: false, message: 'Фото недоступно' });
+    expect(resumeMock).toHaveBeenCalled();
+  });
+
   it('triggerCaptureAfterSave returns Фото недоступно when capture API fails', async () => {
     SettingsStorage.updateAppSettings({ video_enabled: true });
     upsertCamera(createCameraDraft('site-1', 'entry'));

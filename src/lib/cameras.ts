@@ -23,6 +23,22 @@ import { logger } from './logger';
 const API_BASE = import.meta.env.VITE_API_URL ?? '';
 const MAX_CAMERAS_PER_SITE = 4;
 
+/** Pause live weighing-monitor snapshots while ticket capture runs. */
+export const CAPTURE_PAUSE_EVENT = 'weighing-capture-pause';
+export const CAPTURE_RESUME_EVENT = 'weighing-capture-resume';
+
+function dispatchCapturePause(paused: boolean): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new Event(paused ? CAPTURE_PAUSE_EVENT : CAPTURE_RESUME_EVENT));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const schedule = typeof globalThis.setTimeout === 'function' ? globalThis.setTimeout : setTimeout;
+    schedule(resolve, ms);
+  });
+}
+
 export const CAMERA_ROLE_LABELS: Record<CameraRole, string> = {
   entry: 'Въезд',
   exit: 'Выезд',
@@ -171,8 +187,13 @@ export async function triggerCaptureAfterSave(
   let anyOk = false;
   let anyFail = false;
 
+  // Stop live monitor so snapshot polling does not contend with ticket capture.
+  dispatchCapturePause(true);
   pauseDatabaseSync();
   try {
+    // Let in-flight monitor snapshots finish or abort before grabbing.
+    await delay(400);
+
     try {
       await flushDatabaseSync();
     } catch (err) {
@@ -184,14 +205,16 @@ export async function triggerCaptureAfterSave(
       const result = await captureForTicket(ticketId, phase, siteId);
       if (result == null) {
         anyFail = true;
-      } else {
-        anyOk = true;
-        const failed = result.photos.some((p) => p.status === 'failed');
-        if (failed) anyFail = true;
+        continue;
       }
+      const okCount = result.photos.filter((p) => p.status === 'ok').length;
+      const failCount = result.photos.filter((p) => p.status === 'failed').length;
+      if (okCount > 0) anyOk = true;
+      if (failCount > 0 || result.photos.length === 0) anyFail = true;
     }
   } finally {
     resumeDatabaseSync();
+    dispatchCapturePause(false);
   }
 
   try {
