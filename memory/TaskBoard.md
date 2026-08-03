@@ -154,7 +154,7 @@ Description: |
 
 ## aee213-camera-discovery
 
-State: tech-writer
+State: done
 Description: |
   Источник: docs/tasks/11-camera-discovery.md
 
@@ -164,5 +164,7 @@ Description: |
   каталогу шаблонов; при неизвестном бренде — перебор с прогрессом
   и отменой; найденный URL применить к камере реестра.
   Зависимости: этап 7 (захват) + этап 10 (вкладки настроек).
+
+  Завершено: 2026-08-03T10:04:09Z. Артефакты: docs/aee213-camera-discovery/.
 
 ---
