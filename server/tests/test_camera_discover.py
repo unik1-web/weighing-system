@@ -45,6 +45,61 @@ def test_mask_url_hides_password():
     assert discover.mask_url('rtsp://u:p@10.0.0.2:554/stream1') == 'rtsp://u:***@10.0.0.2:554/stream1'
 
 
+def test_safe_exc_message_masks_password_in_http_error():
+    """requests HTTPError embeds full URL — must not leak password into logs."""
+    import requests
+
+    secret = 'SuperSecretPass99'
+    url = f'http://admin:{secret}@192.168.1.64:80/ISAPI/Streaming/channels/101/picture'
+    resp = requests.Response()
+    resp.status_code = 401
+    resp.url = url
+    exc = requests.HTTPError(f'401 Client Error: Unauthorized for url: {url}', response=resp)
+
+    safe = discover.safe_exc_message(exc)
+    assert secret not in safe
+    assert '***' in safe
+    assert '192.168.1.64' in safe
+
+
+def test_try_template_fail_log_masks_password(caplog):
+    """_try_template must not log raw exception text with password in URL."""
+    import logging
+
+    import requests
+
+    secret = 'LeakMePassword42'
+    url = f'http://admin:{secret}@10.0.0.5:80/cgi-bin/snapshot.cgi'
+
+    def boom(_url: str) -> bytes:
+        raise requests.HTTPError(f'401 Client Error: Unauthorized for url: {url}')
+
+    tmpl = {
+        'id': 'test-http',
+        'brand': 'generic',
+        'label': 'snap',
+        'kind': 'http_snapshot',
+        'url_pattern': 'http://{user}:{password}@{ip}:{http_port}/cgi-bin/snapshot.cgi',
+        'popular': True,
+    }
+    with (
+        patch('camera_discover.grab_frame_http', side_effect=boom),
+        caplog.at_level(logging.INFO, logger='camera_discover'),
+    ):
+        result = discover._try_template(
+            tmpl,
+            ip='10.0.0.5',
+            username='admin',
+            password=secret,
+            http_port=80,
+            rtsp_port=554,
+        )
+    assert result is None
+    joined = '\n'.join(r.getMessage() for r in caplog.records)
+    assert secret not in joined
+    assert 'discover fail' in joined
+
+
 def test_parse_ip_embedded_port():
     host, http_p, rtsp_p = discover.parse_ip_and_ports('192.168.1.64:8080')
     assert host == '192.168.1.64'

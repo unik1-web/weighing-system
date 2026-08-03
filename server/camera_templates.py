@@ -147,9 +147,9 @@ def render_url(
     user_q = quote(username or '', safe='')
     pass_q = quote(password or '', safe='')
     pattern = str(template['url_pattern'])
-    # Empty userinfo: still produce user:pass@ (empty) — cameras often accept it;
-    # if both empty, strip credentials to avoid awkward ":@" forms.
-    if not username and not password:
+    # No username → omit userinfo (avoids ":@" and ":pass@" forms).
+    # Username without password keeps "user:@" (common for open Basic auth).
+    if not username:
         pattern = pattern.replace('{user}:{password}@', '')
     return pattern.format(
         user=user_q,

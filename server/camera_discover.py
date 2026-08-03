@@ -59,6 +59,11 @@ def mask_url(url: str) -> str:
         return url
 
 
+def safe_exc_message(exc: BaseException) -> str:
+    """Exception text safe for logs (mask userinfo in URLs, e.g. requests HTTPError)."""
+    return mask_url(str(exc))
+
+
 def assert_discover_target_allowed(ip: str) -> None:
     """Raise ValueError if IP is not private/local IPv4."""
     raw = (ip or '').strip()
@@ -219,7 +224,7 @@ def _try_template(
             tid,
             kind,
             mask_url(url),
-            exc,
+            safe_exc_message(exc),
         )
         return None
 
@@ -367,7 +372,7 @@ def _worker(session_id: str) -> None:
                     try:
                         cand = fut.result()
                     except Exception as exc:  # pragma: no cover
-                        logger.info('discover batch error: %s', exc)
+                        logger.info('discover batch error: %s', safe_exc_message(exc))
                         cand = None
                     if cand:
                         append_candidate(cand)
@@ -407,10 +412,11 @@ def _worker(session_id: str) -> None:
                     sess['progress']['current'] = sess['progress']['total']
     except Exception as exc:
         logger.exception('discover worker failed session=%s', session_id)
+        safe = safe_exc_message(exc)
         with sess['lock']:
             sess['status'] = 'failed'
-            sess['error'] = str(exc)
-            sess['message'] = f'Ошибка поиска: {exc}'
+            sess['error'] = safe
+            sess['message'] = f'Ошибка поиска: {safe}'
             sess['finished_at'] = time.time()
     finally:
         with _sessions_lock:

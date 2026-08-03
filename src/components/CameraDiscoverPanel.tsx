@@ -5,7 +5,6 @@ import {
   CAMERA_ROLE_LABELS,
   cancelDiscover,
   createCameraDraft,
-  enforceMaxCameras,
   fetchDiscoverBrands,
   maskCameraUrl,
   photoUrl,
@@ -62,8 +61,10 @@ export function CameraDiscoverPanel({
   onApplied,
 }: Props) {
   const [ip, setIp] = useState('');
-  const [httpPort, setHttpPort] = useState('80');
-  const [rtspPort, setRtspPort] = useState('554');
+  /** Empty = auto (backend default 80 / embedded :port from IP). */
+  const [httpPort, setHttpPort] = useState('');
+  /** Empty = auto (backend default 554). */
+  const [rtspPort, setRtspPort] = useState('');
   const [brand, setBrand] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -134,6 +135,7 @@ export function CameraDiscoverPanel({
   const running = busy || session?.status === 'running';
 
   const siteCameras = siteId ? cameras.filter((c) => c.site_id === siteId) : [];
+  const canCreateCamera = Boolean(siteId) && siteCameras.length < 4;
 
   const onFind = async () => {
     setError(null);
@@ -147,16 +149,34 @@ export function CameraDiscoverPanel({
     setBusy(true);
     setSession(null);
     try {
-      const http_port = Number(httpPort) || 80;
-      const rtsp_port = Number(rtspPort) || 554;
-      const state = await startDiscover({
+      // Omit ports when empty so backend can honour embedded IP:port (FR-2).
+      const httpTrim = httpPort.trim();
+      const rtspTrim = rtspPort.trim();
+      const body: Parameters<typeof startDiscover>[0] = {
         ip: trimmed,
         username: username.trim(),
         password,
         brand: brand || null,
-        http_port,
-        rtsp_port,
-      });
+      };
+      if (httpTrim !== '') {
+        const n = Number(httpTrim);
+        if (!Number.isFinite(n) || n < 1 || n > 65535) {
+          setBusy(false);
+          setError('Некорректный HTTP-порт');
+          return;
+        }
+        body.http_port = n;
+      }
+      if (rtspTrim !== '') {
+        const n = Number(rtspTrim);
+        if (!Number.isFinite(n) || n < 1 || n > 65535) {
+          setBusy(false);
+          setError('Некорректный RTSP-порт');
+          return;
+        }
+        body.rtsp_port = n;
+      }
+      const state = await startDiscover(body);
       sessionIdRef.current = state.session_id;
       setSession(state);
       if (state.status === 'running') {
@@ -201,7 +221,7 @@ export function CameraDiscoverPanel({
 
   const createNew = () => {
     if (!selected || !siteId) return;
-    if (!enforceMaxCameras(siteId)) {
+    if (siteCameras.length >= 4) {
       setError('Не более 4 камер на площадку');
       return;
     }
@@ -252,25 +272,27 @@ export function CameraDiscoverPanel({
           />
         </div>
         <div>
-          <label className={labelClass}>Порт HTTP</label>
+          <label className={labelClass}>Порт HTTP (пусто = авто / из IP)</label>
           <input
             type="number"
             min={1}
             max={65535}
             value={httpPort}
             onChange={(e) => setHttpPort(e.target.value)}
+            placeholder="80"
             className={inputClass}
             disabled={running}
           />
         </div>
         <div>
-          <label className={labelClass}>Порт RTSP</label>
+          <label className={labelClass}>Порт RTSP (пусто = 554)</label>
           <input
             type="number"
             min={1}
             max={65535}
             value={rtspPort}
             onChange={(e) => setRtspPort(e.target.value)}
+            placeholder="554"
             className={inputClass}
             disabled={running}
           />
@@ -359,7 +381,10 @@ export function CameraDiscoverPanel({
       {session?.message && session.status !== 'running' && (
         <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
           {session.message}
-          {session.skipped_rtsp ? ' (RTSP пропущен: нет OpenCV)' : ''}
+          {session.skipped_rtsp &&
+          !(session.message || '').includes('RTSP пропущен')
+            ? ' (RTSP пропущен: нет OpenCV)'
+            : ''}
         </p>
       )}
       {applyMessage && (
@@ -444,7 +469,7 @@ export function CameraDiscoverPanel({
               </select>
               <button
                 type="button"
-                disabled={!selected || !siteId || (siteId ? !enforceMaxCameras(siteId) : true)}
+                disabled={!selected || !canCreateCamera}
                 onClick={createNew}
                 className="mt-2 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >

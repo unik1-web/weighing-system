@@ -63,3 +63,11 @@ def test_render_url_empty_creds_omits_userinfo():
     url = render_url(tmpl, ip='10.0.0.5', username='', password='')
     assert url.startswith('http://10.0.0.5:80/snapshot.jpg')
     assert '@' not in url
+
+
+def test_render_url_empty_username_omits_userinfo_even_with_password():
+    tmpl = next(t for t in TEMPLATES if t['id'] == 'generic-http-snapshot-jpg')
+    url = render_url(tmpl, ip='10.0.0.5', username='', password='secret')
+    assert url.startswith('http://10.0.0.5:80/snapshot.jpg')
+    assert '@' not in url
+    assert 'secret' not in url
