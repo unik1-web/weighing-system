@@ -105,60 +105,78 @@ function MainApp() {
     { id: 'settings', label: 'Настройки', icon: Settings },
   ];
 
-  const compactTabs = appSettings.nav_tab_mode === 'compact';
+  // Settings "compact" always icon-only; otherwise labels appear from lg up.
+  // Below lg the header auto-collapses: brand → truck icon, tabs → icons, user → icon.
+  const settingsCompactTabs = appSettings.nav_tab_mode === 'compact';
+  const brandTitle = 'Автомобильные весы';
+  const brandSubtitle =
+    appSettings.org_name && appSettings.org_name !== 'Полигон отходов'
+      ? `Полигон отходов · ${appSettings.org_name}`
+      : 'Полигон отходов';
 
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6">
-          <div className="flex h-16 items-center justify-between gap-4">
-            <div className="flex items-center gap-3 shrink-0">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-sm">
-                <Truck size={22} />
+        <div className="mx-auto max-w-7xl px-3 sm:px-6">
+          <div className="flex h-14 items-center gap-2 sm:h-16 sm:gap-3 lg:gap-4">
+            <div
+              className="flex shrink-0 items-center gap-2 lg:gap-3"
+              title={`${brandTitle} — ${brandSubtitle}`}
+            >
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-sm sm:h-10 sm:w-10">
+                <Truck size={20} className="sm:hidden" aria-hidden />
+                <Truck size={22} className="hidden sm:block" aria-hidden />
               </div>
-              <div>
-                <h1 className="text-base font-bold text-slate-800 leading-tight">Автомобильные весы</h1>
-                <p className="text-xs text-slate-500">
-                  Полигон отходов
-                  {appSettings.org_name && appSettings.org_name !== 'Полигон отходов' && (
-                    <> · {appSettings.org_name}</>
-                  )}
-                </p>
+              <div className="hidden min-w-0 lg:block">
+                <h1 className="text-base font-bold leading-tight text-slate-800">{brandTitle}</h1>
+                <p className="truncate text-xs text-slate-500">{brandSubtitle}</p>
               </div>
             </div>
 
-            <nav className="flex gap-1 rounded-xl bg-slate-100 p-1 overflow-x-auto">
+            <nav
+              className="flex min-w-0 flex-1 justify-center gap-0.5 overflow-x-auto rounded-xl bg-slate-100 p-1 sm:gap-1"
+              aria-label="Разделы"
+            >
               {tabs.map((t) => {
                 const Icon = t.icon;
                 return (
                   <button
                     key={t.id}
                     type="button"
-                    title={compactTabs ? t.label : undefined}
+                    title={t.label}
+                    aria-label={t.label}
+                    aria-current={tab === t.id ? 'page' : undefined}
                     onClick={() => setTab(t.id)}
-                    className={`flex items-center rounded-lg py-2 text-sm font-semibold transition whitespace-nowrap ${
-                      compactTabs ? 'justify-center gap-0 px-2.5' : 'gap-2 px-3 sm:px-4'
+                    className={`flex shrink-0 items-center rounded-lg py-2 text-sm font-semibold transition whitespace-nowrap ${
+                      settingsCompactTabs
+                        ? 'justify-center gap-0 px-2.5'
+                        : 'justify-center gap-0 px-2.5 lg:gap-2 lg:px-3 xl:px-4'
                     } ${tab === t.id ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
                   >
-                    <Icon size={16} />
-                    {!compactTabs && <span>{t.label}</span>}
+                    <Icon size={16} aria-hidden />
+                    {!settingsCompactTabs && (
+                      <span className="hidden lg:inline">{t.label}</span>
+                    )}
                   </button>
                 );
               })}
             </nav>
 
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
               <div
-                className="flex items-center gap-2 rounded-lg bg-slate-100 px-2 py-1.5 sm:px-3"
+                className="flex items-center gap-2 rounded-lg bg-slate-100 p-2 lg:px-3 lg:py-1.5"
                 title={displayName}
                 aria-label={displayName}
               >
                 <User size={15} className="text-slate-500" aria-hidden />
-                <span className="hidden text-sm font-medium text-slate-700 sm:inline">{displayName}</span>
+                <span className="hidden text-sm font-medium text-slate-700 lg:inline">{displayName}</span>
                 {isAdmin && (
-                  <span className="flex items-center gap-0.5 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                    <ShieldCheck size={10} />
-                    <span className="hidden sm:inline">АДМ</span>
+                  <span
+                    className="flex items-center gap-0.5 rounded-full bg-blue-600 p-1 text-[10px] font-bold text-white lg:px-1.5 lg:py-0.5"
+                    title="Администратор"
+                  >
+                    <ShieldCheck size={10} aria-hidden />
+                    <span className="hidden lg:inline">АДМ</span>
                   </span>
                 )}
               </div>
