@@ -123,8 +123,21 @@ export interface WaWeighingItem {
 export async function exitApplication(): Promise<void> {
   const { flushDatabaseSync, flushStorageSync } = await import('./storage-sync');
   flushStorageSync();
-  await flushDatabaseSync();
-  await apiPost<{ success: true; message?: string }>('/api/shutdown', {});
+  try {
+    await flushDatabaseSync();
+  } catch {
+    // Best-effort flush before shutdown.
+  }
+
+  try {
+    await apiPost<{ success: true; message?: string }>('/api/shutdown', {});
+  } catch (error: unknown) {
+    // Process may die before the response body is fully read.
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    if (!/failed to fetch|networkerror|load failed|network request failed|fetch aborted/i.test(message)) {
+      throw error;
+    }
+  }
 }
 
 export function normalizeImportDateTime(value: string | null | undefined): string {
