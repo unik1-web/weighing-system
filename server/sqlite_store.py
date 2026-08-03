@@ -3,6 +3,7 @@ import os
 import sqlite3
 import sys
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -153,6 +154,85 @@ def _ensure_columns(
     for name, typedef in column_defs.items():
         if name not in existing:
             connection.execute(f'ALTER TABLE {table} ADD COLUMN {name} {typedef}')
+
+
+def _insert_compat(
+    connection: sqlite3.Connection,
+    table: str,
+    values: dict[str, Any],
+) -> None:
+    """INSERT that also fills legacy extra NOT NULL columns (e.g. updated_at).
+
+    Older DBs may have columns our canonical INSERT list omits. Leaving them out
+    raises IntegrityError: NOT NULL constraint failed.
+    """
+    info = connection.execute(f'PRAGMA table_info({table})').fetchall()
+    if not info:
+        raise sqlite3.OperationalError(f'table {table} does not exist')
+
+    now = datetime.now().isoformat(timespec='seconds')
+    columns: list[str] = []
+    bind: list[Any] = []
+    for row in info:
+        name = str(row['name'])
+        notnull = int(row['notnull'] or 0) == 1
+        dflt = row['dflt_value']
+        if name in values:
+            columns.append(name)
+            bind.append(values[name])
+            continue
+        if not notnull or dflt is not None:
+            continue
+        columns.append(name)
+        if name.endswith('_at') or name in {'updated_at', 'created_at', 'switched_at'}:
+            bind.append(now)
+        elif name in {'enabled', 'is_default', 'sort_order', 'use_count', 'must_change_password'}:
+            bind.append(0)
+        else:
+            bind.append('')
+
+    placeholders = ', '.join(['?'] * len(columns))
+    connection.execute(
+        f'INSERT INTO {table} ({", ".join(columns)}) VALUES ({placeholders})',
+        bind,
+    )
+
+
+def _migrate_legacy_camera_urls(connection: sqlite3.Connection) -> None:
+    """Copy http_snapshot_url / rtsp_url into capture_url when present on legacy tables."""
+    cols = _table_column_names(connection, 'cameras')
+    if 'capture_url' not in cols:
+        return
+    if 'http_snapshot_url' in cols:
+        connection.execute(
+            '''
+            UPDATE cameras
+            SET capture_url = http_snapshot_url
+            WHERE (capture_url IS NULL OR capture_url = '')
+              AND http_snapshot_url IS NOT NULL AND http_snapshot_url != ''
+            '''
+        )
+    if 'rtsp_url' in cols:
+        connection.execute(
+            '''
+            UPDATE cameras
+            SET capture_url = rtsp_url
+            WHERE (capture_url IS NULL OR capture_url = '')
+              AND rtsp_url IS NOT NULL AND rtsp_url != ''
+            '''
+        )
+    if 'http_snapshot_url' in cols or 'rtsp_url' in cols:
+        # Prefer http snapshot kind when we copied from http_snapshot_url.
+        if 'capture_kind' in cols and 'http_snapshot_url' in cols:
+            connection.execute(
+                '''
+                UPDATE cameras
+                SET capture_kind = 'http_snapshot'
+                WHERE (capture_kind IS NULL OR capture_kind = '' OR capture_kind = 'auto')
+                  AND http_snapshot_url IS NOT NULL AND http_snapshot_url != ''
+                  AND capture_url = http_snapshot_url
+                '''
+            )
 
 
 def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
@@ -421,6 +501,7 @@ def _ensure_camera_tables(connection: sqlite3.Connection) -> None:
             'created_at': "TEXT NOT NULL DEFAULT ''",
         },
     )
+    _migrate_legacy_camera_urls(connection)
     connection.execute(
         'CREATE INDEX IF NOT EXISTS idx_cameras_site ON cameras(site_id, sort_order)'
     )
@@ -1400,17 +1481,15 @@ def _replace_sites(connection: sqlite3.Connection, sites: list[Any]) -> None:
         if not isinstance(site, dict):
             continue
         is_default = site.get('is_default')
-        connection.execute(
-            f'''
-            INSERT INTO sites ({", ".join(SITE_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(SITE_COLUMNS))})
-            ''',
-            (
-                str(site.get('id', '')),
-                str(site.get('name', '')),
-                1 if is_default else 0,
-                str(site.get('created_at', '')),
-            ),
+        _insert_compat(
+            connection,
+            'sites',
+            {
+                'id': str(site.get('id', '')),
+                'name': str(site.get('name', '')),
+                'is_default': 1 if is_default else 0,
+                'created_at': str(site.get('created_at', '')),
+            },
         )
 
 
@@ -1425,21 +1504,19 @@ def _replace_scales(connection: sqlite3.Connection, scales: list[Any]) -> None:
         else:
             connection_json = str(conn_val or '{}')
         enabled = scale.get('enabled')
-        connection.execute(
-            f'''
-            INSERT INTO scales ({", ".join(SCALE_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(SCALE_COLUMNS))})
-            ''',
-            (
-                str(scale.get('id', '')),
-                str(scale.get('site_id', '')),
-                str(scale.get('role', '')),
-                str(scale.get('name', '')),
-                str(scale.get('adapter_id', '')),
-                connection_json,
-                1 if enabled else 0,
-                str(scale.get('created_at', '')),
-            ),
+        _insert_compat(
+            connection,
+            'scales',
+            {
+                'id': str(scale.get('id', '')),
+                'site_id': str(scale.get('site_id', '')),
+                'role': str(scale.get('role', '')),
+                'name': str(scale.get('name', '')),
+                'adapter_id': str(scale.get('adapter_id', '')),
+                'connection': connection_json,
+                'enabled': 1 if enabled else 0,
+                'created_at': str(scale.get('created_at', '')),
+            },
         )
 
 
@@ -1448,21 +1525,19 @@ def _replace_site_runtime(connection: sqlite3.Connection, rows: list[Any]) -> No
     for row in rows:
         if not isinstance(row, dict):
             continue
-        connection.execute(
-            f'''
-            INSERT INTO site_runtime ({", ".join(SITE_RUNTIME_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(SITE_RUNTIME_COLUMNS))})
-            ''',
-            (
-                str(row.get('site_id', '')),
-                str(row.get('active_scale_set', 'primary')),
-                str(row.get('camera_mode', 'normal')),
-                str(row.get('anpr_mode', 'enabled')),
-                row.get('switch_reason'),
-                row.get('switch_by_operator_id'),
-                row.get('switch_by_operator_name'),
-                row.get('switch_at'),
-            ),
+        _insert_compat(
+            connection,
+            'site_runtime',
+            {
+                'site_id': str(row.get('site_id', '')),
+                'active_scale_set': str(row.get('active_scale_set', 'primary')),
+                'camera_mode': str(row.get('camera_mode', 'normal')),
+                'anpr_mode': str(row.get('anpr_mode', 'enabled')),
+                'switch_reason': row.get('switch_reason'),
+                'switch_by_operator_id': row.get('switch_by_operator_id'),
+                'switch_by_operator_name': row.get('switch_by_operator_name'),
+                'switch_at': row.get('switch_at'),
+            },
         )
 
 
@@ -1471,22 +1546,20 @@ def _replace_site_scale_switches(connection: sqlite3.Connection, events: list[An
     for event in events:
         if not isinstance(event, dict):
             continue
-        connection.execute(
-            f'''
-            INSERT INTO site_scale_switches ({", ".join(SITE_SCALE_SWITCH_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(SITE_SCALE_SWITCH_COLUMNS))})
-            ''',
-            (
-                str(event.get('id', '')),
-                str(event.get('site_id', '')),
-                str(event.get('from_set', '')),
-                str(event.get('to_set', '')),
-                str(event.get('reason', '')),
-                event.get('operator_id'),
-                str(event.get('operator_name', '')),
-                str(event.get('at', '')),
-                event.get('camera_ack'),
-            ),
+        _insert_compat(
+            connection,
+            'site_scale_switches',
+            {
+                'id': str(event.get('id', '')),
+                'site_id': str(event.get('site_id', '')),
+                'from_set': str(event.get('from_set', '')),
+                'to_set': str(event.get('to_set', '')),
+                'reason': str(event.get('reason', '')),
+                'operator_id': event.get('operator_id'),
+                'operator_name': str(event.get('operator_name', '')),
+                'at': str(event.get('at', '')),
+                'camera_ack': event.get('camera_ack'),
+            },
         )
 
 
@@ -1507,25 +1580,23 @@ def _replace_cameras(connection: sqlite3.Connection, cameras: list[Any]) -> None
             sort_order = int(cam.get('sort_order') if cam.get('sort_order') is not None else 0)
         except (TypeError, ValueError):
             sort_order = 0
-        connection.execute(
-            f'''
-            INSERT INTO cameras ({", ".join(CAMERA_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(CAMERA_COLUMNS))})
-            ''',
-            (
-                str(cam.get('id', '')),
-                str(cam.get('site_id', '')),
-                str(cam.get('role', '')),
-                str(cam.get('name', '')),
-                str(cam.get('capture_url', '')),
-                str(cam.get('capture_kind') or 'auto'),
-                1 if enabled else 0,
-                sort_order,
-                roi_json,
-                cam.get('reference_normal_path'),
-                cam.get('reference_spare_path'),
-                str(cam.get('created_at', '')),
-            ),
+        _insert_compat(
+            connection,
+            'cameras',
+            {
+                'id': str(cam.get('id', '')),
+                'site_id': str(cam.get('site_id', '')),
+                'role': str(cam.get('role', '')),
+                'name': str(cam.get('name', '')),
+                'capture_url': str(cam.get('capture_url', '')),
+                'capture_kind': str(cam.get('capture_kind') or 'auto'),
+                'enabled': 1 if enabled else 0,
+                'sort_order': sort_order,
+                'roi_json': roi_json,
+                'reference_normal_path': cam.get('reference_normal_path'),
+                'reference_spare_path': cam.get('reference_spare_path'),
+                'created_at': str(cam.get('created_at', '')),
+            },
         )
 
 

@@ -108,7 +108,7 @@ async function syncConfigToServer(): Promise<void> {
   }
 }
 
-async function syncDatabaseToServer(): Promise<void> {
+async function syncDatabaseToServer(options?: { throwOnError?: boolean }): Promise<void> {
   const data = collectDatabaseStorage();
   try {
     const response = await fetch('/api/database', {
@@ -116,11 +116,23 @@ async function syncDatabaseToServer(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ data }),
     });
-    if (response.ok) {
-      logger.debug('storage', 'BD/weighing.db сохранён');
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        const body = (await response.json()) as { message?: string };
+        if (body.message) message = body.message;
+      } catch {
+        // ignore parse errors
+      }
+      const error = new Error(message);
+      logger.warn('storage', 'BD/weighing.db sync failed', error);
+      if (options?.throwOnError) throw error;
+      return;
     }
-  } catch {
-    // Backend недоступен
+    logger.debug('storage', 'BD/weighing.db сохранён');
+  } catch (error) {
+    logger.warn('storage', 'BD/weighing.db sync failed', error);
+    if (options?.throwOnError) throw error;
   }
 }
 
@@ -189,7 +201,7 @@ export async function flushDatabaseSync(): Promise<void> {
     clearTimeout(databaseSyncTimer);
     databaseSyncTimer = null;
   }
-  await syncDatabaseToServer();
+  await syncDatabaseToServer({ throwOnError: true });
 }
 
 export interface StoragePaths {
