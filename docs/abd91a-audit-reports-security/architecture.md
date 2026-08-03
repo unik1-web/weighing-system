@@ -100,7 +100,7 @@ pbkdf2_sha256$<iterations>$<salt_b64>$<dk_b64>
 { "id", "email", "username", "mustChangePassword": true|false }
 ```
 
-**Не** отдавать `passwordHash` / `password_hash` клиенту. POST sync: игнорировать попытки клиента записать `passwordHash`; hash меняется только через `/api/auth/*`.
+**Не** отдавать `passwordHash` / `password_hash` клиенту. POST sync: игнорировать попытки клиента записать `passwordHash`; hash меняется только через `/api/auth/*`. Флаг `must_change_password` — **server-owned**: `_replace_users` всегда сохраняет значение из БД (`existing_flags`), клиентский `mustChangePassword` игнорируется (нельзя сбросить gate через sync).
 
 **Создание дефолтного admin** (`initializeStorage` / серверный bootstrap при пустой БД):
 
@@ -167,7 +167,7 @@ AND между группами; weight sources — OR внутри мульти
 | Метод | Путь | Тело | Ответ |
 |-------|------|------|-------|
 | `POST` | `/api/auth/login` | `{ username, password }` | `{ success, user: {id,email,username}, profile, must_change_password }` или 401 |
-| `POST` | `/api/auth/change-password` | `{ user_id, current_password?, new_password }` | `{ success, must_change_password: false }`; при force-change после login с дефолтом `current_password` можно не требовать если сессия только что выдана — **рекомендация:** всегда требовать `current_password` для обычной смены; для `must_change_password=1` достаточно `user_id` + `new_password` (и опционально current), сервер проверяет minLength≥6 и `new_password != 'admin123'` |
+| `POST` | `/api/auth/change-password` | `{ user_id, current_password, new_password }` | `{ success, must_change_password: false }`; **`current_password` всегда обязателен** (в т.ч. при `must_change_password=1`) — verify против stored hash; иначе 401. Сервер: minLength≥6, `new_password != 'admin123'`. Закрывает LAN takeover по публичному `user_id` из `GET /api/database` |
 | `POST` | `/api/auth/register` | `{ username, password, display_name }` | создаёт user+profile (роль admin если первый, иначе user); hash на сервере; `{ success, user, profile }` |
 
 Ошибки — как в остальном API: `{ success: false, message }` + 4xx. **Не** логировать plaintext паролей.
@@ -260,7 +260,7 @@ docs/
 
 ### Force change password
 
-После login с `must_change_password`: рендер модалки поверх App (нельзя закрыть/обойти навигацией). Поля: новый пароль, подтверждение; validation ≥6, ≠`admin123`, совпадение. Успех → обновить контекст, продолжить работу.
+После login с `must_change_password`: рендер модалки поверх App (нельзя закрыть/обойти навигацией). Поля: **текущий пароль**, новый пароль, подтверждение; validation ≥6, ≠`admin123`, совпадение. Успех → обновить контекст, продолжить работу.
 
 ## Тесты (минимум для development/testing)
 
@@ -270,15 +270,18 @@ docs/
 4. journal-filters: site/role/photo/anpr/mode.
 5. Регрессия: archive edit по-прежнему пишет revisions; sync users без passwordHash.
 
-## Открытые решения (рекомендации разработчику)
+## Зафиксированные решения (после code-review / auth rework)
 
-| Тема | Рекомендация |
-|------|----------------|
-| Имя модуля auth routes | Отдельный `auth_passwords.py` + функции-хендлеры в `app.py` (как anpr) — без лишнего blueprint |
-| `current_password` при must_change | Не требовать (флаг уже после успешного login) |
-| Где bootstrap admin | Сервер при пустых users в `write_database`/`init` **или** клиент `register` через API при `initializeStorage`; не оставлять btoa на клиенте |
-| ReportsView сводки | Вне минимума — не делать |
-| Инкремент version при archive no-op | Не инкрементировать и не писать `updated`, если diff пуст |
+| Тема | Итог |
+|------|------|
+| Имя модуля auth routes | `auth_passwords.py` + хендлеры в `app.py` |
+| `current_password` при must_change | **Всегда обязателен** (закрыт unauth reset по `user_id`) |
+| `must_change_password` sync | Server-owned; клиент не может clear-to-0 |
+| Bootstrap admin | Сервер при пустой таблице users (PBKDF2 + `must_change=1`) |
+| ReportsView сводки | Вне минимума — не делалось |
+| Archive no-op | Без bump version и без пустого `updated` |
+| Logout всех сессий при смене пароля | Вне минимума |
+| Ограничение `/api/auth/register` ролью admin | Вне минимума (LAN/bootstrap) |
 
 ## Критерии готовности для development
 

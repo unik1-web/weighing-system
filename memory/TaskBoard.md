@@ -121,7 +121,7 @@ Description: |
 
 ## abd91a-audit-reports-security
 
-State: tech-writer
+State: done
 Description: |
   Источник: docs/tasks/09-audit-reports-security.md
 
@@ -131,5 +131,7 @@ Description: |
   фото, ANPR, режим, оператор); актуальные docs/* и README;
   серверный hash паролей и принудительная смена дефолтного admin.
   Зависимости: этапы 1–8 по факту.
+
+  Завершено: 2026-08-03T03:59:36Z. Артефакты: docs/abd91a-audit-reports-security/.
 
 ---
