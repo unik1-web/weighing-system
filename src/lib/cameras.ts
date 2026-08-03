@@ -295,3 +295,86 @@ export function shouldShowCameraSettings(
 ): boolean {
   return true;
 }
+
+/** Mask userinfo password in camera URLs for display (user:***@host…). */
+export function maskCameraUrl(url: string): string {
+  if (!url || !url.includes('@')) return url;
+  const schemeSep = url.indexOf('://');
+  if (schemeSep < 0) return url;
+  const prefix = url.slice(0, schemeSep + 3);
+  const rest = url.slice(schemeSep + 3);
+  const at = rest.lastIndexOf('@');
+  if (at < 0) return url;
+  const userinfo = rest.slice(0, at);
+  const hostpart = rest.slice(at + 1);
+  const colon = userinfo.indexOf(':');
+  if (colon >= 0) {
+    return `${prefix}${userinfo.slice(0, colon)}:***@${hostpart}`;
+  }
+  return `${prefix}***@${hostpart}`;
+}
+
+export interface DiscoverBrand {
+  id: string;
+  label: string;
+}
+
+export interface DiscoverProgress {
+  current: number;
+  total: number;
+  label: string;
+}
+
+export interface DiscoverCandidate {
+  url: string;
+  kind: CaptureKind;
+  brand: string;
+  ok: boolean;
+  preview_path?: string | null;
+  error?: string | null;
+  template_id?: string;
+}
+
+export interface DiscoverSessionState {
+  success: boolean;
+  session_id: string;
+  status: 'running' | 'done' | 'cancelled' | 'failed';
+  progress: DiscoverProgress;
+  candidates: DiscoverCandidate[];
+  message?: string | null;
+  error?: string | null;
+  skipped_rtsp?: boolean;
+}
+
+export interface DiscoverStartBody {
+  ip: string;
+  username?: string;
+  password?: string;
+  brand?: string | null;
+  http_port?: number;
+  rtsp_port?: number;
+}
+
+export async function fetchDiscoverBrands(): Promise<DiscoverBrand[]> {
+  try {
+    const data = await apiGet<{ success: boolean; brands: DiscoverBrand[] }>(
+      '/api/cameras/discover/brands',
+    );
+    return data.brands ?? [];
+  } catch (err) {
+    logger.warn('cameras', 'discover brands unavailable', err);
+    return [];
+  }
+}
+
+export async function startDiscover(body: DiscoverStartBody): Promise<DiscoverSessionState> {
+  return apiPost<DiscoverSessionState>('/api/cameras/discover', body);
+}
+
+export async function pollDiscover(sessionId: string): Promise<DiscoverSessionState> {
+  return apiGet<DiscoverSessionState>(`/api/cameras/discover/${sessionId}`);
+}
+
+export async function cancelDiscover(sessionId: string): Promise<DiscoverSessionState> {
+  return apiPost<DiscoverSessionState>(`/api/cameras/discover/${sessionId}/cancel`, {});
+}

@@ -486,6 +486,73 @@ def cameras_photo():
         return error_response(f'Ошибка чтения фото: {exc}')
 
 
+@app.get('/api/cameras/discover/brands')
+def cameras_discover_brands():
+    try:
+        import camera_discover as discover_mod
+
+        return jsonify({'success': True, 'brands': discover_mod.get_brands()})
+    except Exception as exc:
+        logger.exception('cameras discover brands failed')
+        return error_response(f'Ошибка списка брендов: {exc}')
+
+
+@app.post('/api/cameras/discover')
+def cameras_discover_start():
+    body = request.get_json(silent=True) or {}
+    ip = body.get('ip')
+    if not ip:
+        return error_response('Нужен ip')
+    username = body.get('username') or ''
+    password = body.get('password') or ''
+    brand = body.get('brand', None)
+    http_port = body.get('http_port', None)
+    rtsp_port = body.get('rtsp_port', None)
+    try:
+        import camera_discover as discover_mod
+
+        result = discover_mod.start_discover(
+            ip=str(ip),
+            username=str(username) if username is not None else '',
+            password=str(password) if password is not None else '',
+            brand=str(brand) if brand not in (None, '') else None,
+            http_port=int(http_port) if http_port is not None and http_port != '' else None,
+            rtsp_port=int(rtsp_port) if rtsp_port is not None and rtsp_port != '' else None,
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras discover start failed')
+        return error_response(f'Ошибка поиска камеры: {exc}')
+
+
+@app.get('/api/cameras/discover/<session_id>')
+def cameras_discover_status(session_id: str):
+    try:
+        import camera_discover as discover_mod
+
+        return jsonify(discover_mod.get_discover(session_id))
+    except KeyError:
+        return error_response('Сессия поиска не найдена', 404)
+    except Exception as exc:
+        logger.exception('cameras discover status failed')
+        return error_response(f'Ошибка статуса поиска: {exc}')
+
+
+@app.post('/api/cameras/discover/<session_id>/cancel')
+def cameras_discover_cancel(session_id: str):
+    try:
+        import camera_discover as discover_mod
+
+        return jsonify(discover_mod.cancel_discover(session_id))
+    except KeyError:
+        return error_response('Сессия поиска не найдена', 404)
+    except Exception as exc:
+        logger.exception('cameras discover cancel failed')
+        return error_response(f'Ошибка отмены поиска: {exc}')
+
+
 @app.get('/api/anpr/capabilities')
 def anpr_capabilities():
     try:

@@ -46,10 +46,18 @@ export async function apiGet<T>(path: string, params?: Record<string, string>): 
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  const logBody =
-    path.startsWith('/api/auth/') && body && typeof body === 'object'
-      ? { ...(body as Record<string, unknown>), password: undefined, new_password: undefined, current_password: undefined }
-      : body;
+  const shouldMaskPassword =
+    (path.startsWith('/api/auth/') || path === '/api/cameras/discover') &&
+    body &&
+    typeof body === 'object';
+  const logBody = shouldMaskPassword
+    ? {
+        ...(body as Record<string, unknown>),
+        password: body && 'password' in (body as object) ? '***' : undefined,
+        new_password: undefined,
+        current_password: undefined,
+      }
+    : body;
   logger.debug('api', `POST ${path}`, logBody);
   try {
     const response = await fetch(`${API_BASE}${path}`, {

@@ -76,6 +76,12 @@ import {
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 import { CameraSetupPreview } from '@/components/CameraSetupPreview';
+import {
+  CameraDiscoverPanel,
+  readCamerasSubTab,
+  writeCamerasSubTab,
+  type CamerasSubTab,
+} from '@/components/CameraDiscoverPanel';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 const TRANSPORT_OPTIONS: { id: ScaleTransportKind; label: string }[] = [
@@ -174,6 +180,12 @@ export function SettingsView({ onSaved }: Props) {
   const [cameraCaps, setCameraCaps] = useState<CameraCapabilities | null>(null);
   const [anprCaps, setAnprCaps] = useState<AnprCapabilities | null>(null);
   const [cameraBusyId, setCameraBusyId] = useState<string | null>(null);
+  const [camerasSubTab, setCamerasSubTab] = useState<CamerasSubTab>(() => readCamerasSubTab());
+
+  const selectCamerasSubTab = (tab: CamerasSubTab) => {
+    setCamerasSubTab(tab);
+    writeCamerasSubTab(tab);
+  };
 
   const reloadSiteState = () => {
     ensureSiteMigrated();
@@ -1255,6 +1267,42 @@ export function SettingsView({ onSaved }: Props) {
             )}
           </p>
 
+          <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+            <button
+              type="button"
+              onClick={() => selectCamerasSubTab('registry')}
+              className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                camerasSubTab === 'registry'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-800'
+              }`}
+            >
+              Реестр
+            </button>
+            <button
+              type="button"
+              onClick={() => selectCamerasSubTab('discover')}
+              className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                camerasSubTab === 'discover'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-800'
+              }`}
+            >
+              Поиск камеры
+            </button>
+          </div>
+
+          {camerasSubTab === 'discover' ? (
+            <CameraDiscoverPanel
+              siteId={siteId || null}
+              cameras={cameras}
+              setCameras={setCameras}
+              cameraCaps={cameraCaps}
+              onDirty={() => setSaved(false)}
+              onApplied={() => selectCamerasSubTab('registry')}
+            />
+          ) : (
+            <>
           <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
             <input
               type="checkbox"
@@ -1518,6 +1566,8 @@ export function SettingsView({ onSaved }: Props) {
           >
             Добавить камеру
           </button>
+            </>
+          )}
         </div>
       )}
 

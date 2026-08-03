@@ -132,6 +132,12 @@
 | `POST` | `/api/cameras/snapshot` | `{ camera_id }` или `{ capture_url, capture_kind? }` | `{ success, relative_path }` во временный `Photo/tmp/` |
 | `POST` | `/api/cameras/reference` | `{ camera_id, mode: "normal"\|"spare" }` | Снимок эталона → `Photo/refs/…`; `{ success, camera }` |
 | `GET` | `/api/cameras/photo` | `path` (относительный от app root, только под `Photo/`) | `image/jpeg` или 404; path traversal → 400 |
+| `GET` | `/api/cameras/discover/brands` | — | `{ success, brands: [{ id, label }] }` — каталог брендов (без пункта «Неизвестно») |
+| `POST` | `/api/cameras/discover` | `{ ip, username?, password?, brand?, http_port?, rtsp_port? }` | Старт сессии: `{ success, session_id, status: "running", progress, candidates }` — SSRF: только частные/локальные IPv4; новый POST отменяет предыдущую running-сессию |
+| `GET` | `/api/cameras/discover/<session_id>` | — | Poll: `{ success, session_id, status, progress: { current, total, label }, candidates: [{ url, kind, brand, ok, preview_path, template_id }], message?, error?, skipped_rtsp? }` — `url` полный (UI маскирует); 404 если сессия неизвестна |
+| `POST` | `/api/cameras/discover/<session_id>/cancel` | — | Отмена: прекращает новые попытки; `{ success, status: "cancelled", … }` |
+
+Поведение discover: каталог шаблонов `camera_templates.py` (Hikvision, Dahua, Axis, Uniview, generic); HTTP ≤2 параллельно, RTSP последовательно; wall-clock ~45 с; без OpenCV RTSP пропускается (`skipped_rtsp`). Переиспользует `grab_frame_http` / `grab_frame_rtsp` / `save_tmp_snapshot`. Пароли не пишутся в логи (маскирование userinfo).
 
 Поведение `capture`: при `video_enabled=false` — строки `skipped`, HTTP 200; ошибка одной камеры — `failed`, остальные ок; таймаут HTTP ~3 с; параллельно до 4 камер.
 
