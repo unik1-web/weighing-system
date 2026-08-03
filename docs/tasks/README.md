@@ -10,8 +10,8 @@
 | Что | Значение |
 |-----|----------|
 | Последний **влитый** этап (base) | **01** — [PR #13](https://github.com/unik1-web/weighing-system/pull/13) (+ [PR #23](https://github.com/unik1-web/weighing-system/pull/23)) |
-| На этой ветке оркестратора | **09** выполнен: задача `abd91a-audit-reports-security` (см. [docs/abd91a-audit-reports-security/](../abd91a-audit-reports-security/)); ранее **08**…**02** |
-| **Следующий прогон** | Очередь roadmap **закрыта** (этап 09 — финальный контур). Новых постановок в `docs/tasks/` нет |
+| На этой ветке оркестратора | **09** выполнен: задача `abd91a-audit-reports-security` (см. [docs/abd91a-audit-reports-security/](../abd91a-audit-reports-security/)); ранее **08**…**02**; UI-фиксы камер/шапки по отдельным PR |
+| **Следующий прогон** | [10-photo-proveska-settings.md](10-photo-proveska-settings.md) |
 | Не брать как базу | Открытые PR #15–#21 (старый CLI-стек 2–7, не влиты) |
 
 ## Очередь
@@ -26,22 +26,29 @@
 | 06 | [06-yearly-db-archive.md](06-yearly-db-archive.md) | 6. Годовая БД / архив | 01–03 | **Сделано на ветке** (`3aa7f0-yearly-db-archive`) |
 | 07 | [07-photo-capture.md](07-photo-capture.md) | 7. Фотофиксация | 04 (+05) | **Сделано на ветке** (`37cc69-photo-capture`) |
 | 08 | [08-anpr.md](08-anpr.md) | 8. ANPR | 07 + `anpr_mode` из 04 | **Сделано на ветке** (`cb0fb4-anpr`); порог релиза ≥ 50% |
-| 09 | [09-audit-reports-security.md](09-audit-reports-security.md) | 9. Аудит / отчёты / пароли | 01–08 по факту | **Сделано на ветке** (`abd91a-audit-reports-security`); финальный контур |
+| 09 | [09-audit-reports-security.md](09-audit-reports-security.md) | 9. Аудит / отчёты / пароли | 01–08 по факту | **Сделано на ветке** (`abd91a-audit-reports-security`) |
+| 10 | [10-photo-proveska-settings.md](10-photo-proveska-settings.md) | 10. Фото / провеска / настройки | 07 (+ UI камер) | Постобработка UX: фото, термин «провеска», README, вкладки настроек |
 
 ```text
 01 → 02 → 03 → 04 ──┐
                  05 │  (параллельно после 04)
                  06 │  (параллельно с 04–05)
-                    └─→ 07 → 08 → 09
+                    └─→ 07 → 08 → 09 → 10
 ```
 
 Этапы **01–03 и 06** — рабочий контур **без камер** (базовая сборка).  
 Этапы **04–05** — железо и протоколы.  
 Этапы **07–08** — полная сборка после камер и спайка ANPR.  
-Этап **09** — аудит, отчёты/фильтры, docs, серверные пароли (финал roadmap в `docs/tasks/`).
+Этап **09** — аудит, отчёты/фильтры, docs, серверные пароли.  
+Этап **10** — надёжность фото, термин «провеска», README по камерам, вкладки настроек.
 
 ## Как запускать следующий этап
 
-Очередь постановок **01–09** исчерпана. Новые задачи — только после появления файла в `docs/tasks/` или явной постановки вне roadmap.
+1. Дашборд (опционально): `npm run orchestrator:dashboard`
+2. В чате Cursor:
 
-Прогресс завершённых прогонов: `memory/TaskBoard.md`, `memory/TASK_MEMORY_*.yml`, артефакты tech-writer в `docs/{task_id}/`, UI дашборда на `http://127.0.0.1:5174`.
+```text
+/orchestrator создай задачу на доске по docs/tasks/10-photo-proveska-settings.md и начни выполнять
+```
+
+Прогресс: `memory/TaskBoard.md`, `memory/TASK_MEMORY_*.yml`, UI на `http://127.0.0.1:5174`.
