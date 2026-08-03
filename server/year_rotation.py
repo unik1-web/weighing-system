@@ -267,13 +267,23 @@ def copy_entities_to_new_year(source_path: str, target_path: str) -> None:
         connection.execute('ATTACH DATABASE ? AS src', (source_path,))
         try:
             for table in COPY_TABLES:
-                columns = _table_columns(connection, table)
+                source_cols = {
+                    str(row['name'])
+                    for row in connection.execute(f'PRAGMA src.table_info({table})').fetchall()
+                }
+                columns = [c for c in _table_columns(connection, table) if c in source_cols]
                 if not columns:
                     continue
-                col_list = ', '.join(columns)
+                # Soft-fill columns present only on target (e.g. must_change_password).
+                missing = [c for c in _table_columns(connection, table) if c not in source_cols]
+                col_list = ', '.join(columns + missing)
+                select_exprs = list(columns) + [
+                    '0' if c == 'must_change_password' else 'NULL' for c in missing
+                ]
+                select_list = ', '.join(select_exprs)
                 connection.execute(f'DELETE FROM main.{table}')
                 connection.execute(
-                    f'INSERT INTO main.{table} ({col_list}) SELECT {col_list} FROM src.{table}'
+                    f'INSERT INTO main.{table} ({col_list}) SELECT {select_list} FROM src.{table}'
                 )
             connection.commit()
         finally:
@@ -394,6 +404,13 @@ ARCHIVE_EDITABLE_FIELDS = (
     'scale_id',
     'scale_role',
     'manual_weight_reason',
+    'photo_entry_path',
+    'photo_exit_path',
+    'photo_overview_path',
+    'anpr_plate_raw',
+    'plate_confidence',
+    'anpr_accepted',
+    'anpr_status',
 )
 
 
@@ -492,16 +509,21 @@ def update_archive_ticket(
                 ),
             )
 
+        if not revisions:
+            # No-op: do not bump version or write empty updated audit.
+            ticket = {column: current[column] for column in TICKET_COLUMNS}
+            ticket['auto_closed'] = bool(ticket.get('auto_closed'))
+            return {'ticket': ticket, 'revisions': []}
+
         new_version = actual_version + 1
         set_parts.append('version = ?')
         values.append(new_version)
         values.append(ticket_id)
 
-        if set_parts:
-            connection.execute(
-                f'UPDATE weighing_tickets SET {", ".join(set_parts)} WHERE id = ?',
-                values,
-            )
+        connection.execute(
+            f'UPDATE weighing_tickets SET {", ".join(set_parts)} WHERE id = ?',
+            values,
+        )
 
         connection.execute(
             '''

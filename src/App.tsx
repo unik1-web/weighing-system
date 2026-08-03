@@ -10,6 +10,7 @@ import { ArchiveView } from '@/components/ArchiveView';
 import { VescomImportView } from '@/components/VescomImportView';
 import { MetraImportView } from '@/components/MetraImportView';
 import { WaImportView } from '@/components/WaImportView';
+import { ForceChangePasswordModal } from '@/components/ForceChangePasswordModal';
 import { printTicket } from '@/components/PrintAct';
 import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
@@ -217,7 +218,7 @@ function MainApp() {
 }
 
 function AuthGate() {
-  const { session, loading } = useAuth();
+  const { session, loading, mustChangePassword } = useAuth();
 
   if (loading) {
     return (
@@ -231,7 +232,12 @@ function AuthGate() {
     return <LoginPage />;
   }
 
-  return <MainApp />;
+  return (
+    <>
+      <MainApp />
+      {mustChangePassword ? <ForceChangePasswordModal /> : null}
+    </>
+  );
 }
 
 export default function App() {

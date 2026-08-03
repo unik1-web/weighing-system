@@ -25,6 +25,7 @@ import {
   type ManualWeightReasonMode,
 } from './manual-weight-reason';
 import { logger } from './logger';
+import { diffTicketFields } from './ticket-audit-fields';
 
 export type { ManualWeightReasonMode };
 export type { ScaleTransportKind };
@@ -124,6 +125,7 @@ export interface User {
   id: string;
   email: string;
   username: string;
+  mustChangePassword?: boolean;
 }
 
 export interface Profile {
@@ -187,13 +189,56 @@ function hasStoredData(): boolean {
   return Object.values(STORAGE_KEYS).some((key) => localStorage.getItem(key) !== null);
 }
 
-// Users storage
+// Users storage (passwords live only on the server as PBKDF2 hashes)
 export const UserStorage = {
-  createUser: (username: string, password: string, displayName: string): User => {
+  /** Upsert a user row without a password (password set via /api/auth/*). */
+  upsertUser: (user: User & { mustChangePassword?: boolean }): User => {
+    const users = getAllUsers();
+    const normalizedUsername = user.username.trim().toLowerCase();
+    const existingIndex = users.findIndex(
+      (u) => u.id === user.id || u.username === normalizedUsername,
+    );
+    const stored = {
+      id: user.id,
+      email: user.email,
+      username: normalizedUsername,
+      mustChangePassword: Boolean(user.mustChangePassword),
+    };
+    if (existingIndex === -1) {
+      users.push(stored);
+    } else {
+      const prev = users[existingIndex];
+      // Never keep legacy client-side passwordHash in localStorage.
+      const { passwordHash: _drop, ...rest } = prev as Record<string, unknown>;
+      void _drop;
+      users[existingIndex] = { ...rest, ...stored };
+    }
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
+    return {
+      id: stored.id,
+      email: stored.email,
+      username: stored.username,
+      mustChangePassword: stored.mustChangePassword,
+    };
+  },
+
+  setMustChangePassword: (userId: string, value: boolean): void => {
+    const users = getAllUsers();
+    const index = users.findIndex((u) => u.id === userId);
+    if (index === -1) return;
+    users[index] = { ...stripPasswordHash(users[index]), mustChangePassword: value };
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
+  },
+
+  /**
+   * @deprecated Passwords must be created via /api/auth/register.
+   * Kept for rare offline bootstrap; does not store any password material.
+   */
+  createUser: (username: string, _password: string, displayName: string): User => {
     const users = getAllUsers();
     const normalizedUsername = username.trim().toLowerCase();
-    
-    if (users.some(u => u.username === normalizedUsername)) {
+
+    if (users.some((u) => u.username === normalizedUsername)) {
       throw new Error('Пользователь уже существует');
     }
 
@@ -201,58 +246,37 @@ export const UserStorage = {
       id: crypto.randomUUID(),
       email: `${normalizedUsername}@example.com`,
       username: normalizedUsername,
+      mustChangePassword:
+        normalizedUsername === 'admin' && _password === 'admin123',
     };
 
-    // Store user with hashed password (simple hash for demo)
-    const storedUser = {
-      ...user,
-      passwordHash: btoa(password), // Simple encoding for demo (not secure!)
-    };
+    users.push(stripPasswordHash(user));
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
 
-    users.push(storedUser);
-    persist(STORAGE_KEYS.USERS, JSON.stringify(users));
-
-    // Create default profile
     const profile: Profile = {
       username: normalizedUsername,
       display_name: displayName,
-      role: users.length === 1 ? 'admin' : 'user', // First user is admin
+      role: users.length === 1 ? 'admin' : 'user',
     };
 
     ProfileStorage.setProfile(user.id, profile);
     return user;
   },
 
-  validatePassword: (username: string, password: string): User | null => {
-    const users = getAllUsers();
-    const normalizedUsername = username.trim().toLowerCase();
-    const user = users.find(u => u.username === normalizedUsername);
-
-    if (!user) return null;
-
-    // Simple check for demo
-    if (btoa(password) === user.passwordHash) {
-      const { passwordHash, ...safeUser } = user;
-      return safeUser as User;
-    }
-
+  /** Local password check removed — use /api/auth/login. */
+  validatePassword: (_username: string, _password: string): User | null => {
     return null;
   },
 
   getUserById: (id: string): User | null => {
     const users = getAllUsers();
-    const user = users.find(u => u.id === id);
+    const user = users.find((u) => u.id === id);
     if (!user) return null;
-    const { passwordHash, ...safeUser } = user;
-    return safeUser as User;
+    return toSafeUser(user);
   },
 
   getAllUsers: (): User[] => {
-    const allStoredUsers = getAllUsers();
-    return allStoredUsers.map(u => {
-      const { passwordHash, ...safeUser } = u;
-      return safeUser as User;
-    });
+    return getAllUsers().map(toSafeUser);
   },
 
   updateProfile: (userId: string, updates: Partial<Profile>): void => {
@@ -263,15 +287,46 @@ export const UserStorage = {
   },
 
   deleteUser: (userId: string): void => {
-    const users = getAllUsers().filter(u => u.id !== userId);
-    persist(STORAGE_KEYS.USERS, JSON.stringify(users));
+    const users = getAllUsers().filter((u) => u.id !== userId);
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
     ProfileStorage.deleteProfile(userId);
   },
 };
 
+function stripPasswordHash(user: Record<string, unknown> | User): Record<string, unknown> {
+  const { passwordHash: _drop, password_hash: _drop2, ...rest } = user as Record<
+    string,
+    unknown
+  >;
+  void _drop;
+  void _drop2;
+  return rest;
+}
+
+function toSafeUser(user: Record<string, unknown>): User {
+  const clean = stripPasswordHash(user);
+  return {
+    id: String(clean.id ?? ''),
+    email: String(clean.email ?? ''),
+    username: String(clean.username ?? ''),
+    mustChangePassword: Boolean(clean.mustChangePassword),
+  };
+}
+
 function getAllUsers(): any[] {
   const stored = localStorage.getItem(STORAGE_KEYS.USERS);
-  return stored ? JSON.parse(stored) : [];
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    // Soft-migrate: drop any legacy passwordHash from cache.
+    const cleaned = parsed.map((u) =>
+      u && typeof u === 'object' ? stripPasswordHash(u as Record<string, unknown>) : u,
+    );
+    return cleaned;
+  } catch {
+    return [];
+  }
 }
 
 // Profile storage
@@ -521,7 +576,10 @@ export const TicketStorage = {
   update: (
     id: string,
     updates: Partial<WeighingTicket>,
-    options?: { expectedVersion?: number },
+    options?: {
+      expectedVersion?: number;
+      auditOperator?: { id: string | null; name: string };
+    },
   ): WeighingTicket | null => {
     const tickets = getAllTickets();
     const index = tickets.findIndex((t) => t.id === id);
@@ -552,15 +610,50 @@ export const TicketStorage = {
     tickets[index] = merged;
     persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
 
-    if (!wasCompleted && merged.status === 'completed') {
+    const becomingCompleted = !wasCompleted && merged.status === 'completed';
+    const diffs = diffTicketFields(current, merged);
+    const at = becomingCompleted
+      ? merged.completed_at ?? new Date().toISOString()
+      : new Date().toISOString();
+    const operatorId =
+      options?.auditOperator?.id ?? merged.operator_id ?? current.operator_id ?? null;
+    const operatorName =
+      options?.auditOperator?.name ||
+      merged.operator_name ||
+      current.operator_name ||
+      '';
+
+    if (diffs.length > 0) {
+      TicketRevisionStorage.appendMany(
+        diffs.map((d) => ({
+          ticket_id: merged.id,
+          at,
+          operator_id: operatorId,
+          operator_name: operatorName,
+          field: d.field,
+          old_value: d.old_value,
+          new_value: d.new_value,
+        })),
+      );
+    }
+
+    if (becomingCompleted) {
       TicketAuditStorage.append({
         ticket_id: merged.id,
         action: 'completed',
-        at: merged.completed_at ?? new Date().toISOString(),
-        operator_name: merged.operator_name,
-        operator_id: merged.operator_id,
+        at,
+        operator_name: operatorName,
+        operator_id: operatorId,
       });
       applyVehicleLearningOnComplete(merged);
+    } else if (diffs.length > 0) {
+      TicketAuditStorage.append({
+        ticket_id: merged.id,
+        action: 'updated',
+        at,
+        operator_name: operatorName,
+        operator_id: operatorId,
+      });
     }
 
     return merged;
@@ -618,6 +711,43 @@ export const TicketAuditStorage = {
 
   getByTicketId(ticketId: string): TicketAuditEvent[] {
     return TicketAuditStorage.getAll().filter((e) => e.ticket_id === ticketId);
+  },
+};
+
+/** Field-level revisions (sync key app_ticket_revisions). */
+export const TicketRevisionStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.TICKET_REVISIONS) === null) {
+      localStorage.setItem(STORAGE_KEYS.TICKET_REVISIONS, '[]');
+    }
+  },
+
+  getAll(): TicketRevision[] {
+    TicketRevisionStorage.ensureInitialized();
+    const stored = localStorage.getItem(STORAGE_KEYS.TICKET_REVISIONS);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  getByTicketId(ticketId: string): TicketRevision[] {
+    return TicketRevisionStorage.getAll()
+      .filter((r) => r.ticket_id === ticketId)
+      .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  },
+
+  appendMany(revisions: Omit<TicketRevision, 'id'>[]): void {
+    if (revisions.length === 0) return;
+    TicketRevisionStorage.ensureInitialized();
+    const all = TicketRevisionStorage.getAll();
+    for (const rev of revisions) {
+      all.push({ id: crypto.randomUUID(), ...rev });
+    }
+    persist(STORAGE_KEYS.TICKET_REVISIONS, JSON.stringify(all));
   },
 };
 
@@ -1540,18 +1670,21 @@ export async function clearAllDictionaries(): Promise<void> {
 export const initializeStorage = () => {
   if (hasStoredData()) {
     TicketAuditStorage.ensureInitialized();
+    TicketRevisionStorage.ensureInitialized();
     SitesStorage.ensureInitialized();
     ScalesStorage.ensureInitialized();
     SiteRuntimeStorage.ensureInitialized();
     SiteScaleSwitchesStorage.ensureInitialized();
+    // Soft-strip any legacy passwordHash left in localStorage.
+    const users = getAllUsers();
+    if (users.length > 0) {
+      persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
+    }
     return;
   }
 
-  try {
-    UserStorage.createUser('admin', 'admin123', 'Администратор');
-  } catch {
-    // Default admin user already exists
-  }
+  // Default admin is bootstrapped on the server (PBKDF2 + must_change_password).
+  // Do not create client-side password material.
 
   DictionaryStorage.add('vehicles', {
     name: 'А001АА',
@@ -1562,6 +1695,7 @@ export const initializeStorage = () => {
 
   SettingsStorage.set('org_name', 'Полигон отходов');
   TicketAuditStorage.ensureInitialized();
+  TicketRevisionStorage.ensureInitialized();
   SitesStorage.ensureInitialized();
   ScalesStorage.ensureInitialized();
   SiteRuntimeStorage.ensureInitialized();

@@ -141,6 +141,7 @@ export function SettingsView({ onSaved }: Props) {
   const [switchHistory, setSwitchHistory] = useState<
     ReturnType<typeof listSwitchHistory>
   >([]);
+  const [showAllSwitchHistory, setShowAllSwitchHistory] = useState(false);
   const [wizardDirection, setWizardDirection] = useState<'to_spare' | 'to_primary' | null>(null);
   const [siteMessage, setSiteMessage] = useState<string | null>(null);
   const [activeOnSpare, setActiveOnSpare] = useState(false);
@@ -161,7 +162,7 @@ export function SettingsView({ onSaved }: Props) {
     setActiveSetLabel(ACTIVE_SCALE_SET_LABELS[ctx.runtime.active_scale_set]);
     setActiveOnSpare(ctx.runtime.active_scale_set === 'spare');
     setSpareEnabled(isSpareEnabled(site.id));
-    setSwitchHistory(listSwitchHistory(site.id).slice().reverse().slice(0, 10));
+    setSwitchHistory(listSwitchHistory(site.id).slice().reverse());
     setSettings(SettingsStorage.getAppSettings());
     setCameras(CamerasStorage.forSite(site.id));
   };
@@ -1144,15 +1145,27 @@ export function SettingsView({ onSaved }: Props) {
 
         {switchHistory.length > 0 && (
           <div className="space-y-1 border-t border-slate-100 pt-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Журнал переключений
-            </p>
-            <ul className="max-h-40 space-y-1 overflow-y-auto text-xs text-slate-600">
-              {switchHistory.map((ev) => (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Журнал переключений ({switchHistory.length})
+              </p>
+              {switchHistory.length > 10 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllSwitchHistory((v) => !v)}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-700"
+                >
+                  {showAllSwitchHistory ? 'Свернуть' : 'Показать все'}
+                </button>
+              )}
+            </div>
+            <ul className="max-h-56 space-y-1 overflow-y-auto text-xs text-slate-600">
+              {(showAllSwitchHistory ? switchHistory : switchHistory.slice(0, 10)).map((ev) => (
                 <li key={ev.id}>
                   {new Date(ev.at).toLocaleString('ru-RU')} —{' '}
                   {ACTIVE_SCALE_SET_LABELS[ev.from_set]} → {ACTIVE_SCALE_SET_LABELS[ev.to_set]},{' '}
                   {SWITCH_REASON_LABELS[ev.reason]}, {ev.operator_name}
+                  {ev.camera_ack ? `, камеры: ${ev.camera_ack}` : ''}
                 </li>
               ))}
             </ul>

@@ -375,7 +375,8 @@ def init_schema(connection: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             email TEXT NOT NULL,
             username TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL
+            password_hash TEXT NOT NULL,
+            must_change_password INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS profiles (
@@ -543,6 +544,56 @@ def init_schema(connection: sqlite3.Connection) -> None:
         '''
     )
     ensure_ticket_schema(connection)
+    _ensure_users_schema(connection)
+
+
+def _ensure_users_schema(connection: sqlite3.Connection) -> None:
+    existing = {
+        row['name']
+        for row in connection.execute('PRAGMA table_info(users)').fetchall()
+    }
+    if not existing:
+        return
+    if 'must_change_password' not in existing:
+        connection.execute(
+            'ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0'
+        )
+
+
+def ensure_default_admin(connection: sqlite3.Connection) -> None:
+    """Bootstrap admin/admin123 with must_change_password=1 when users table is empty."""
+    from auth_passwords import (
+        DEFAULT_ADMIN_PASSWORD,
+        DEFAULT_ADMIN_USERNAME,
+        hash_password,
+    )
+
+    count = _table_count(connection, 'users')
+    if count > 0:
+        return
+
+    import uuid
+
+    user_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO users (id, email, username, password_hash, must_change_password)
+        VALUES (?, ?, ?, ?, 1)
+        ''',
+        (
+            user_id,
+            f'{DEFAULT_ADMIN_USERNAME}@example.com',
+            DEFAULT_ADMIN_USERNAME,
+            hash_password(DEFAULT_ADMIN_PASSWORD),
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO profiles (user_id, username, display_name, role)
+        VALUES (?, ?, ?, ?)
+        ''',
+        (user_id, DEFAULT_ADMIN_USERNAME, 'Администратор', 'admin'),
+    )
 
 
 def _table_count(connection: sqlite3.Connection, table: str) -> int:
@@ -592,18 +643,55 @@ def migrate_json_database_if_needed() -> None:
 
 
 def _load_users(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Public sync shape: never expose passwordHash to the client."""
     rows = connection.execute(
-        'SELECT id, email, username, password_hash FROM users ORDER BY username'
+        '''
+        SELECT id, email, username, must_change_password
+        FROM users
+        ORDER BY username
+        '''
     ).fetchall()
     return [
         {
             'id': row['id'],
             'email': row['email'],
             'username': row['username'],
-            'passwordHash': row['password_hash'],
+            'mustChangePassword': bool(row['must_change_password']),
         }
         for row in rows
     ]
+
+
+def _load_user_auth_row(
+    connection: sqlite3.Connection, *, username: str | None = None, user_id: str | None = None
+) -> dict[str, Any] | None:
+    if user_id:
+        row = connection.execute(
+            '''
+            SELECT id, email, username, password_hash, must_change_password
+            FROM users WHERE id = ?
+            ''',
+            (user_id,),
+        ).fetchone()
+    elif username:
+        row = connection.execute(
+            '''
+            SELECT id, email, username, password_hash, must_change_password
+            FROM users WHERE username = ?
+            ''',
+            (username.strip().lower(),),
+        ).fetchone()
+    else:
+        return None
+    if not row:
+        return None
+    return {
+        'id': row['id'],
+        'email': row['email'],
+        'username': row['username'],
+        'password_hash': row['password_hash'],
+        'must_change_password': bool(row['must_change_password']),
+    }
 
 
 def _load_profiles(connection: sqlite3.Connection) -> dict[str, dict[str, str]]:
@@ -803,6 +891,7 @@ def _load_session(connection: sqlite3.Connection) -> str | None:
 
 
 def _read_database_from_connection(connection: sqlite3.Connection) -> dict[str, str]:
+    ensure_default_admin(connection)
     result: dict[str, str] = {}
 
     users = _load_users(connection)
@@ -887,21 +976,39 @@ def read_database_at(path: str) -> dict[str, str]:
 
 
 def _replace_users(connection: sqlite3.Connection, users: list[Any]) -> None:
+    """Replace user rows; preserve existing password_hash (client must not set hashes)."""
+    existing_hashes: dict[str, str] = {}
+    existing_flags: dict[str, int] = {}
+    for row in connection.execute(
+        'SELECT id, password_hash, must_change_password FROM users'
+    ).fetchall():
+        existing_hashes[str(row['id'])] = str(row['password_hash'] or '')
+        existing_flags[str(row['id'])] = int(row['must_change_password'] or 0)
+
     connection.execute('DELETE FROM profiles')
     connection.execute('DELETE FROM users')
     for user in users:
         if not isinstance(user, dict):
             continue
+        user_id = str(user.get('id', ''))
+        if not user_id:
+            continue
+        # Ignore client passwordHash; keep server hash or leave placeholder for orphan rows.
+        password_hash = existing_hashes.get(user_id) or ''
+        # must_change_password is server-owned: login may force=1, change-password
+        # clears to 0. Client sync must never clear the gate while keeping the default hash.
+        must_change = existing_flags.get(user_id, 0)
         connection.execute(
             '''
-            INSERT INTO users (id, email, username, password_hash)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO users (id, email, username, password_hash, must_change_password)
+            VALUES (?, ?, ?, ?, ?)
             ''',
             (
-                str(user.get('id', '')),
+                user_id,
                 str(user.get('email', '')),
                 str(user.get('username', '')),
-                str(user.get('passwordHash', '')),
+                password_hash,
+                must_change,
             ),
         )
 

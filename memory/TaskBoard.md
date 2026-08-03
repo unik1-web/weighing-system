@@ -118,3 +118,20 @@ Description: |
   Завершено: 2026-08-02T17:55:33Z. Артефакты: docs/cb0fb4-anpr/.
 
 ---
+
+## abd91a-audit-reports-security
+
+State: done
+Description: |
+  Источник: docs/tasks/09-audit-reports-security.md
+
+  Цель: режим площадки в шапке формы (primary/spare, ANPR, камеры);
+  журнал переключений комплекта; полный ticket_audit/revisions;
+  расширенные фильтры/CSV/карточка (площадка, весы, источники веса,
+  фото, ANPR, режим, оператор); актуальные docs/* и README;
+  серверный hash паролей и принудительная смена дефолтного admin.
+  Зависимости: этапы 1–8 по факту.
+
+  Завершено: 2026-08-03T03:59:36Z. Артефакты: docs/abd91a-audit-reports-security/.
+
+---
