@@ -138,7 +138,7 @@ Description: |
 
 ## 875cc5-photo-proveska-settings
 
-State: new
+State: analysis
 Description: |
   Источник: docs/tasks/10-photo-proveska-settings.md
 
