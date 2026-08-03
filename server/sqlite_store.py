@@ -182,18 +182,7 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         )
         '''
     )
-    connection.execute(
-        '''
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_pair
-            ON vehicle_drivers(vehicle_number, driver_name)
-        '''
-    )
-    connection.execute(
-        '''
-        CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle
-            ON vehicle_drivers(vehicle_number)
-        '''
-    )
+    _ensure_vehicle_drivers_schema(connection)
 
     _ensure_site_tables(connection)
     _ensure_camera_tables(connection)
@@ -204,6 +193,13 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     }
     if not existing:
         return
+
+    # Legacy DBs may lack core columns if table was created before schema settled.
+    if 'vehicle_number' not in existing:
+        connection.execute(
+            "ALTER TABLE weighing_tickets ADD COLUMN vehicle_number TEXT NOT NULL DEFAULT ''"
+        )
+        existing.add('vehicle_number')
 
     column_weighing_mode_added = False
     if 'weighing_mode' not in existing:
@@ -487,12 +483,6 @@ def init_schema(connection: sqlite3.Connection) -> None:
             driver_id TEXT
         );
 
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_pair
-            ON vehicle_drivers(vehicle_number, driver_name);
-
-        CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle
-            ON vehicle_drivers(vehicle_number);
-
         CREATE TABLE IF NOT EXISTS sites (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -545,6 +535,83 @@ def init_schema(connection: sqlite3.Connection) -> None:
     )
     ensure_ticket_schema(connection)
     _ensure_users_schema(connection)
+
+
+def _ensure_vehicle_drivers_schema(connection: sqlite3.Connection) -> None:
+    """Migrate legacy vehicle_drivers and create indexes only when columns exist.
+
+    Older DBs may have a vehicle_drivers table without vehicle_number; CREATE INDEX
+    IF NOT EXISTS still fails with OperationalError: no such column.
+    """
+    cols = {
+        row['name']
+        for row in connection.execute('PRAGMA table_info(vehicle_drivers)').fetchall()
+    }
+    if not cols:
+        return
+
+    required = {'id', 'vehicle_number', 'driver_name', 'last_used_at', 'use_count'}
+    if not required.issubset(cols):
+        connection.execute('ALTER TABLE vehicle_drivers RENAME TO vehicle_drivers_legacy')
+        connection.execute(
+            '''
+            CREATE TABLE vehicle_drivers (
+                id TEXT PRIMARY KEY,
+                vehicle_number TEXT NOT NULL,
+                driver_name TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                use_count INTEGER NOT NULL DEFAULT 1,
+                driver_id TEXT
+            )
+            '''
+        )
+        legacy_cols = {
+            row['name']
+            for row in connection.execute(
+                'PRAGMA table_info(vehicle_drivers_legacy)'
+            ).fetchall()
+        }
+        # Best-effort copy of overlapping columns; missing vehicle_number → drop legacy rows.
+        if 'vehicle_number' in legacy_cols and 'driver_name' in legacy_cols:
+            select_id = 'id' if 'id' in legacy_cols else "hex(randomblob(16))"
+            select_last = (
+                'last_used_at' if 'last_used_at' in legacy_cols else "datetime('now')"
+            )
+            select_count = 'use_count' if 'use_count' in legacy_cols else '1'
+            select_driver_id = 'driver_id' if 'driver_id' in legacy_cols else 'NULL'
+            connection.execute(
+                f'''
+                INSERT INTO vehicle_drivers (
+                    id, vehicle_number, driver_name, last_used_at, use_count, driver_id
+                )
+                SELECT {select_id}, vehicle_number, driver_name, {select_last},
+                       {select_count}, {select_driver_id}
+                FROM vehicle_drivers_legacy
+                WHERE vehicle_number IS NOT NULL AND vehicle_number != ''
+                  AND driver_name IS NOT NULL AND driver_name != ''
+                '''
+            )
+        connection.execute('DROP TABLE vehicle_drivers_legacy')
+        cols = {
+            row['name']
+            for row in connection.execute('PRAGMA table_info(vehicle_drivers)').fetchall()
+        }
+
+    if 'driver_id' not in cols:
+        connection.execute('ALTER TABLE vehicle_drivers ADD COLUMN driver_id TEXT')
+
+    connection.execute(
+        '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_pair
+            ON vehicle_drivers(vehicle_number, driver_name)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle
+            ON vehicle_drivers(vehicle_number)
+        '''
+    )
 
 
 def _ensure_users_schema(connection: sqlite3.Connection) -> None:
