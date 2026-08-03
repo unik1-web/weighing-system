@@ -436,7 +436,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                 <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">ID</th>
                 <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Дата</th>
                 <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Номер</th>
-                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Груз</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase w-[8rem] max-w-[8rem]">Груз</th>
                 <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Отправитель</th>
                 <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Получатель</th>
                 <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Перевозчик</th>
@@ -447,7 +447,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                 {reoEnabled && (
                   <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap" title="РЭО: + отправлено, − не отправлено">РЭО</th>
                 )}
-                <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap"></th>
+                <th className="sticky right-0 z-10 bg-slate-50 px-2 py-2.5 text-center font-medium whitespace-nowrap shadow-[-4px_0_8px_-4px_rgba(15,23,42,0.12)]"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -457,14 +457,22 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                 <tr><td colSpan={tableColSpan} className="px-4 py-8 text-center text-slate-400">Записей не найдено</td></tr>
               ) : (
                 filtered.map((t) => (
-                  <tr key={t.id} className="hover:bg-slate-50/50 transition">
+                  <tr key={t.id} className="group hover:bg-slate-50/50 transition">
                     <td className="px-2 py-2.5 font-semibold text-slate-700 tabular-nums whitespace-nowrap">{t.ticket_number ?? '—'}</td>
                     <td className="px-2 py-2.5 text-slate-500 whitespace-nowrap tabular-nums">{new Date(t.created_at).toLocaleDateString('ru-RU')} {new Date(t.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</td>
                     <td className="px-2 py-2.5 font-medium text-slate-700 whitespace-nowrap">{t.vehicle_number}</td>
-                    <td className="px-2 py-2.5 text-slate-600 whitespace-nowrap">{t.cargo_name}</td>
-                    <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.shipper_name}>{t.shipper_name}</td>
-                    <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.receiver_name}>{t.receiver_name}</td>
-                    <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.carrier_name}>{t.carrier_name}</td>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[8rem]">
+                      <div className="truncate" title={t.cargo_name}>{t.cargo_name}</div>
+                    </td>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[8rem]">
+                      <div className="truncate" title={t.shipper_name}>{t.shipper_name}</div>
+                    </td>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[8rem]">
+                      <div className="truncate" title={t.receiver_name}>{t.receiver_name}</div>
+                    </td>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[8rem]">
+                      <div className="truncate" title={t.carrier_name}>{t.carrier_name}</div>
+                    </td>
                     <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">
                       <div>{t.gross_weight?.toLocaleString('ru-RU') ?? '—'}</div>
                       <div className="text-[10px] font-medium text-slate-400">Б: {sourceLabelForWeight(t.gross_weight, t.gross_source)}</div>
@@ -504,7 +512,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                         )}
                       </td>
                     )}
-                    <td className="px-2 py-2.5 text-center whitespace-nowrap">
+                    <td className="sticky right-0 z-10 bg-white px-2 py-2.5 text-center whitespace-nowrap shadow-[-4px_0_8px_-4px_rgba(15,23,42,0.12)] group-hover:bg-slate-50">
                       <button
                         onClick={() => setViewTicket(t)}
                         className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition mr-1"
