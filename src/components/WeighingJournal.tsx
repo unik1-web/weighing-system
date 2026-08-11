@@ -8,6 +8,7 @@ import {
   normalizeWeightSource,
   ticketMatchesWeightSources,
 } from '@/lib/weight-source';
+import { getErrorMessage } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
@@ -56,8 +57,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
         allTickets = allTickets.filter(t => t.reo_status === reoFilter);
       }
       setTickets(allTickets);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Не удалось загрузить журнал'));
     }
     setLoading(false);
   }, [statusFilter, reoFilter, reoEnabled]);
@@ -84,8 +85,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
     try {
       TicketStorage.delete(id);
       await load();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Не удалось удалить запись'));
     }
   };
 
@@ -106,8 +107,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
       eligibleTickets.forEach((ticket) => TicketStorage.markReoSent(ticket.id));
       logger.info('reo', `Отправлено в РЭО записей: ${eligibleTickets.length}`);
       await load();
-    } catch (err: any) {
-      setError(err.message ?? 'Не удалось отправить данные в РЭО');
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Не удалось отправить данные в РЭО'));
     } finally {
       setSendingBulk(false);
     }
@@ -118,8 +119,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
     try {
       TicketStorage.markReoPending(ticket.id);
       await load();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Не удалось обновить статус РЭО'));
     }
   };
 
