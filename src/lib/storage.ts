@@ -68,6 +68,10 @@ export interface User {
   username: string;
 }
 
+interface StoredUser extends User {
+  passwordHash: string;
+}
+
 export interface Profile {
   username: string;
   display_name: string;
@@ -107,6 +111,14 @@ function hasStoredData(): boolean {
   return Object.values(STORAGE_KEYS).some((key) => localStorage.getItem(key) !== null);
 }
 
+function sanitizeUser(user: StoredUser): User {
+  return {
+    id: user.id,
+    email: user.email,
+    username: user.username,
+  };
+}
+
 // Users storage
 export const UserStorage = {
   createUser: (username: string, password: string, displayName: string): User => {
@@ -124,7 +136,7 @@ export const UserStorage = {
     };
 
     // Store user with hashed password (simple hash for demo)
-    const storedUser = {
+    const storedUser: StoredUser = {
       ...user,
       passwordHash: btoa(password), // Simple encoding for demo (not secure!)
     };
@@ -152,8 +164,7 @@ export const UserStorage = {
 
     // Simple check for demo
     if (btoa(password) === user.passwordHash) {
-      const { passwordHash, ...safeUser } = user;
-      return safeUser as User;
+      return sanitizeUser(user);
     }
 
     return null;
@@ -163,16 +174,12 @@ export const UserStorage = {
     const users = getAllUsers();
     const user = users.find(u => u.id === id);
     if (!user) return null;
-    const { passwordHash, ...safeUser } = user;
-    return safeUser as User;
+    return sanitizeUser(user);
   },
 
   getAllUsers: (): User[] => {
     const allStoredUsers = getAllUsers();
-    return allStoredUsers.map(u => {
-      const { passwordHash, ...safeUser } = u;
-      return safeUser as User;
-    });
+    return allStoredUsers.map(sanitizeUser);
   },
 
   updateProfile: (userId: string, updates: Partial<Profile>): void => {
@@ -189,9 +196,9 @@ export const UserStorage = {
   },
 };
 
-function getAllUsers(): any[] {
+function getAllUsers(): StoredUser[] {
   const stored = localStorage.getItem(STORAGE_KEYS.USERS);
-  return stored ? JSON.parse(stored) : [];
+  return stored ? JSON.parse(stored) as StoredUser[] : [];
 }
 
 // Profile storage

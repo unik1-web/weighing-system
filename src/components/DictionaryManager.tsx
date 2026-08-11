@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useDictionary } from '@/hooks/useDictionary';
 import { DICTIONARY_LABELS, type DictionaryTable, type DictionaryEntry } from '@/lib/storage';
+import { getErrorMessage } from '@/lib/errors';
 import { Plus, Trash2, Pencil, Check, X, Package, Truck, User, Building2, Users } from 'lucide-react';
 
 
@@ -38,7 +39,6 @@ export function DictionaryManager({ table }: Props) {
   const showBrand = table === 'vehicles';
   const showInn = table === 'shippers' || table === 'receivers' || table === 'carriers';
   const isVehicleTable = table === 'vehicles';
-  const inputLabel = isVehicleTable ? 'Номер ТС' : 'Наименование';
   const placeholderLabel = isVehicleTable ? 'Номер ТС...' : 'Новое значение...';
 
   const handleAdd = async () => {
@@ -67,16 +67,9 @@ export function DictionaryManager({ table }: Props) {
       setNewTare('');
       setNewBrand('');
       setNewInn('');
-    } catch (err) {
-      setFormError(formatError(err));
+    } catch (err: unknown) {
+      setFormError(getErrorMessage(err, 'Не удалось добавить запись'));
     }
-  };
-
-  const formatError = (err: unknown) => {
-    if (err instanceof Error) return err.message;
-    if (typeof err === 'string') return err;
-    if (err && typeof err === 'object') return JSON.stringify(err, Object.getOwnPropertyNames(err), 2);
-    return String(err);
   };
 
   const validateInn = (inn: string): string | null => {
@@ -123,8 +116,8 @@ export function DictionaryManager({ table }: Props) {
         inn: showInn ? editInn.trim() : undefined,
       } as Partial<DictionaryEntry>);
       setEditingId(null);
-    } catch (err) {
-      setFormError(formatError(err));
+    } catch (err: unknown) {
+      setFormError(getErrorMessage(err, 'Не удалось сохранить запись'));
     }
   };
 

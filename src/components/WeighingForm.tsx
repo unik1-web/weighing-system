@@ -5,6 +5,7 @@ import {
   TicketStorage,
   SettingsStorage,
 } from '@/lib/storage';
+import { getErrorMessage } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { useDictionary } from '@/hooks/useDictionary';
 import { useAuth } from '@/hooks/useAuth';
@@ -90,7 +91,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [overridePhase, setOverridePhase] = useState<WeightPhase>('gross');
   const [activeField, setActiveField] = useState<WeightPhase>('gross');
   const [completingTicket, setCompletingTicket] = useState<WeighingTicket | null>(null);
-  const [incompleteRefresh, setIncompleteRefresh] = useState(0);
+  const [, setIncompleteRefresh] = useState(0);
 
   const [deviceId, setDeviceId] = useState<ScaleDeviceId>('microsim-m0601');
   const [vehicleNumber, setVehicleNumber] = useState('');
@@ -158,10 +159,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const totalAmountValue =
     netWeightValue != null && price ? calcTotalAmount(netWeightValue, parseFloat(price) || 0) : null;
 
-  const incompleteTickets = useMemo(() => {
-    void incompleteRefresh;
-    return filterIncompleteDual(TicketStorage.getAll());
-  }, [incompleteRefresh, success, lastTicket]);
+  const incompleteTickets = filterIncompleteDual(TicketStorage.getAll());
 
   const showIntervalBanner = useMemo(() => {
     if (!completingTicket) return false;
@@ -455,7 +453,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setIncompleteRefresh((n) => n + 1);
     } catch (err: unknown) {
       setSaving(false);
-      const message = err instanceof Error ? err.message : 'Ошибка сохранения';
+      const message = getErrorMessage(err, 'Ошибка сохранения');
       logger.error('weighing', message);
       setError(message);
     }
@@ -520,7 +518,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setIncompleteRefresh((n) => n + 1);
     } catch (err: unknown) {
       setSaving(false);
-      const message = err instanceof Error ? err.message : 'Ошибка сохранения';
+      const message = getErrorMessage(err, 'Ошибка сохранения');
       logger.error('weighing', message);
       setError(message);
     }
@@ -621,7 +619,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setIncompleteRefresh((n) => n + 1);
     } catch (err: unknown) {
       setSaving(false);
-      const message = err instanceof Error ? err.message : 'Ошибка сохранения';
+      const message = getErrorMessage(err, 'Ошибка сохранения');
       logger.error('weighing', message);
       setError(message);
     }

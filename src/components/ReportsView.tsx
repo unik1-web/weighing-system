@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { type WeighingTicket } from '@/lib/storage';
 import { TicketStorage } from '@/lib/storage';
 import { countWeightSources } from '@/lib/weight-source';
+import { getErrorMessage } from '@/lib/errors';
 import { BarChart3, Download, Filter, Calendar, RefreshCw } from 'lucide-react';
 
 type GroupBy = 'shipper_name' | 'carrier_name' | 'cargo_name' | 'operator_name' | 'receiver_name' | 'vehicle_number';
@@ -49,8 +50,8 @@ export function ReportsView() {
         return t.status === 'completed' && created >= dateFrom && created <= dateTo;
       });
       setTickets(filtered);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Не удалось загрузить отчёт'));
     }
     setLoading(false);
   }, [dateFrom, dateTo]);

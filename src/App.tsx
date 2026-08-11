@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { AuthProvider, useAuth } from '@/hooks/useAuth';
 import { LoginPage } from '@/components/LoginPage';
 import { WeighingForm } from '@/components/WeighingForm';
@@ -22,8 +22,8 @@ function MainApp() {
   const { displayName, signOut, isAdmin } = useAuth();
   const [tab, setTab] = useState<Tab>('weighing');
   const [journalKey, setJournalKey] = useState(0);
-  const [settingsKey, setSettingsKey] = useState(0);
   const [completionTicketId, setCompletionTicketId] = useState<string | null>(null);
+  const [, setSettingsVersion] = useState(0);
 
   const [exiting, setExiting] = useState(false);
 
@@ -49,7 +49,7 @@ function MainApp() {
     setJournalKey((k) => k + 1);
   }, []);
 
-  const appSettings = useMemo(() => SettingsStorage.getAppSettings(), [settingsKey]);
+  const appSettings = SettingsStorage.getAppSettings();
 
   const handleSaved = useCallback(() => {
     setJournalKey((k) => k + 1);
@@ -192,7 +192,7 @@ function MainApp() {
         {tab === 'wa' && appSettings.wa_enabled && (
           <WaImportView onImported={handleImported} />
         )}
-        {tab === 'settings' && <SettingsView onSaved={() => setSettingsKey((k) => k + 1)} />}
+        {tab === 'settings' && <SettingsView onSaved={() => setSettingsVersion((k) => k + 1)} />}
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-4">

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { ProfileStorage, UserStorage } from '@/lib/storage';
+import { getErrorMessage } from '@/lib/errors';
 import { useAuth } from '@/hooks/useAuth';
 import { Users, Shield, User as UserIcon, Trash2, Pencil, Check, X, ShieldCheck } from 'lucide-react';
 
@@ -26,8 +27,8 @@ export function UserManagement() {
     try {
       const allProfiles = ProfileStorage.getAllProfiles();
       setProfiles(allProfiles as ProfileRow[]);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Не удалось загрузить пользователей'));
     }
     setLoading(false);
   }, []);
@@ -48,8 +49,8 @@ export function UserManagement() {
         setEditingId(null);
         await load();
       }
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Не удалось сохранить пользователя'));
     }
   };
 
@@ -59,8 +60,8 @@ export function UserManagement() {
     try {
       UserStorage.deleteUser(userId);
       await load();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Не удалось удалить пользователя'));
     }
   };
 

@@ -20,6 +20,7 @@ import {
   importStorageBackup,
   type StoragePaths,
 } from '@/lib/storage-sync';
+import { getErrorMessage } from '@/lib/errors';
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 
@@ -199,8 +200,8 @@ export function SettingsView({ onSaved }: Props) {
         object_url: settings.reo_object_url.trim(),
       });
       setReoTestMessage({ type: 'success', text: 'Подключение к РЭО успешно' });
-    } catch (err: any) {
-      setReoTestMessage({ type: 'error', text: err.message ?? 'Ошибка подключения к РЭО' });
+    } catch (err: unknown) {
+      setReoTestMessage({ type: 'error', text: getErrorMessage(err, 'Ошибка подключения к РЭО') });
     } finally {
       setReoTesting(false);
     }
@@ -221,8 +222,8 @@ export function SettingsView({ onSaved }: Props) {
         password: settings.vescom_db_password || 'masterkey',
       });
       setVescomTestMessage({ type: 'success', text: 'Подключение к Vescom успешно' });
-    } catch (err: any) {
-      setVescomTestMessage({ type: 'error', text: err.message ?? 'Ошибка подключения к Vescom' });
+    } catch (err: unknown) {
+      setVescomTestMessage({ type: 'error', text: getErrorMessage(err, 'Ошибка подключения к Vescom') });
     } finally {
       setVescomTesting(false);
     }
@@ -241,8 +242,8 @@ export function SettingsView({ onSaved }: Props) {
         db_path: settings.metra_db_path.trim(),
       });
       setMetraTestMessage({ type: 'success', text: response.message ?? 'Подключение к Metra успешно' });
-    } catch (err: any) {
-      setMetraTestMessage({ type: 'error', text: err.message ?? 'Ошибка подключения к Metra' });
+    } catch (err: unknown) {
+      setMetraTestMessage({ type: 'error', text: getErrorMessage(err, 'Ошибка подключения к Metra') });
     } finally {
       setMetraTesting(false);
     }
