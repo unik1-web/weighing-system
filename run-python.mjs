@@ -1,16 +1,22 @@
 import { spawnSync } from 'node:child_process';
 
-const pytestArgs = process.argv.slice(2);
+const pythonArgs = process.argv.slice(2);
+
+if (pythonArgs.length === 0) {
+  console.error('Usage: node run-python.mjs <python-args...>');
+  process.exit(1);
+}
+
 const candidates = process.platform === 'win32'
   ? [
-      ['py', ['-3', '-m', 'pytest', ...pytestArgs]],
-      ['python', ['-m', 'pytest', ...pytestArgs]],
-      ['python3', ['-m', 'pytest', ...pytestArgs]],
+      ['py', ['-3', ...pythonArgs]],
+      ['python', pythonArgs],
+      ['python3', pythonArgs],
     ]
   : [
-      ['python3', ['-m', 'pytest', ...pytestArgs]],
-      ['python', ['-m', 'pytest', ...pytestArgs]],
-      ['py', ['-3', '-m', 'pytest', ...pytestArgs]],
+      ['python3', pythonArgs],
+      ['python', pythonArgs],
+      ['py', ['-3', ...pythonArgs]],
     ];
 
 for (const [command, args] of candidates) {
