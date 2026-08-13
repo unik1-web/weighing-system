@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from typing import Any
@@ -14,6 +15,8 @@ from config_ini import (
     write_ini_section,
 )
 from sqlite_store import get_sqlite_path, read_database as read_sqlite_database, write_database as write_sqlite_database
+
+_YEAR_RE = re.compile(r'^\d{4}$')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -101,9 +104,13 @@ def migrate_legacy_storage() -> None:
     ensure_storage_dirs()
     _migrate_config_json_to_ini()
 
+    import year_db
+
+    year_db.migrate_legacy_weighing_db()
+
     config_exists = os.path.isfile(get_config_path())
-    sqlite_exists = os.path.isfile(get_sqlite_path())
-    if config_exists or sqlite_exists:
+    yearly_exists = bool(year_db.list_years())
+    if config_exists or yearly_exists:
         return
 
     legacy_path = get_legacy_storage_path()
@@ -133,9 +140,16 @@ def read_config() -> dict[str, str]:
 
 
 def write_config(config: dict[str, Any]) -> None:
+    """Write settings. active_year cannot be changed here — only via year rotation API."""
     ensure_storage_dirs()
+    path = get_config_path()
+    existing = read_ini_section(path, CONFIG_SECTION)
     safe_config = {str(key): str(value) for key, value in config.items()}
-    write_ini_section(get_config_path(), CONFIG_SECTION, safe_config)
+    current_year = str(existing.get('active_year', '')).strip()
+    if _YEAR_RE.match(current_year):
+        # Preserve server-managed active year (rotation is the only mutator).
+        safe_config['active_year'] = current_year
+    write_ini_section(path, CONFIG_SECTION, safe_config)
 
 
 def read_database() -> dict[str, str]:
@@ -255,9 +269,14 @@ def import_backup_file(text: str, filename: str = '') -> dict[str, str]:
 
 
 def get_storage_paths() -> dict[str, str]:
+    import year_db
+
+    active_year = year_db.resolve_active_year()
     return {
         'app_root': get_app_root(),
         'config_file': get_config_path(),
         'database_dir': get_bd_dir(),
         'database_file': get_sqlite_path(),
+        'active_year': str(active_year),
+        'backups_dir': year_db.get_backups_dir(),
     }

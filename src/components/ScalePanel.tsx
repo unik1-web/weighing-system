@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useScale } from '@/hooks/useScale';
-import { SCALE_DEVICE_LIST, type ScaleDeviceId } from '@/lib/scales';
+import { ADAPTER_LIST, WebSerialTransport, type ScaleDeviceId } from '@/lib/scales';
+import { getActiveScaleContext } from '@/lib/site-runtime';
 import { isCaptureAllowed } from '@/lib/weighing-mode';
 import { Usb, Power, Activity, AlertCircle, ChevronDown } from 'lucide-react';
 
@@ -27,8 +28,19 @@ export function ScalePanel({
   onReadingChange,
 }: Props) {
   const { reading, connected, error, connect, disconnect } = useScale();
-  const [supported] = useState(() => typeof navigator !== 'undefined' && 'serial' in navigator);
+  const [webSerialSupported] = useState(() => WebSerialTransport.isSupported());
   const canCapture = !!reading && isCaptureAllowed(reading.stable, stableMode);
+
+  const transport = useMemo(() => {
+    try {
+      return getActiveScaleContext().activeScale.connection.transport ?? 'web_serial';
+    } catch {
+      return 'web_serial' as const;
+    }
+  }, [deviceId, connected]);
+
+  const needsWebSerial = transport === 'web_serial';
+  const canConnect = needsWebSerial ? webSerialSupported : true;
 
   useEffect(() => {
     onReadingChange?.(reading ? reading.weight : null);
@@ -54,7 +66,6 @@ export function ScalePanel({
         </span>
       </div>
 
-      {/* Device selector */}
       <div className="mb-4">
         <label className="block text-xs font-medium text-slate-600 mb-1">Модель прибора</label>
         <div className="relative">
@@ -64,7 +75,7 @@ export function ScalePanel({
             disabled={connected}
             className="w-full appearance-none rounded-lg border border-slate-300 bg-white px-3 py-2 pr-9 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60"
           >
-            {SCALE_DEVICE_LIST.map((d) => (
+            {ADAPTER_LIST.map((d) => (
               <option key={d.id} value={d.id}>{d.name}</option>
             ))}
           </select>
@@ -72,7 +83,6 @@ export function ScalePanel({
         </div>
       </div>
 
-      {/* Digital display */}
       <div className="mb-4 rounded-xl bg-slate-900 px-4 py-5 font-mono">
         <div className="flex items-end justify-between">
           <div className="text-4xl font-bold tabular-nums text-emerald-400">
@@ -97,18 +107,18 @@ export function ScalePanel({
         </div>
       )}
 
-      {!supported && (
+      {needsWebSerial && !webSerialSupported && (
         <div className="mb-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-700">
           <AlertCircle size={16} className="mt-0.5 shrink-0" />
-          <span>Браузер не поддерживает Web Serial. Используйте Chrome или Edge.</span>
+          <span>Браузер не поддерживает Web Serial. Используйте Chrome или Edge, либо транспорт TCP в настройках комплекта.</span>
         </div>
       )}
 
       <div className="flex gap-2">
         {!connected ? (
           <button
-            onClick={() => connect(deviceId)}
-            disabled={!supported}
+            onClick={() => connect()}
+            disabled={!canConnect}
             className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Usb size={16} /> Подключить

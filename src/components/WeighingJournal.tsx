@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage } from '@/lib/storage';
+import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage, softReadBool } from '@/lib/storage';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import {
   type WeightSource,
@@ -11,8 +11,9 @@ import {
 import { getErrorMessage } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
+import { TicketPhotoPreview } from '@/components/TicketPhotoPreview';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
-import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson } from 'lucide-react';
+import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson, Camera, X } from 'lucide-react';
 
 const SOURCE_FILTER_OPTIONS = WEIGHT_SOURCES.map((source) => WEIGHT_SOURCE_LABELS[source]);
 const LABEL_TO_SOURCE = Object.fromEntries(
@@ -39,6 +40,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const [reoFilter, setReoFilter] = useState<'all' | 'pending' | 'sent'>('all');
   const [sourceFilter, setSourceFilter] = useState<WeightSource[]>([]);
   const [sendingBulk, setSendingBulk] = useState(false);
+  const [viewTicket, setViewTicket] = useState<WeighingTicket | null>(null);
 
   const sourceFilterLabels = useMemo(
     () => sourceFilter.map((source) => WEIGHT_SOURCE_LABELS[source]),
@@ -259,25 +261,25 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
       {error && <div className="flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700"><AlertCircle size={18} className="mt-0.5 shrink-0" /> {error}</div>}
 
       <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
+        <div className="max-h-[calc(100vh-18rem)] overflow-auto">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-[11px] text-slate-500">
               <tr>
-                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">ID</th>
-                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Дата</th>
-                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Номер</th>
-                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Груз</th>
-                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Отправитель</th>
-                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Получатель</th>
-                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Перевозчик</th>
-                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap uppercase">Брутто</th>
-                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap uppercase">Тара</th>
-                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap uppercase">Нетто</th>
-                <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap uppercase">Статус</th>
+                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">ID</th>
+                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Дата</th>
+                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Номер</th>
+                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Груз</th>
+                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Отправитель</th>
+                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Получатель</th>
+                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Перевозчик</th>
+                <th className="px-1.5 py-2 text-right font-medium whitespace-nowrap uppercase">Брутто</th>
+                <th className="px-1.5 py-2 text-right font-medium whitespace-nowrap uppercase">Тара</th>
+                <th className="px-1.5 py-2 text-right font-medium whitespace-nowrap uppercase">Нетто</th>
+                <th className="px-1.5 py-2 text-center font-medium whitespace-nowrap uppercase">Статус</th>
                 {reoEnabled && (
-                  <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap" title="РЭО: + отправлено, − не отправлено">РЭО</th>
+                  <th className="px-1.5 py-2 text-center font-medium whitespace-nowrap" title="РЭО: + отправлено, − не отправлено">РЭО</th>
                 )}
-                <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap"></th>
+                <th className="px-1.5 py-2 text-center font-medium whitespace-nowrap"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -286,27 +288,78 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={tableColSpan} className="px-4 py-8 text-center text-slate-400">Записей не найдено</td></tr>
               ) : (
-                filtered.map((t) => (
+                filtered.map((t) => {
+                  const createdAt = new Date(t.created_at);
+                  return (
                   <tr key={t.id} className="hover:bg-slate-50/50 transition">
-                    <td className="px-2 py-2.5 font-semibold text-slate-700 tabular-nums whitespace-nowrap">{t.ticket_number ?? '—'}</td>
-                    <td className="px-2 py-2.5 text-slate-500 whitespace-nowrap tabular-nums">{new Date(t.created_at).toLocaleDateString('ru-RU')} {new Date(t.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</td>
-                    <td className="px-2 py-2.5 font-medium text-slate-700 whitespace-nowrap">{t.vehicle_number}</td>
-                    <td className="px-2 py-2.5 text-slate-600 whitespace-nowrap">{t.cargo_name}</td>
-                    <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.shipper_name}>{t.shipper_name}</td>
-                    <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.receiver_name}>{t.receiver_name}</td>
-                    <td className="px-2 py-2.5 text-slate-600 max-w-[10rem] truncate" title={t.carrier_name}>{t.carrier_name}</td>
-                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                    <td className="px-1.5 py-2 font-semibold text-slate-700 tabular-nums whitespace-nowrap">{t.ticket_number ?? '—'}</td>
+                    <td className="px-1.5 py-2 text-slate-500 tabular-nums whitespace-nowrap">
+                      <div className="leading-tight">
+                        <div>{createdAt.toLocaleDateString('ru-RU')}</div>
+                        <div className="text-[10px] text-slate-400">
+                          {createdAt.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-1.5 py-2 font-medium text-slate-700 whitespace-nowrap">{t.vehicle_number}</td>
+                    <td className="px-1.5 py-2 text-slate-600 align-top" title={t.cargo_name}>
+                      <div className="xl:hidden max-w-[5.75rem] md:max-w-[7rem] lg:max-w-[8rem] whitespace-normal break-words leading-tight [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
+                        {t.cargo_name || '—'}
+                      </div>
+                      <div className="hidden xl:block max-w-[12rem] whitespace-normal break-words leading-tight">
+                        {t.cargo_name || '—'}
+                      </div>
+                    </td>
+                    <td className="px-1.5 py-2 text-slate-600 align-top" title={t.shipper_name}>
+                      <div className="xl:hidden max-w-[6.25rem] md:max-w-[7.5rem] lg:max-w-[8.5rem] whitespace-normal break-words leading-tight [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
+                        {t.shipper_name || '—'}
+                      </div>
+                      <div className="hidden xl:block max-w-[13rem] whitespace-normal break-words leading-tight">
+                        {t.shipper_name || '—'}
+                      </div>
+                    </td>
+                    <td className="px-1.5 py-2 text-slate-600 align-top" title={t.receiver_name}>
+                      <div className="xl:hidden max-w-[6.25rem] md:max-w-[7.5rem] lg:max-w-[8.5rem] whitespace-normal break-words leading-tight [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
+                        {t.receiver_name || '—'}
+                      </div>
+                      <div className="hidden xl:block max-w-[13rem] whitespace-normal break-words leading-tight">
+                        {t.receiver_name || '—'}
+                      </div>
+                    </td>
+                    <td className="px-1.5 py-2 text-slate-600 align-top" title={t.carrier_name}>
+                      <div className="xl:hidden max-w-[6.25rem] md:max-w-[7.5rem] lg:max-w-[8.5rem] whitespace-normal break-words leading-tight [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
+                        {t.carrier_name || '—'}
+                      </div>
+                      <div className="hidden xl:block max-w-[13rem] whitespace-normal break-words leading-tight">
+                        {t.carrier_name || '—'}
+                      </div>
+                    </td>
+                    <td className="px-1.5 py-2 text-right tabular-nums text-slate-700 whitespace-nowrap">
                       <div>{t.gross_weight?.toLocaleString('ru-RU') ?? '—'}</div>
                       <div className="text-[10px] font-medium text-slate-400">Б: {sourceLabelForWeight(t.gross_weight, t.gross_source)}</div>
                     </td>
-                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                    <td className="px-1.5 py-2 text-right tabular-nums text-slate-700 whitespace-nowrap">
                       <div>{t.tare_weight?.toLocaleString('ru-RU') ?? '—'}</div>
                       <div className="text-[10px] font-medium text-slate-400">Т: {sourceLabelForWeight(t.tare_weight, t.tare_source)}</div>
                     </td>
-                    <td className="px-2 py-2.5 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">{t.net_weight?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="px-2 py-2.5 text-center whitespace-nowrap">{t.status === 'completed' ? <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"><CheckCircle2 size={12} /> Завершён</span> : <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700"><Clock size={12} /> Открыт</span>}</td>
+                    <td className="px-1.5 py-2 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">{t.net_weight?.toLocaleString('ru-RU') ?? '—'}</td>
+                    <td className="px-1.5 py-2 text-center whitespace-nowrap">
+                      {softReadBool(t.auto_closed) ? (
+                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-violet-100 text-violet-700" title="Закрыт при ротации года">
+                          <CheckCircle2 size={13} />
+                        </span>
+                      ) : t.status === 'completed' ? (
+                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-700" title="Завершён">
+                          <CheckCircle2 size={13} />
+                        </span>
+                      ) : (
+                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-100 text-amber-700" title="Открыт">
+                          <Clock size={13} />
+                        </span>
+                      )}
+                    </td>
                     {reoEnabled && (
-                      <td className="px-2 py-2.5 text-center whitespace-nowrap">
+                      <td className="px-1.5 py-2 text-center whitespace-nowrap">
                         {t.reo_status === 'sent' ? (
                           <span
                             className="inline-flex h-6 w-6 items-center justify-center text-lg font-bold leading-none text-emerald-600"
@@ -324,7 +377,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                         )}
                       </td>
                     )}
-                    <td className="px-2 py-2.5 text-center whitespace-nowrap">
+                    <td className="px-1.5 py-2 text-center whitespace-nowrap">
                       {t.status === 'open' && (
                         <button
                           onClick={() => onCompleteOpen?.(t.id)}
@@ -343,16 +396,155 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                           <RotateCcw size={15} />
                         </button>
                       )}
-                      <button onClick={() => printTicket(t)} disabled={t.status !== 'completed'} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition disabled:opacity-30 disabled:cursor-not-allowed ml-1" title="Печать акта"><Printer size={15} /></button>
-                      <button onClick={() => handleDelete(t.id)} className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition ml-1"><Trash2 size={15} /></button>
+                      <button
+                        type="button"
+                        onClick={() => setViewTicket(t)}
+                        className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-50 transition ml-1"
+                        title="Фото и детали"
+                      >
+                        <Camera size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => printTicket(t)}
+                        disabled={t.status !== 'completed'}
+                        className="inline-flex items-center justify-center rounded-md border border-blue-300 bg-blue-50 p-1.5 text-blue-700 hover:bg-blue-100 transition disabled:opacity-30 disabled:cursor-not-allowed ml-1"
+                        title="Печать акта"
+                      >
+                        <Printer size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(t.id)}
+                        className="inline-flex items-center justify-center rounded-md border border-rose-300 bg-rose-50 p-1.5 text-rose-700 hover:bg-rose-100 transition ml-1"
+                        title="Удалить"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </td>
                   </tr>
-                ))
+                )})
               )}
             </tbody>
           </table>
         </div>
       </div>
+
+      {viewTicket && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => setViewTicket(null)}
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+              <h3 className="text-sm font-semibold text-slate-800">
+                Просмотр тикета №{viewTicket.ticket_number ?? '—'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setViewTicket(null)}
+                className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                title="Закрыть"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4 text-sm text-slate-700">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-xs text-slate-500">ТС</div>
+                  <div className="font-medium">{viewTicket.vehicle_number}</div>
+                  {viewTicket.vehicle_brand && (
+                    <div className="text-xs text-slate-500">{viewTicket.vehicle_brand}</div>
+                  )}
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Водитель</div>
+                  <div className="font-medium">{viewTicket.driver_name || '—'}</div>
+                </div>
+                <div className="col-span-2">
+                  <div className="text-xs text-slate-500">Груз</div>
+                  <div className="font-medium">{viewTicket.cargo_name || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Брутто</div>
+                  <div className="font-medium tabular-nums">
+                    {viewTicket.gross_weight?.toLocaleString('ru-RU') ?? '—'}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {sourceLabelForWeight(viewTicket.gross_weight, viewTicket.gross_source)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Тара</div>
+                  <div className="font-medium tabular-nums">
+                    {viewTicket.tare_weight?.toLocaleString('ru-RU') ?? '—'}
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    {sourceLabelForWeight(viewTicket.tare_weight, viewTicket.tare_source)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Нетто</div>
+                  <div className="font-semibold tabular-nums">
+                    {viewTicket.net_weight?.toLocaleString('ru-RU') ?? '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Устройство весов</div>
+                  <div className="font-medium">{viewTicket.scale_device || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Оператор</div>
+                  <div className="font-medium">{viewTicket.operator_name || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Создан</div>
+                  <div className="font-medium">
+                    {new Date(viewTicket.created_at).toLocaleString('ru-RU')}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Завершён</div>
+                  <div className="font-medium">
+                    {viewTicket.completed_at
+                      ? new Date(viewTicket.completed_at).toLocaleString('ru-RU')
+                      : '—'}
+                  </div>
+                </div>
+                {softReadBool(viewTicket.auto_closed) && (
+                  <div className="col-span-2 text-sm text-violet-700">
+                    Закрыт при ротации года
+                  </div>
+                )}
+                <div className="col-span-2">
+                  <TicketPhotoPreview ticket={viewTicket} showActions />
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setViewTicket(null)}
+                className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Закрыть
+              </button>
+              <button
+                type="button"
+                disabled={viewTicket.status !== 'completed'}
+                onClick={() => printTicket(viewTicket)}
+                className="flex items-center gap-2 rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Printer size={16} /> Печать
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

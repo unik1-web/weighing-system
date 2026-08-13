@@ -32,6 +32,7 @@ config.ini
 config.json
 BD/
 server/data/
+Photo/
 build/
 release/
 dist/WeighingSystem/

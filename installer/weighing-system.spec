@@ -29,6 +29,7 @@ except ImportError:
 
 hiddenimports = [
     'browse',
+    'cameras',
     'config_ini',
     'dictionary_import',
     'metra',
@@ -38,6 +39,8 @@ hiddenimports = [
     'text_encoding',
     'vescom',
     'wa',
+    'year_db',
+    'year_rotation',
     'flask',
     'flask_cors',
     'werkzeug',
@@ -52,6 +55,15 @@ hiddenimports = [
 ]
 hiddenimports += collect_submodules('pypxlib')
 
+# Dual-build notes (этап 7 фотофиксация):
+# - Full build (default): may include optional opencv-python-headless for RTSP.
+#   Do NOT add 'cv2' to excludes; optionally add 'cv2' to hiddenimports if packaging OpenCV.
+# - Basic build (without heavy camera deps): set
+#     excludes=['cv2', 'opencv', 'numpy.tests', ...]
+#   and do not install opencv-python-headless. HTTP snapshot via requests still works;
+#   cameras.py lazy-imports cv2 and degrades RTSP to failed with a clear message.
+# - video_enabled is a runtime config.ini flag; switching does not require reinstall.
+
 a = Analysis(
     [os.path.join(server_dir, 'launcher.py')],
     pathex=[server_dir],
@@ -61,7 +73,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[runtime_hook],
-    excludes=[],
+    excludes=[],  # basic build: excludes=['cv2']
     noarchive=False,
     optimize=0,
 )
