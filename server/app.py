@@ -41,6 +41,9 @@ from persistence import (
     write_config,
     write_database,
 )
+import year_db
+import year_rotation
+from sqlite_store import read_database_at
 from vescom import connect_vescom, fetch_vescom_dictionaries, fetch_vescom_weighings
 from wa import (
     fetch_wa_dictionary_names,
@@ -54,6 +57,7 @@ from reo_client import (
     is_reo_test_successful,
     post_reo_import,
 )
+from scale_io import get_active_scale_context_from_db, get_scale_session
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, 'frozen', False):
@@ -131,6 +135,160 @@ def health():
     return jsonify({'success': True, 'service': 'weighing-system-api'})
 
 
+@app.get('/api/scales/context')
+def scales_context():
+    try:
+        ctx = get_active_scale_context_from_db()
+        return jsonify({'success': True, **ctx})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('scales context failed')
+        return error_response(f'Ошибка чтения комплекта весов: {exc}')
+
+
+@app.get('/api/scales/status')
+def scales_status():
+    session = get_scale_session()
+    return jsonify({'success': True, **session.status()})
+
+
+@app.post('/api/scales/connect')
+def scales_connect():
+    body = request.get_json(silent=True) or {}
+    overrides = {}
+    if body.get('host'):
+        overrides['host'] = body['host']
+    if body.get('tcpPort') is not None:
+        overrides['tcpPort'] = body['tcpPort']
+    if body.get('serialPath'):
+        overrides['serialPath'] = body['serialPath']
+    session = get_scale_session()
+    try:
+        result = session.connect(overrides)
+        return jsonify({'success': True, **result})
+    except NotImplementedError as exc:
+        return error_response(str(exc), 501)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except OSError as exc:
+        logger.exception('scales connect failed')
+        return error_response(f'Не удалось подключить весы: {exc}')
+    except Exception as exc:
+        logger.exception('scales connect failed')
+        return error_response(f'Ошибка подключения весов: {exc}')
+
+
+@app.post('/api/scales/disconnect')
+def scales_disconnect():
+    session = get_scale_session()
+    session.disconnect()
+    return jsonify({'success': True, 'connected': False})
+
+
+@app.get('/api/scales/reading')
+def scales_reading():
+    session = get_scale_session()
+    return jsonify({'success': True, **session.reading()})
+
+
+@app.get('/api/cameras/capabilities')
+def cameras_capabilities():
+    try:
+        import cameras as cameras_mod
+
+        caps = cameras_mod.capabilities()
+        return jsonify({'success': True, **caps})
+    except Exception as exc:
+        logger.exception('cameras capabilities failed')
+        return error_response(f'Ошибка capabilities камер: {exc}')
+
+
+@app.post('/api/cameras/capture')
+def cameras_capture():
+    body = request.get_json(silent=True) or {}
+    ticket_id = body.get('ticket_id')
+    phase = body.get('phase')
+    site_id = body.get('site_id')
+    cameras = body.get('cameras')
+    if not ticket_id or not phase:
+        return error_response('Нужны ticket_id и phase')
+    try:
+        import cameras as cameras_mod
+
+        photos, stubs = cameras_mod.capture_for_ticket(
+            str(ticket_id),
+            str(phase),
+            str(site_id) if site_id else None,
+            cameras_override=cameras if isinstance(cameras, list) else None,
+        )
+        return jsonify({'success': True, 'photos': photos, 'stubs': stubs})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras capture failed')
+        return error_response(f'Ошибка захвата фото: {exc}')
+
+
+@app.post('/api/cameras/snapshot')
+def cameras_snapshot():
+    body = request.get_json(silent=True) or {}
+    camera_id = body.get('camera_id')
+    capture_url = body.get('capture_url')
+    capture_kind = body.get('capture_kind')
+    try:
+        import cameras as cameras_mod
+
+        relative_path = cameras_mod.snapshot_camera(
+            camera_id=str(camera_id) if camera_id else None,
+            capture_url=str(capture_url) if capture_url else None,
+            capture_kind=str(capture_kind) if capture_kind else None,
+        )
+        return jsonify({'success': True, 'relative_path': relative_path})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras snapshot failed')
+        return error_response(f'Ошибка снимка: {exc}')
+
+
+@app.post('/api/cameras/reference')
+def cameras_reference():
+    body = request.get_json(silent=True) or {}
+    camera_id = body.get('camera_id')
+    mode = body.get('mode')
+    if not camera_id or not mode:
+        return error_response('Нужны camera_id и mode')
+    try:
+        import cameras as cameras_mod
+
+        camera = cameras_mod.save_reference(str(camera_id), str(mode))
+        return jsonify({'success': True, 'camera': camera})
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras reference failed')
+        return error_response(f'Ошибка эталона: {exc}')
+
+
+@app.get('/api/cameras/photo')
+def cameras_photo():
+    relative = request.args.get('path') or ''
+    try:
+        import cameras as cameras_mod
+
+        absolute = cameras_mod.resolve_safe_photo_path(relative)
+        if not os.path.isfile(absolute):
+            return error_response('Файл не найден', 404)
+        directory, filename = os.path.split(absolute)
+        return send_from_directory(directory, filename, mimetype='image/jpeg')
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras photo serve failed')
+        return error_response(f'Ошибка чтения фото: {exc}')
+
+
 @app.post('/api/shutdown')
 def shutdown_application():
     shutdown_func = request.environ.get('werkzeug.server.shutdown')
@@ -183,7 +341,7 @@ def get_database():
         return jsonify({'success': True, 'data': read_database()})
     except Exception as exc:
         logger.exception('Database read failed')
-        return error_response(f'Ошибка чтения BD/weighing.db: {exc}')
+        return error_response(f'Ошибка чтения базы данных: {exc}')
 
 
 @app.post('/api/database')
@@ -191,7 +349,7 @@ def save_database():
     body = request.get_json(silent=True) or {}
     data = body.get('data')
     if not isinstance(data, dict):
-        return error_response('Некорректный формат BD/weighing.db')
+        return error_response('Некорректный формат базы данных')
 
     try:
         write_database(data)
@@ -199,7 +357,134 @@ def save_database():
         return jsonify({'success': True})
     except Exception as exc:
         logger.exception('Database write failed')
-        return error_response(f'Ошибка сохранения BD/weighing.db: {exc}')
+        return error_response(f'Ошибка сохранения базы данных: {exc}')
+
+
+@app.get('/api/database/years')
+def database_years():
+    try:
+        active = year_db.resolve_active_year()
+        years = year_db.list_years()
+        if active not in years:
+            years = sorted(set(years) | {active})
+        return jsonify({'success': True, 'years': years, 'active_year': active})
+    except Exception as exc:
+        logger.exception('Years list failed')
+        return error_response(f'Ошибка списка годов: {exc}')
+
+
+@app.get('/api/database/rotate/preview')
+def database_rotate_preview():
+    try:
+        return jsonify({'success': True, **year_rotation.preview_rotation()})
+    except Exception as exc:
+        logger.exception('Rotate preview failed')
+        return error_response(f'Ошибка предпросмотра ротации: {exc}')
+
+
+@app.post('/api/database/rotate')
+def database_rotate():
+    body = request.get_json(silent=True) or {}
+    target_year = body.get('target_year')
+    try:
+        target_year_int = int(target_year)
+    except (TypeError, ValueError):
+        return error_response('Некорректный target_year')
+
+    operator_id = body.get('operator_id')
+    operator_name = str(body.get('operator_name') or '')
+    confirm_reo_pending = bool(body.get('confirm_reo_pending'))
+
+    try:
+        result = year_rotation.rotate_year(
+            target_year_int,
+            operator_id=str(operator_id) if operator_id else None,
+            operator_name=operator_name,
+            confirm_reo_pending=confirm_reo_pending,
+        )
+        logger.info(
+            'Year rotated %s -> %s (auto_closed=%s)',
+            result.get('previous_year'),
+            result.get('active_year'),
+            len(result.get('auto_closed') or []),
+        )
+        return jsonify({'success': True, **result})
+    except year_rotation.ReoPendingConfirmRequired as exc:
+        return jsonify({
+            'success': False,
+            'error': exc.error,
+            'reo_pending_count': exc.count,
+            'message': f'Есть {exc.count} тикетов с ожидающей отправкой в РЭО. Подтвердите ротацию.',
+        }), 409
+    except PermissionError as exc:
+        return error_response(str(exc), 403)
+    except RuntimeError as exc:
+        return error_response(str(exc), 503)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('Rotate failed')
+        return error_response(f'Ошибка ротации года: {exc}')
+
+
+@app.get('/api/database/archive/<int:year>')
+def database_archive(year: int):
+    try:
+        path = year_db.year_db_path(year)
+        data = read_database_at(path)
+        return jsonify({'success': True, 'year': year, 'data': data})
+    except FileNotFoundError:
+        return error_response(f'Архив года {year} не найден', 404)
+    except Exception as exc:
+        logger.exception('Archive read failed')
+        return error_response(f'Ошибка чтения архива: {exc}')
+
+
+@app.post('/api/database/archive/<int:year>/ticket')
+def database_archive_ticket(year: int):
+    body = request.get_json(silent=True) or {}
+    ticket = body.get('ticket')
+    if not isinstance(ticket, dict):
+        return error_response('Некорректный формат ticket')
+
+    operator_id = body.get('operator_id')
+    operator_name = str(body.get('operator_name') or '')
+    confirm_reo_sent = bool(body.get('confirm_reo_sent'))
+
+    try:
+        result = year_rotation.update_archive_ticket(
+            year,
+            ticket,
+            operator_id=str(operator_id) if operator_id else None,
+            operator_name=operator_name,
+            confirm_reo_sent=confirm_reo_sent,
+        )
+        return jsonify({'success': True, **result})
+    except year_rotation.ReoSentConfirmRequired as exc:
+        return jsonify({
+            'success': False,
+            'error': exc.error,
+            'message': 'Тикет уже отправлен в РЭО. Подтвердите изменение.',
+        }), 409
+    except year_rotation.VersionConflict as exc:
+        return jsonify({
+            'success': False,
+            'error': exc.error,
+            'expected': exc.expected,
+            'actual': exc.actual,
+            'message': 'Конфликт версии тикета',
+        }), 409
+    except PermissionError as exc:
+        return error_response(str(exc), 403)
+    except FileNotFoundError:
+        return error_response(f'Архив года {year} не найден', 404)
+    except LookupError as exc:
+        return error_response(str(exc), 404)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('Archive ticket update failed')
+        return error_response(f'Ошибка правки архивного тикета: {exc}')
 
 
 @app.get('/api/storage')

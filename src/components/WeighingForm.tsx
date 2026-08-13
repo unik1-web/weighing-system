@@ -13,6 +13,13 @@ import { ScalePanel } from '@/components/ScalePanel';
 import { formatVehiclePlate } from '@/lib/vehicle-plate';
 import { formatPersonName, formatVehicleBrand } from '@/lib/text-format';
 import { SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
+import { validateManualWeightReason } from '@/lib/manual-weight-reason';
+import {
+  getActiveScaleContext,
+  updateActiveScaleDevice,
+  SITE_RUNTIME_UPDATED_EVENT,
+  ACTIVE_SCALE_SET_LABELS,
+} from '@/lib/site-runtime';
 import {
   type WeighingMode,
   type WeightPhase,
@@ -37,6 +44,13 @@ import {
   resolveTareAutofill,
   WEIGHT_SOURCE_LABELS,
 } from '@/lib/weight-source';
+import {
+  resolveVehicle,
+  type PlateSource,
+} from '@/lib/vehicle-resolve';
+import { triggerCaptureAfterSave } from '@/lib/cameras';
+import { TicketPhotoPreview } from '@/components/TicketPhotoPreview';
+import { WeighingCameraMonitor } from '@/components/WeighingCameraMonitor';
 import { Save, FileText, RotateCcw, AlertCircle, CheckCircle2, ClipboardList, Printer } from 'lucide-react';
 
 const WEIGHT_SOURCE_BADGE_CLASS: Record<WeightSource, string> = {
@@ -113,13 +127,18 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
   const [grossDatetime, setGrossDatetime] = useState<string | null>(null);
   const [tareDatetime, setTareDatetime] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
+  const [manualWeightReason, setManualWeightReason] = useState('');
   const [saving, setSaving] = useState(false);
+  const [capturePending, setCapturePending] = useState(false);
+  const [saveLocked, setSaveLocked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [lastTicket, setLastTicket] = useState<WeighingTicket | null>(null);
   const [unstableWarning, setUnstableWarning] = useState<string | null>(null);
   const [intervalWarnedForId, setIntervalWarnedForId] = useState<string | null>(null);
   const [liveScaleWeight, setLiveScaleWeight] = useState<number | null>(null);
+  const [plateSource, setPlateSource] = useState<PlateSource | null>(null);
+  const [, setDriverCandidates] = useState<string[]>([]);
   /** After operator edits/clears tare (or captures instrument), block autofill until vehicle/mode/reset. */
   const tareAutofillBlocked = useRef(false);
 
@@ -177,6 +196,30 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     }
   }, [showIntervalBanner, completingTicket, intervalWarnedForId, appSettings.max_time_between]);
 
+  const [activeScaleLabel, setActiveScaleLabel] = useState(() => {
+    try {
+      return ACTIVE_SCALE_SET_LABELS[getActiveScaleContext().runtime.active_scale_set];
+    } catch {
+      return ACTIVE_SCALE_SET_LABELS.primary;
+    }
+  });
+
+  useEffect(() => {
+    const syncFromRuntime = () => {
+      try {
+        const ctx = getActiveScaleContext();
+        setDeviceId(ctx.adapter_id);
+        setActiveScaleLabel(ACTIVE_SCALE_SET_LABELS[ctx.runtime.active_scale_set]);
+        setAppSettings(SettingsStorage.getAppSettings());
+      } catch {
+        // migration may not be ready in tests without crypto
+      }
+    };
+    syncFromRuntime();
+    window.addEventListener(SITE_RUNTIME_UPDATED_EVENT, syncFromRuntime);
+    return () => window.removeEventListener(SITE_RUNTIME_UPDATED_EVENT, syncFromRuntime);
+  }, []);
+
   const resetFormFields = useCallback(() => {
     tareAutofillBlocked.current = false;
     setActiveField('gross');
@@ -185,6 +228,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setVehicleNumber('');
     setVehicleBrand('');
     setTrailerNumber('');
+    setPlateSource(null);
     setDriverName('');
     setCargoName('');
     setShipperName('');
@@ -201,6 +245,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setGrossDatetime(null);
     setTareDatetime(null);
     setNotes('');
+    setManualWeightReason('');
+    setSaveLocked(false);
     setError(null);
     setUnstableWarning(null);
   }, []);
@@ -262,6 +308,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setGrossDatetime(ticket.gross_datetime);
       setTareDatetime(ticket.tare_datetime);
       setNotes(ticket.notes);
+      setManualWeightReason(ticket.manual_weight_reason ?? '');
+      setPlateSource(ticket.plate_source ?? null);
+      setDriverCandidates([]);
 
       const state = classifyOpenWeightState(ticket);
       if (state === 'one') {
@@ -330,6 +379,44 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setVehicleNumber(value);
   };
 
+  const handleDeviceChange = (id: ScaleDeviceId) => {
+    setDeviceId(id);
+    updateActiveScaleDevice(id);
+  };
+
+  const auditCreateFields = (): Pick<
+    WeighingTicket,
+    | 'plate_source'
+    | 'site_id'
+    | 'scale_id'
+    | 'scale_role'
+    | 'photo_entry_path'
+    | 'photo_exit_path'
+    | 'photo_overview_path'
+  > => {
+    const ctx = getActiveScaleContext();
+    return {
+      plate_source: plateSource,
+      site_id: ctx.site_id,
+      scale_id: ctx.scale_id,
+      scale_role: ctx.scale_role,
+      photo_entry_path: null,
+      photo_exit_path: null,
+      photo_overview_path: null,
+    };
+  };
+
+  const auditUpdateFields = (): Pick<
+    WeighingTicket,
+    'plate_source' | 'photo_entry_path' | 'photo_exit_path' | 'photo_overview_path'
+  > => ({
+    plate_source: plateSource,
+    // Preserve stubs from first dual pass; capture will refresh after save.
+    photo_entry_path: completingTicket?.photo_entry_path ?? null,
+    photo_exit_path: completingTicket?.photo_exit_path ?? null,
+    photo_overview_path: completingTicket?.photo_overview_path ?? null,
+  });
+
   const handleModeChange = (mode: WeighingMode) => {
     if (isCompleting) return;
     tareAutofillBlocked.current = false;
@@ -356,6 +443,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setGrossSource('instrument');
     setGrossRaw(raw);
     setGrossDatetime(new Date().toISOString());
+    setManualWeightReason((prev) => (tareSource === 'manual' ? prev : ''));
   };
 
   const captureTare = (w: number, raw: string) => {
@@ -365,6 +453,23 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     setTareSource('instrument');
     setTareRaw(raw);
     setTareDatetime(new Date().toISOString());
+    setManualWeightReason((prev) => (grossSource === 'manual' ? prev : ''));
+  };
+
+  const resolveManualReasonForSave = (): string | null | false => {
+    const result = validateManualWeightReason({
+      mode: appSettings.manual_weight_reason_mode,
+      reason: manualWeightReason,
+      gross_source: grossSource,
+      tare_source: tareSource,
+      gross_weight: grossWeight,
+      tare_weight: tareWeight,
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return false;
+    }
+    return result.reason;
   };
 
   const handleInstrumentCapture = (weight: number, raw: string) => {
@@ -404,6 +509,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setError(validation);
       return;
     }
+    const reasonOrFail = resolveManualReasonForSave();
+    if (reasonOrFail === false) return;
 
     setSaving(true);
     const now = new Date().toISOString();
@@ -437,8 +544,10 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         status: 'completed',
         completed_at: now,
         notes,
+        manual_weight_reason: reasonOrFail,
         weighing_mode: 'single',
         version: 1,
+        ...auditCreateFields(),
       });
       logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
         id: ticket.id,
@@ -449,8 +558,18 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setLastTicket(ticket);
       setSuccess('Взвешивание завершено и сохранено.');
       onSaved(ticket);
-      resetFormFields();
-      setIncompleteRefresh((n) => n + 1);
+      setCapturePending(true);
+      void triggerCaptureAfterSave(ticket.id, ['gross', 'tare'], ticket.site_id).then((cap) => {
+        if (cap.message) {
+          setSuccess(`Взвешивание завершено и сохранено. ${cap.message}`);
+        }
+        const refreshed = TicketStorage.getById(ticket.id);
+        if (refreshed) setLastTicket(refreshed);
+      }).finally(() => {
+        setCapturePending(false);
+        setSaveLocked(true);
+        setIncompleteRefresh((n) => n + 1);
+      });
     } catch (err: unknown) {
       setSaving(false);
       const message = getErrorMessage(err, 'Ошибка сохранения');
@@ -471,6 +590,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setError(validation);
       return;
     }
+    const reasonOrFail = resolveManualReasonForSave();
+    if (reasonOrFail === false) return;
 
     const hasGross = grossWeight != null && grossWeight > 0;
     setSaving(true);
@@ -502,8 +623,10 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
         status: 'open',
         completed_at: null,
         notes,
+        manual_weight_reason: reasonOrFail,
         weighing_mode: 'dual',
         version: 1,
+        ...auditCreateFields(),
       });
       logger.info('weighing', `Создан тикет №${ticket.ticket_number}`, {
         id: ticket.id,
@@ -514,8 +637,17 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setLastTicket(ticket);
       setSuccess('Первый проход сохранён. Тикет в незавершённых.');
       onSaved(ticket);
-      resetFormFields();
-      setIncompleteRefresh((n) => n + 1);
+      setCapturePending(true);
+      const phase = hasGross ? 'gross' as const : 'tare' as const;
+      void triggerCaptureAfterSave(ticket.id, [phase], ticket.site_id).then((cap) => {
+        if (cap.message) {
+          setSuccess(`Первый проход сохранён. Тикет в незавершённых. ${cap.message}`);
+        }
+      }).finally(() => {
+        setCapturePending(false);
+        resetFormFields();
+        setIncompleteRefresh((n) => n + 1);
+      });
     } catch (err: unknown) {
       setSaving(false);
       const message = getErrorMessage(err, 'Ошибка сохранения');
@@ -542,6 +674,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setError(validation);
       return;
     }
+    const reasonOrFail = resolveManualReasonForSave();
+    if (reasonOrFail === false) return;
 
     const now = new Date().toISOString();
     const net = calcNetWeight(grossWeight!, tareWeight!);
@@ -559,10 +693,12 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       price: parseFloat(price) || 0,
       vat_rate: parseFloat(vatRate) || 0,
       notes,
+      manual_weight_reason: reasonOrFail,
       status: 'completed',
       completed_at: now,
       net_weight: net,
       total_amount: amount,
+      ...auditUpdateFields(),
     };
 
     // Only write weight meta for slots that were editable (new on this step)
@@ -611,12 +747,23 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
       setLastTicket(ticket);
       setSuccess('Взвешивание завершено и сохранено.');
       onSaved(ticket);
-      resetFormFields();
-      exitCompletion();
-      const settings = SettingsStorage.getAppSettings();
-      setAppSettings(settings);
-      setFormMode(settings.weighing_mode_default);
-      setIncompleteRefresh((n) => n + 1);
+      setCapturePending(true);
+      const secondPhase = editability.grossEditable ? 'gross' as const : 'tare' as const;
+      void triggerCaptureAfterSave(ticket.id, [secondPhase], ticket.site_id).then((cap) => {
+        if (cap.message) {
+          setSuccess(`Взвешивание завершено и сохранено. ${cap.message}`);
+        }
+        const refreshed = TicketStorage.getById(ticket.id);
+        if (refreshed) setLastTicket(refreshed);
+      }).finally(() => {
+        setCapturePending(false);
+        setSaveLocked(true);
+        exitCompletion();
+        const settings = SettingsStorage.getAppSettings();
+        setAppSettings(settings);
+        setFormMode(settings.weighing_mode_default);
+        setIncompleteRefresh((n) => n + 1);
+      });
     } catch (err: unknown) {
       setSaving(false);
       const message = getErrorMessage(err, 'Ошибка сохранения');
@@ -657,7 +804,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
               <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
                 <button
                   type="button"
-                  disabled={isCompleting}
+                  disabled={isCompleting || saveLocked || capturePending}
                   onClick={() => handleModeChange('single')}
                   className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
                     formMode === 'single' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600'
@@ -667,7 +814,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
                 </button>
                 <button
                   type="button"
-                  disabled={isCompleting}
+                  disabled={isCompleting || saveLocked || capturePending}
                   onClick={() => handleModeChange('dual')}
                   className={`rounded-md px-3 py-1.5 text-xs font-semibold transition ${
                     formMode === 'dual' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600'
@@ -678,6 +825,9 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
               </div>
               <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
                 Весовщик: {displayName}
+              </span>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                Комплект: {activeScaleLabel}
               </span>
             </div>
           </div>
@@ -869,6 +1019,23 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             </div>
           </div>
 
+          {appSettings.manual_weight_reason_mode !== 'off' &&
+            (grossSource === 'manual' || tareSource === 'manual') && (
+            <div className="mt-3">
+              <label className="mb-1 block text-xs font-medium text-slate-600">
+                Причина ручного ввода веса
+                {appSettings.manual_weight_reason_mode === 'required' ? ' *' : ''}
+              </label>
+              <input
+                type="text"
+                value={manualWeightReason}
+                onChange={(e) => setManualWeightReason(e.target.value)}
+                placeholder="Например: прибор недоступен"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+          )}
+
           <div className="mt-4 flex items-center justify-between rounded-xl bg-gradient-to-r from-blue-600 to-blue-700 px-5 py-4 text-white">
             <div>
               <div className="text-xs font-medium text-blue-100">Итого к оплате</div>
@@ -943,30 +1110,40 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           </div>
         )}
 
+        {lastTicket && (
+          capturePending ? (
+            <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+              Фотофиксация выполняется...
+            </div>
+          ) : (
+            <TicketPhotoPreview ticket={lastTicket} className="rounded-xl border border-slate-200 bg-white p-3" />
+          )
+        )}
+
         <div className="flex flex-wrap gap-3">
           {isCompleting ? (
             <button
               onClick={handleComplete}
-              disabled={saving}
+              disabled={saving || capturePending || saveLocked}
               className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50"
             >
-              <Save size={18} /> {saving ? 'Сохранение...' : 'Завершить'}
+              <Save size={18} /> {saving ? 'Сохранение...' : capturePending ? 'Фотофиксация...' : saveLocked ? 'Сохранено' : 'Завершить'}
             </button>
           ) : formMode === 'single' ? (
             <button
               onClick={handleSaveSingle}
-              disabled={saving}
+              disabled={saving || capturePending || saveLocked}
               className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50"
             >
-              <Save size={18} /> {saving ? 'Сохранение...' : 'Сохранить и завершить'}
+              <Save size={18} /> {saving ? 'Сохранение...' : capturePending ? 'Фотофиксация...' : saveLocked ? 'Сохранено' : 'Сохранить и завершить'}
             </button>
           ) : (
             <button
               onClick={handleSaveDualFirst}
-              disabled={saving}
+              disabled={saving || capturePending}
               className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50"
             >
-              <Save size={18} /> {saving ? 'Сохранение...' : 'Сохранить первый проход'}
+              <Save size={18} /> {saving ? 'Сохранение...' : capturePending ? 'Фотофиксация...' : 'Сохранить первый проход'}
             </button>
           )}
           {lastTicket && lastTicket.status === 'completed' && (
@@ -974,8 +1151,8 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
               <Printer size={18} /> Печать акта
             </button>
           )}
-          <button onClick={reset} className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50">
-            <RotateCcw size={18} /> Очистить
+          <button disabled={capturePending} onClick={reset} className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:opacity-50">
+            <RotateCcw size={18} /> {saveLocked ? 'Новый талон' : 'Очистить'}
           </button>
         </div>
       </div>
@@ -994,6 +1171,7 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
             window.setTimeout(() => setUnstableWarning(null), 4000);
           }}
         />
+        <WeighingCameraMonitor />
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h3 className="text-sm font-semibold text-slate-800 mb-3">Порядок работы</h3>
           <ol className="space-y-2 text-sm text-slate-600">

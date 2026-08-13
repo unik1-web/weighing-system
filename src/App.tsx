@@ -6,17 +6,18 @@ import { WeighingJournal } from '@/components/WeighingJournal';
 import { DictionariesView } from '@/components/DictionariesView';
 import { ReportsView } from '@/components/ReportsView';
 import { SettingsView } from '@/components/SettingsView';
+import { ArchiveView } from '@/components/ArchiveView';
 import { VescomImportView } from '@/components/VescomImportView';
 import { MetraImportView } from '@/components/MetraImportView';
 import { WaImportView } from '@/components/WaImportView';
 import { printTicket } from '@/components/PrintAct';
 import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
-import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive, Server } from 'lucide-react';
+import { Scale, BookOpen, Library, Truck, BarChart3, LogOut, Power, User, ShieldCheck, Settings, Database, HardDrive, Server, Archive } from 'lucide-react';
 import { exitApplication } from '@/lib/api';
 import { logger } from '@/lib/logger';
 
-type Tab = 'weighing' | 'journal' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
+type Tab = 'weighing' | 'journal' | 'archive' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
 
 function MainApp() {
   const { displayName, signOut, isAdmin } = useAuth();
@@ -88,6 +89,7 @@ function MainApp() {
   const tabs: { id: Tab; label: string; icon: typeof Scale }[] = [
     { id: 'weighing', label: 'Взвешивание', icon: Scale },
     { id: 'journal', label: 'Журнал', icon: BookOpen },
+    { id: 'archive', label: 'Архив', icon: Archive },
     { id: 'reports', label: 'Отчёты', icon: BarChart3 },
     { id: 'dictionaries', label: 'Справочники', icon: Library },
     ...(appSettings.vescom_enabled
@@ -108,14 +110,17 @@ function MainApp() {
     <div className="min-h-screen bg-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
         <div className="mx-auto max-w-7xl px-4 sm:px-6">
-          <div className="flex h-16 items-center justify-between gap-4">
-            <div className="flex items-center gap-3 shrink-0">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-sm">
+          <div className="flex h-16 items-center justify-between gap-2 lg:gap-4">
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+              <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-sm">
                 <Truck size={22} />
               </div>
-              <div>
-                <h1 className="text-base font-bold text-slate-800 leading-tight">Автомобильные весы</h1>
-                <p className="text-xs text-slate-500">
+              <div className="min-w-0 hidden min-[440px]:block">
+                <h1 className="text-sm sm:text-base font-bold text-slate-800 leading-tight">
+                  <span className="sm:hidden">Автовесы</span>
+                  <span className="hidden sm:inline">Автомобильные весы</span>
+                </h1>
+                <p className="hidden lg:block text-xs text-slate-500 truncate">
                   Полигон отходов
                   {appSettings.org_name && appSettings.org_name !== 'Полигон отходов' && (
                     <> · {appSettings.org_name}</>
@@ -124,46 +129,58 @@ function MainApp() {
               </div>
             </div>
 
-            <nav className="flex gap-1 rounded-xl bg-slate-100 p-1 overflow-x-auto">
+            <nav className="flex max-w-[46vw] lg:max-w-none gap-1 rounded-xl bg-slate-100 p-1 overflow-x-auto">
               {tabs.map((t) => {
                 const Icon = t.icon;
                 return (
                   <button
                     key={t.id}
                     type="button"
-                    title={compactTabs ? t.label : undefined}
+                    title={t.label}
                     onClick={() => setTab(t.id)}
-                    className={`flex items-center rounded-lg py-2 text-sm font-semibold transition whitespace-nowrap ${
-                      compactTabs ? 'justify-center gap-0 px-2.5' : 'gap-2 px-3 sm:px-4'
+                    className={`flex items-center rounded-lg py-2 text-xs sm:text-sm font-semibold transition whitespace-nowrap ${
+                      compactTabs
+                        ? 'justify-center gap-0 px-2.5'
+                        : 'justify-center gap-0 px-2.5 sm:px-3 lg:gap-2 lg:px-4'
                     } ${tab === t.id ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
                   >
                     <Icon size={16} />
-                    {!compactTabs && <span>{t.label}</span>}
+                    {!compactTabs && <span className="hidden lg:inline">{t.label}</span>}
                   </button>
                 );
               })}
             </nav>
 
             <div className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-1.5">
+              <div className="flex items-center gap-2 rounded-lg bg-slate-100 px-2 sm:px-3 py-1.5 min-w-0">
                 <User size={15} className="text-slate-500" />
-                <span className="text-sm font-medium text-slate-700">{displayName}</span>
+                <span className="hidden min-[440px]:inline max-w-[88px] sm:max-w-[120px] truncate text-xs sm:text-sm font-medium text-slate-700">
+                  {displayName}
+                </span>
                 {isAdmin && (
-                  <span className="flex items-center gap-0.5 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  <span className="hidden min-[440px]:flex items-center gap-0.5 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
                     <ShieldCheck size={10} /> АДМ
                   </span>
                 )}
               </div>
               <button
+                type="button"
                 onClick={handleExitApplication}
                 disabled={exiting}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
-                title="Закрыть программу"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
+                title={exiting ? 'Выход...' : 'Выход'}
+                aria-label={exiting ? 'Выход...' : 'Выход'}
               >
-                <Power size={15} /> <span className="hidden sm:inline">{exiting ? 'Выход...' : 'Выход'}</span>
+                <Power size={15} />
               </button>
-              <button onClick={signOut} className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-red-50 hover:text-red-600 hover:border-red-200">
-                <LogOut size={15} /> <span className="hidden sm:inline">Сменить пользователя</span>
+              <button
+                type="button"
+                onClick={signOut}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:bg-red-50 hover:text-red-600 hover:border-red-200"
+                title="Сменить пользователя"
+                aria-label="Сменить пользователя"
+              >
+                <LogOut size={15} />
               </button>
             </div>
           </div>
@@ -181,6 +198,7 @@ function MainApp() {
         {tab === 'journal' && (
           <WeighingJournal refreshKey={journalKey} onCompleteOpen={handleCompleteOpen} />
         )}
+        {tab === 'archive' && <ArchiveView />}
         {tab === 'reports' && <ReportsView />}
         {tab === 'dictionaries' && <DictionariesView />}
         {tab === 'vescom' && appSettings.vescom_enabled && (

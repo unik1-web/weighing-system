@@ -5,7 +5,29 @@ import { formatPersonName, formatVehicleBrand } from './text-format';
 import { ticketImportKey } from './import-keys';
 import { normalizeWeighingMode, type WeighingMode } from './weighing-mode';
 import { normalizeWeightSource, type WeightSource } from './weight-source';
+import {
+  normalizeDriverInputMode,
+  normalizePlateSource,
+  type DriverInputMode,
+  type PlateSource,
+  type VehicleDriverLink,
+} from './vehicle-resolve';
+import { applyVehicleLearningOnComplete } from './vehicle-learning';
+import {
+  SCALE_DEVICES,
+  normalizeAdapterId,
+  type ScaleDeviceId,
+  type ScaleConnectionProfile as ScalesConnectionProfile,
+  type ScaleTransportKind,
+} from './scales';
+import {
+  normalizeManualWeightReasonMode,
+  type ManualWeightReasonMode,
+} from './manual-weight-reason';
 import { logger } from './logger';
+
+export type { ManualWeightReasonMode };
+export type { ScaleTransportKind };
 
 export type { WeightSource };
 export type TicketStatus = 'open' | 'completed';
@@ -51,15 +73,39 @@ export interface WeighingTicket {
   completed_at: string | null;
   weighing_mode?: WeighingMode;
   version?: number;
+  plate_source?: PlateSource | null;
+  site_id?: string | null;
+  scale_id?: string | null;
+  scale_role?: 'primary' | 'spare' | null;
+  photo_entry_path?: string | null;
+  photo_exit_path?: string | null;
+  photo_overview_path?: string | null;
+  /** Reason for keyboard weight entry; null when off / not applicable. Soft-read for old tickets. */
+  manual_weight_reason?: string | null;
+  /** Closed during year rotation. Soft-read: missing → false. */
+  auto_closed?: boolean | null;
 }
+
+export type TicketAuditAction = 'created' | 'completed' | 'auto_closed' | 'updated';
 
 export interface TicketAuditEvent {
   id: string;
   ticket_id: string;
-  action: 'created' | 'completed';
+  action: TicketAuditAction;
   at: string;
   operator_name: string;
   operator_id: string | null;
+}
+
+export interface TicketRevision {
+  id: string;
+  ticket_id: string;
+  at: string;
+  operator_id: string | null;
+  operator_name: string;
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
 }
 
 export interface User {
@@ -88,6 +134,14 @@ const STORAGE_KEYS = {
   SESSIONS: 'app_sessions',
   TICKETS: 'app_weighing_tickets',
   TICKET_AUDIT: 'app_ticket_audit',
+  TICKET_REVISIONS: 'app_ticket_revisions',
+  VEHICLE_DRIVERS: 'app_vehicle_drivers',
+  SITES: 'app_sites',
+  SCALES: 'app_scales',
+  SITE_RUNTIME: 'app_site_runtime',
+  SITE_SCALE_SWITCHES: 'app_site_scale_switches',
+  CAMERAS: 'app_cameras',
+  TICKET_PHOTOS: 'app_ticket_photos',
   VEHICLES: 'app_vehicles',
   DRIVERS: 'app_drivers',
   CARGOS: 'app_cargos',
@@ -97,6 +151,20 @@ const STORAGE_KEYS = {
   SETTINGS: 'app_settings',
   CURRENT_USER: 'app_current_user',
 };
+
+/** Exported for site-runtime and sync keys. */
+export const APP_STORAGE_KEYS = {
+  SITES: STORAGE_KEYS.SITES,
+  SCALES: STORAGE_KEYS.SCALES,
+  SITE_RUNTIME: STORAGE_KEYS.SITE_RUNTIME,
+  SITE_SCALE_SWITCHES: STORAGE_KEYS.SITE_SCALE_SWITCHES,
+  CAMERAS: STORAGE_KEYS.CAMERAS,
+  TICKET_PHOTOS: STORAGE_KEYS.TICKET_PHOTOS,
+} as const;
+
+function normalizeScaleDeviceId(raw: unknown): ScaleDeviceId {
+  return normalizeAdapterId(raw);
+}
 
 function persist(key: string, value: string): void {
   localStorage.setItem(key, value);
@@ -251,6 +319,25 @@ export const SessionStorage = {
   },
 };
 
+function softReadNullableString(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/** Soft-read boolean: missing/null/'' → false; 1/'true' → true. */
+export function softReadBool(value: unknown): boolean {
+  if (value == null || value === '') return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === '1' || normalized === 'true' || normalized === 'yes';
+  }
+  return Boolean(value);
+}
+
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
   const next: WeighingTicket = {
     ...ticket,
@@ -258,6 +345,20 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     reo_sent_at: ticket.reo_sent_at ?? null,
     gross_source: normalizeWeightSource(ticket.gross_source),
     tare_source: normalizeWeightSource(ticket.tare_source),
+    plate_source: normalizePlateSource(ticket.plate_source),
+    site_id: softReadNullableString(ticket.site_id),
+    scale_id: softReadNullableString(ticket.scale_id),
+    scale_role:
+      ticket.scale_role === 'primary' || ticket.scale_role === 'spare' ? ticket.scale_role : null,
+    photo_entry_path: ticket.photo_entry_path ?? null,
+    photo_exit_path: ticket.photo_exit_path ?? null,
+    photo_overview_path: ticket.photo_overview_path ?? null,
+    manual_weight_reason: softReadNullableString(
+      (ticket as WeighingTicket & { manual_weight_reason?: unknown }).manual_weight_reason,
+    ),
+    auto_closed: softReadBool(
+      (ticket as WeighingTicket & { auto_closed?: unknown }).auto_closed,
+    ),
   };
   const mode = normalizeWeighingMode(ticket);
   if (ticket.weighing_mode !== mode) {
@@ -341,6 +442,7 @@ export const TicketStorage = {
           operator_name: ticket.operator_name,
           operator_id: ticket.operator_id,
         });
+        applyVehicleLearningOnComplete(ticket);
       }
     }
 
@@ -418,6 +520,7 @@ export const TicketStorage = {
         operator_name: merged.operator_name,
         operator_id: merged.operator_id,
       });
+      applyVehicleLearningOnComplete(merged);
     }
 
     return merged;
@@ -478,6 +581,550 @@ export const TicketAuditStorage = {
   },
 };
 
+/** History machine ↔ driver (sync key app_vehicle_drivers). */
+export const VehicleDriversStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.VEHICLE_DRIVERS) === null) {
+      localStorage.setItem(STORAGE_KEYS.VEHICLE_DRIVERS, '[]');
+    }
+  },
+
+  getAll(): VehicleDriverLink[] {
+    VehicleDriversStorage.ensureInitialized();
+    const stored = localStorage.getItem(STORAGE_KEYS.VEHICLE_DRIVERS);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (item): item is VehicleDriverLink =>
+          item != null &&
+          typeof item === 'object' &&
+          typeof item.id === 'string' &&
+          typeof item.vehicle_number === 'string' &&
+          typeof item.driver_name === 'string',
+      );
+    } catch {
+      return [];
+    }
+  },
+
+  getByVehicle(vehicleNumber: string): VehicleDriverLink[] {
+    const plate = formatVehiclePlate(vehicleNumber);
+    return VehicleDriversStorage.getAll().filter(
+      (link) => formatVehiclePlate(link.vehicle_number) === plate,
+    );
+  },
+
+  upsert(args: {
+    vehicle_number: string;
+    driver_name: string;
+    last_used_at?: string;
+    driver_id?: string | null;
+  }): VehicleDriverLink {
+    VehicleDriversStorage.ensureInitialized();
+    const plate = formatVehiclePlate(args.vehicle_number);
+    const driverName = formatPersonName(args.driver_name);
+    const at = args.last_used_at ?? new Date().toISOString();
+    const links = VehicleDriversStorage.getAll();
+    const index = links.findIndex(
+      (link) =>
+        formatVehiclePlate(link.vehicle_number) === plate &&
+        formatPersonName(link.driver_name) === driverName,
+    );
+
+    if (index === -1) {
+      const created: VehicleDriverLink = {
+        id: crypto.randomUUID(),
+        vehicle_number: plate,
+        driver_name: driverName,
+        last_used_at: at,
+        use_count: 1,
+        driver_id: args.driver_id ?? null,
+      };
+      links.push(created);
+      persist(STORAGE_KEYS.VEHICLE_DRIVERS, JSON.stringify(links));
+      return created;
+    }
+
+    const current = links[index];
+    const updated: VehicleDriverLink = {
+      ...current,
+      vehicle_number: plate,
+      driver_name: driverName,
+      last_used_at: at,
+      use_count: (current.use_count || 0) + 1,
+      driver_id:
+        args.driver_id !== undefined ? args.driver_id : (current.driver_id ?? null),
+    };
+    links[index] = updated;
+    persist(STORAGE_KEYS.VEHICLE_DRIVERS, JSON.stringify(links));
+    return updated;
+  },
+};
+
+// ── Sites / scales / runtime (этап 4) ──────────────────────────────────────
+
+export type ScaleRole = 'primary' | 'spare';
+export type ActiveScaleSet = 'primary' | 'spare';
+export type CameraMode = 'normal' | 'rotated_for_spare';
+export type AnprMode = 'enabled' | 'disabled_by_configuration' | 'failed';
+export type SwitchReason = 'repair' | 'cleaning' | 'verification' | 'other';
+export type CameraAck = 'rotated' | 'no_cameras';
+
+export interface Site {
+  id: string;
+  name: string;
+  is_default: boolean;
+  created_at: string;
+}
+
+export type ScaleConnectionProfile = ScalesConnectionProfile;
+
+export interface Scale {
+  id: string;
+  site_id: string;
+  role: ScaleRole;
+  name: string;
+  adapter_id: ScaleDeviceId;
+  connection: ScaleConnectionProfile;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface SiteRuntime {
+  site_id: string;
+  active_scale_set: ActiveScaleSet;
+  camera_mode: CameraMode;
+  anpr_mode: AnprMode;
+  switch_reason: SwitchReason | null;
+  switch_by_operator_id: string | null;
+  switch_by_operator_name: string | null;
+  switch_at: string | null;
+}
+
+export interface SiteScaleSwitchEvent {
+  id: string;
+  site_id: string;
+  from_set: ActiveScaleSet;
+  to_set: ActiveScaleSet;
+  reason: SwitchReason;
+  operator_id: string | null;
+  operator_name: string;
+  at: string;
+  camera_ack: CameraAck | null;
+}
+
+function persistJsonArray(key: string, items: unknown[]): void {
+  persist(key, JSON.stringify(items));
+}
+
+function readJsonArray<T>(key: string, guard: (item: unknown) => item is T): T[] {
+  const stored = localStorage.getItem(key);
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(guard);
+  } catch {
+    return [];
+  }
+}
+
+function isSite(item: unknown): item is Site {
+  return (
+    item != null &&
+    typeof item === 'object' &&
+    typeof (item as Site).id === 'string' &&
+    typeof (item as Site).name === 'string' &&
+    typeof (item as Site).is_default === 'boolean' &&
+    typeof (item as Site).created_at === 'string'
+  );
+}
+
+function isScale(item: unknown): item is Scale {
+  if (item == null || typeof item !== 'object') return false;
+  const s = item as Scale;
+  return (
+    typeof s.id === 'string' &&
+    typeof s.site_id === 'string' &&
+    (s.role === 'primary' || s.role === 'spare') &&
+    typeof s.name === 'string' &&
+    typeof s.adapter_id === 'string' &&
+    s.connection != null &&
+    typeof s.connection === 'object' &&
+    typeof s.enabled === 'boolean' &&
+    typeof s.created_at === 'string'
+  );
+}
+
+function isSiteRuntime(item: unknown): item is SiteRuntime {
+  if (item == null || typeof item !== 'object') return false;
+  const r = item as SiteRuntime;
+  return (
+    typeof r.site_id === 'string' &&
+    (r.active_scale_set === 'primary' || r.active_scale_set === 'spare') &&
+    typeof r.camera_mode === 'string' &&
+    typeof r.anpr_mode === 'string'
+  );
+}
+
+function isSiteScaleSwitchEvent(item: unknown): item is SiteScaleSwitchEvent {
+  if (item == null || typeof item !== 'object') return false;
+  const e = item as SiteScaleSwitchEvent;
+  return (
+    typeof e.id === 'string' &&
+    typeof e.site_id === 'string' &&
+    (e.from_set === 'primary' || e.from_set === 'spare') &&
+    (e.to_set === 'primary' || e.to_set === 'spare') &&
+    typeof e.reason === 'string' &&
+    typeof e.operator_name === 'string' &&
+    typeof e.at === 'string'
+  );
+}
+
+// ── Cameras / ticket photos (этап 7) ───────────────────────────────────────
+
+export type CameraRole = 'entry' | 'exit' | 'overview';
+export type CaptureKind = 'http_snapshot' | 'rtsp' | 'auto';
+export type PhotoPhase = 'gross' | 'tare';
+export type PhotoStatus = 'ok' | 'failed' | 'skipped';
+
+export interface CameraRoi {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface Camera {
+  id: string;
+  site_id: string;
+  role: CameraRole;
+  name: string;
+  capture_url: string;
+  capture_kind: CaptureKind;
+  enabled: boolean;
+  sort_order: number;
+  roi: CameraRoi | null;
+  reference_normal_path: string | null;
+  reference_spare_path: string | null;
+  created_at: string;
+}
+
+export interface TicketPhoto {
+  id: string;
+  ticket_id: string;
+  phase: PhotoPhase;
+  camera_id: string | null;
+  camera_role: CameraRole;
+  relative_path: string | null;
+  status: PhotoStatus;
+  error_message: string | null;
+  camera_mode: CameraMode;
+  created_at: string;
+}
+
+function isCameraRole(value: unknown): value is CameraRole {
+  return value === 'entry' || value === 'exit' || value === 'overview';
+}
+
+function isCamera(item: unknown): item is Camera {
+  if (item == null || typeof item !== 'object') return false;
+  const c = item as Camera;
+  return (
+    typeof c.id === 'string' &&
+    typeof c.site_id === 'string' &&
+    isCameraRole(c.role) &&
+    typeof c.name === 'string' &&
+    typeof c.capture_url === 'string' &&
+    typeof c.enabled === 'boolean' &&
+    typeof c.created_at === 'string'
+  );
+}
+
+function isTicketPhoto(item: unknown): item is TicketPhoto {
+  if (item == null || typeof item !== 'object') return false;
+  const p = item as TicketPhoto;
+  return (
+    typeof p.id === 'string' &&
+    typeof p.ticket_id === 'string' &&
+    (p.phase === 'gross' || p.phase === 'tare') &&
+    isCameraRole(p.camera_role) &&
+    (p.status === 'ok' || p.status === 'failed' || p.status === 'skipped') &&
+    typeof p.created_at === 'string'
+  );
+}
+
+function normalizeCamera(raw: Camera): Camera {
+  const kind =
+    raw.capture_kind === 'http_snapshot' || raw.capture_kind === 'rtsp' || raw.capture_kind === 'auto'
+      ? raw.capture_kind
+      : 'auto';
+  let roi: CameraRoi | null = null;
+  if (raw.roi && typeof raw.roi === 'object') {
+    const r = raw.roi;
+    if (
+      typeof r.x === 'number' &&
+      typeof r.y === 'number' &&
+      typeof r.w === 'number' &&
+      typeof r.h === 'number'
+    ) {
+      roi = { x: r.x, y: r.y, w: r.w, h: r.h };
+    }
+  }
+  return {
+    ...raw,
+    capture_kind: kind,
+    enabled: Boolean(raw.enabled),
+    sort_order: typeof raw.sort_order === 'number' && Number.isFinite(raw.sort_order) ? raw.sort_order : 0,
+    roi,
+    reference_normal_path: raw.reference_normal_path ?? null,
+    reference_spare_path: raw.reference_spare_path ?? null,
+  };
+}
+
+export const CamerasStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.CAMERAS) === null) {
+      localStorage.setItem(STORAGE_KEYS.CAMERAS, '[]');
+    }
+  },
+
+  getAll(): Camera[] {
+    CamerasStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.CAMERAS, isCamera).map(normalizeCamera);
+  },
+
+  replaceAll(cameras: Camera[]): void {
+    CamerasStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.CAMERAS, cameras.map(normalizeCamera));
+  },
+
+  upsert(camera: Camera): Camera {
+    const normalized = normalizeCamera(camera);
+    const list = CamerasStorage.getAll();
+    const index = list.findIndex((c) => c.id === normalized.id);
+    if (index === -1) list.push(normalized);
+    else list[index] = normalized;
+    CamerasStorage.replaceAll(list);
+    return normalized;
+  },
+
+  remove(id: string): void {
+    CamerasStorage.replaceAll(CamerasStorage.getAll().filter((c) => c.id !== id));
+  },
+
+  forSite(siteId: string): Camera[] {
+    return CamerasStorage.getAll()
+      .filter((c) => c.site_id === siteId)
+      .sort((a, b) => a.sort_order - b.sort_order);
+  },
+};
+
+export const TicketPhotosStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.TICKET_PHOTOS) === null) {
+      localStorage.setItem(STORAGE_KEYS.TICKET_PHOTOS, '[]');
+    }
+  },
+
+  getAll(): TicketPhoto[] {
+    TicketPhotosStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.TICKET_PHOTOS, isTicketPhoto);
+  },
+
+  replaceAll(photos: TicketPhoto[]): void {
+    TicketPhotosStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.TICKET_PHOTOS, photos);
+  },
+
+  merge(photos: TicketPhoto[]): void {
+    const byId = new Map(TicketPhotosStorage.getAll().map((p) => [p.id, p]));
+    for (const photo of photos) {
+      byId.set(photo.id, photo);
+    }
+    TicketPhotosStorage.replaceAll([...byId.values()]);
+  },
+
+  forTicket(ticketId: string): TicketPhoto[] {
+    return TicketPhotosStorage.getAll().filter((p) => p.ticket_id === ticketId);
+  },
+};
+
+export const SitesStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.SITES) === null) {
+      localStorage.setItem(STORAGE_KEYS.SITES, '[]');
+    }
+  },
+
+  getAll(): Site[] {
+    SitesStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.SITES, isSite);
+  },
+
+  replaceAll(sites: Site[]): void {
+    SitesStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.SITES, sites);
+  },
+
+  upsert(site: Site): Site {
+    const sites = SitesStorage.getAll();
+    const index = sites.findIndex((s) => s.id === site.id);
+    if (index === -1) sites.push(site);
+    else sites[index] = site;
+    SitesStorage.replaceAll(sites);
+    return site;
+  },
+};
+
+export const ScalesStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.SCALES) === null) {
+      localStorage.setItem(STORAGE_KEYS.SCALES, '[]');
+    }
+  },
+
+  getAll(): Scale[] {
+    ScalesStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.SCALES, isScale).map((scale) => {
+      const adapter_id = normalizeScaleDeviceId(scale.adapter_id);
+      const defaults = SCALE_DEVICES[adapter_id];
+      const conn = (scale.connection ?? {}) as ScaleConnectionProfile;
+      const transport =
+        conn.transport === 'web_serial' || conn.transport === 'serial' || conn.transport === 'tcp'
+          ? conn.transport
+          : 'web_serial';
+      const connection: ScaleConnectionProfile = {
+        transport,
+        baudRate:
+          typeof conn.baudRate === 'number' && Number.isFinite(conn.baudRate)
+            ? conn.baudRate
+            : defaults.baudRate,
+        parity:
+          conn.parity === 'none' || conn.parity === 'even' || conn.parity === 'odd'
+            ? conn.parity
+            : defaults.parity,
+        dataBits: conn.dataBits === 7 || conn.dataBits === 8 ? conn.dataBits : defaults.dataBits,
+        stopBits: conn.stopBits === 1 || conn.stopBits === 2 ? conn.stopBits : defaults.stopBits,
+        lineTerminator:
+          typeof conn.lineTerminator === 'string'
+            ? conn.lineTerminator
+            : defaults.lineTerminator,
+        parseRegex: conn.parseRegex,
+        parseStableGroup: conn.parseStableGroup,
+        parseUnitGroup: conn.parseUnitGroup,
+        parseSignGroup: conn.parseSignGroup,
+        parseMask: conn.parseMask,
+        host: conn.host,
+        tcpPort: conn.tcpPort,
+        serialPath: conn.serialPath,
+      };
+      return {
+        ...scale,
+        adapter_id,
+        connection,
+        enabled: Boolean(scale.enabled),
+      };
+    });
+  },
+
+  replaceAll(scales: Scale[]): void {
+    ScalesStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.SCALES, scales);
+  },
+
+  upsert(scale: Scale): Scale {
+    const scales = ScalesStorage.getAll();
+    // Application-level: ≤1 enabled scale per (site_id, role)
+    if (scale.enabled) {
+      for (let i = 0; i < scales.length; i++) {
+        const existing = scales[i];
+        if (
+          existing.id !== scale.id &&
+          existing.site_id === scale.site_id &&
+          existing.role === scale.role &&
+          existing.enabled
+        ) {
+          scales[i] = { ...existing, enabled: false };
+        }
+      }
+    }
+    const index = scales.findIndex((s) => s.id === scale.id);
+    if (index === -1) scales.push(scale);
+    else scales[index] = scale;
+    ScalesStorage.replaceAll(scales);
+    return scale;
+  },
+
+  getBySite(siteId: string): Scale[] {
+    return ScalesStorage.getAll().filter((s) => s.site_id === siteId);
+  },
+};
+
+export const SiteRuntimeStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.SITE_RUNTIME) === null) {
+      localStorage.setItem(STORAGE_KEYS.SITE_RUNTIME, '[]');
+    }
+  },
+
+  getAll(): SiteRuntime[] {
+    SiteRuntimeStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.SITE_RUNTIME, isSiteRuntime);
+  },
+
+  replaceAll(rows: SiteRuntime[]): void {
+    SiteRuntimeStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.SITE_RUNTIME, rows);
+  },
+
+  upsert(runtime: SiteRuntime): SiteRuntime {
+    const rows = SiteRuntimeStorage.getAll();
+    const index = rows.findIndex((r) => r.site_id === runtime.site_id);
+    if (index === -1) rows.push(runtime);
+    else rows[index] = runtime;
+    SiteRuntimeStorage.replaceAll(rows);
+    return runtime;
+  },
+
+  getBySite(siteId: string): SiteRuntime | null {
+    return SiteRuntimeStorage.getAll().find((r) => r.site_id === siteId) ?? null;
+  },
+};
+
+export const SiteScaleSwitchesStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.SITE_SCALE_SWITCHES) === null) {
+      localStorage.setItem(STORAGE_KEYS.SITE_SCALE_SWITCHES, '[]');
+    }
+  },
+
+  getAll(): SiteScaleSwitchEvent[] {
+    SiteScaleSwitchesStorage.ensureInitialized();
+    return readJsonArray(STORAGE_KEYS.SITE_SCALE_SWITCHES, isSiteScaleSwitchEvent);
+  },
+
+  replaceAll(events: SiteScaleSwitchEvent[]): void {
+    SiteScaleSwitchesStorage.ensureInitialized();
+    persistJsonArray(STORAGE_KEYS.SITE_SCALE_SWITCHES, events);
+  },
+
+  append(event: SiteScaleSwitchEvent): SiteScaleSwitchEvent {
+    const events = SiteScaleSwitchesStorage.getAll();
+    events.push(event);
+    SiteScaleSwitchesStorage.replaceAll(events);
+    return event;
+  },
+
+  getBySite(siteId: string): SiteScaleSwitchEvent[] {
+    return SiteScaleSwitchesStorage.getAll()
+      .filter((e) => e.site_id === siteId)
+      .sort((a, b) => a.at.localeCompare(b.at));
+  },
+};
+
 // Dictionary storage
 export type DictionaryTable = 'vehicles' | 'drivers' | 'cargos' | 'shippers' | 'receivers' | 'carriers';
 
@@ -490,6 +1137,9 @@ export interface DictionaryEntry {
   default_price?: number | null;
   vehicle_brand?: string;
   vehicle_number?: string;
+  preferred_driver_name?: string | null;
+  preferred_cargo_name?: string | null;
+  preferred_shipper_name?: string | null;
   inn?: string;
 }
 
@@ -531,6 +1181,11 @@ export const DictionaryStorage = {
       if (normalizedEntry.vehicle_brand) {
         normalizedEntry.vehicle_brand = formatVehicleBrand(normalizedEntry.vehicle_brand);
       }
+      if (normalizedEntry.preferred_driver_name) {
+        normalizedEntry.preferred_driver_name = formatPersonName(
+          normalizedEntry.preferred_driver_name,
+        );
+      }
     } else if (table === 'drivers') {
       normalizedEntry.name = formatPersonName(entry.name);
     }
@@ -562,6 +1217,11 @@ export const DictionaryStorage = {
       }
       if (normalizedUpdates.vehicle_brand) {
         normalizedUpdates.vehicle_brand = formatVehicleBrand(String(normalizedUpdates.vehicle_brand));
+      }
+      if (normalizedUpdates.preferred_driver_name) {
+        normalizedUpdates.preferred_driver_name = formatPersonName(
+          String(normalizedUpdates.preferred_driver_name),
+        );
       }
     } else if (table === 'drivers') {
       const rawName = updates.name ?? items[index].name;
@@ -645,6 +1305,12 @@ export interface AppSettings {
   tara_threshold: number;
   max_time_between: number;
   tara_default: number;
+  driver_input_mode: DriverInputMode;
+  scale_device_id: ScaleDeviceId;
+  /** When to require/show manual_weight_reason on tickets. Default: optional. */
+  manual_weight_reason_mode: ManualWeightReasonMode;
+  /** Enable photo capture on gross/tare fix (full build). Default: false. */
+  video_enabled: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -677,6 +1343,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   tara_threshold: 15000,
   max_time_between: 24,
   tara_default: 0,
+  driver_input_mode: 'all',
+  scale_device_id: 'microsim-m0601',
+  manual_weight_reason_mode: 'optional',
+  video_enabled: false,
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -742,12 +1412,23 @@ export const SettingsStorage = {
       tara_threshold: parseNumber(stored.tara_threshold, DEFAULT_APP_SETTINGS.tara_threshold),
       max_time_between: parseNumber(stored.max_time_between, DEFAULT_APP_SETTINGS.max_time_between),
       tara_default: parseNumber(stored.tara_default, DEFAULT_APP_SETTINGS.tara_default),
+      driver_input_mode: normalizeDriverInputMode(stored.driver_input_mode),
+      scale_device_id: normalizeScaleDeviceId(stored.scale_device_id),
+      manual_weight_reason_mode: normalizeManualWeightReasonMode(
+        stored.manual_weight_reason_mode,
+      ),
+      video_enabled: stored.video_enabled === 'true',
     };
   },
 
   updateAppSettings: (updates: Partial<AppSettings>): AppSettings => {
     const current = SettingsStorage.getAppSettings();
     const next = { ...current, ...updates };
+    next.driver_input_mode = normalizeDriverInputMode(next.driver_input_mode);
+    next.scale_device_id = normalizeScaleDeviceId(next.scale_device_id);
+    next.manual_weight_reason_mode = normalizeManualWeightReasonMode(
+      next.manual_weight_reason_mode,
+    );
     const flat: Record<string, string> = {
       org_name: next.org_name,
       org_address: next.org_address,
@@ -778,6 +1459,10 @@ export const SettingsStorage = {
       tara_threshold: String(next.tara_threshold),
       max_time_between: String(next.max_time_between),
       tara_default: String(next.tara_default),
+      driver_input_mode: next.driver_input_mode,
+      scale_device_id: next.scale_device_id,
+      manual_weight_reason_mode: next.manual_weight_reason_mode,
+      video_enabled: String(next.video_enabled),
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
@@ -811,6 +1496,10 @@ export async function clearAllDictionaries(): Promise<void> {
 export const initializeStorage = () => {
   if (hasStoredData()) {
     TicketAuditStorage.ensureInitialized();
+    SitesStorage.ensureInitialized();
+    ScalesStorage.ensureInitialized();
+    SiteRuntimeStorage.ensureInitialized();
+    SiteScaleSwitchesStorage.ensureInitialized();
     return;
   }
 
@@ -829,4 +1518,8 @@ export const initializeStorage = () => {
 
   SettingsStorage.set('org_name', 'Полигон отходов');
   TicketAuditStorage.ensureInitialized();
+  SitesStorage.ensureInitialized();
+  ScalesStorage.ensureInitialized();
+  SiteRuntimeStorage.ensureInitialized();
+  SiteScaleSwitchesStorage.ensureInitialized();
 };
