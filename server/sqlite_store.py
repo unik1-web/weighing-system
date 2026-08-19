@@ -1692,8 +1692,16 @@ def _replace_site_scale_switches(connection: sqlite3.Connection, events: list[An
 
 def _replace_cameras(connection: sqlite3.Connection, cameras: list[Any]) -> None:
     connection.execute('DELETE FROM cameras')
+    site_ids = {
+        str(row[0])
+        for row in connection.execute('SELECT id FROM sites').fetchall()
+        if row and row[0] is not None
+    }
     for cam in cameras:
         if not isinstance(cam, dict):
+            continue
+        site_id = str(cam.get('site_id', ''))
+        if not site_id or site_id not in site_ids:
             continue
         roi = cam.get('roi')
         if isinstance(roi, (dict, list)):

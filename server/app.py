@@ -409,6 +409,7 @@ def cameras_capture():
     ticket_id = body.get('ticket_id')
     phase = body.get('phase')
     site_id = body.get('site_id')
+    cameras = body.get('cameras')
     if not ticket_id or not phase:
         return error_response('Нужны ticket_id и phase')
     try:
@@ -418,6 +419,7 @@ def cameras_capture():
             str(ticket_id),
             str(phase),
             str(site_id) if site_id else None,
+            cameras_override=cameras if isinstance(cameras, list) else None,
         )
         return jsonify({'success': True, 'photos': photos, 'stubs': stubs})
     except ValueError as exc:

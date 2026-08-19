@@ -297,6 +297,44 @@ def _resolve_site_id(ticket_id: str, site_id: str | None) -> str:
     raise ValueError('Не удалось определить площадку для захвата')
 
 
+def _normalize_override_cameras(
+    raw_cameras: list[Any] | None,
+    resolved_site: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(raw_cameras, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_cameras):
+        if not isinstance(item, dict):
+            continue
+        site_id = str(item.get('site_id') or resolved_site)
+        if site_id != resolved_site:
+            continue
+        capture_url = str(item.get('capture_url') or '').strip()
+        if not capture_url:
+            continue
+        if not bool(item.get('enabled', True)):
+            continue
+        roi = item.get('roi')
+        result.append(
+            {
+                'id': item.get('id') or f'override-{index}',
+                'site_id': site_id,
+                'role': str(item.get('role') or 'overview'),
+                'name': str(item.get('name') or item.get('role') or f'Camera {index + 1}'),
+                'capture_url': capture_url,
+                'capture_kind': str(item.get('capture_kind') or 'auto'),
+                'enabled': True,
+                'sort_order': int(item.get('sort_order') or index),
+                'roi': roi if isinstance(roi, (dict, list)) else None,
+                'reference_normal_path': item.get('reference_normal_path'),
+                'reference_spare_path': item.get('reference_spare_path'),
+                'created_at': str(item.get('created_at') or _now_iso()),
+            }
+        )
+    return result
+
+
 def _ticket_photo_path(ticket_id: str, phase: str, role: str) -> str:
     now = datetime.now()
     day_dir = os.path.join(
@@ -483,13 +521,17 @@ def capture_for_ticket(
     phase: str,
     site_id: str | None = None,
     camera_mode: str | None = None,
+    cameras_override: list[Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
     if phase not in PHOTO_PHASES:
         raise ValueError(f'Некорректная phase: {phase}')
 
     resolved_site = _resolve_site_id(ticket_id, site_id)
     mode = camera_mode or _camera_mode_for_site(resolved_site)
-    cameras = list_enabled_cameras(resolved_site)
+    if cameras_override is not None:
+        cameras = _normalize_override_cameras(cameras_override, resolved_site)
+    else:
+        cameras = list_enabled_cameras(resolved_site)
 
     video_on = is_video_enabled()
     # HTTP always available; RTSP may fail per-camera

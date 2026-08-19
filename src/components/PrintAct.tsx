@@ -293,6 +293,7 @@ function buildSheetHtml(t: WeighingTicket, settings: AppSettings): string {
   return `<div style="display:flex;flex-direction:column;gap:0;">${acts}</div>`;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function printTicket(ticket: WeighingTicket, settings?: AppSettings) {
   const appSettings = settings ?? SettingsStorage.getAppSettings();
   const title = formatTicketPrintTitle(

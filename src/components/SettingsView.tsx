@@ -58,6 +58,7 @@ import { SpareSwitchWizard } from '@/components/SpareSwitchWizard';
 import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, Server, ArrowLeftRight, CalendarRange, Camera as CameraIcon, Link2 } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
+import { getErrorMessage } from '@/lib/errors';
 import { useAuth } from '@/hooks/useAuth';
 import {
   exportStorageBackup,
@@ -484,8 +485,8 @@ export function SettingsView({ onSaved }: Props) {
         object_url: settings.reo_object_url.trim(),
       });
       setReoTestMessage({ type: 'success', text: 'Подключение к РЭО успешно' });
-    } catch (err: any) {
-      setReoTestMessage({ type: 'error', text: err.message ?? 'Ошибка подключения к РЭО' });
+    } catch (err: unknown) {
+      setReoTestMessage({ type: 'error', text: getErrorMessage(err, 'Ошибка подключения к РЭО') });
     } finally {
       setReoTesting(false);
     }
@@ -506,8 +507,8 @@ export function SettingsView({ onSaved }: Props) {
         password: settings.vescom_db_password || 'masterkey',
       });
       setVescomTestMessage({ type: 'success', text: 'Подключение к Vescom успешно' });
-    } catch (err: any) {
-      setVescomTestMessage({ type: 'error', text: err.message ?? 'Ошибка подключения к Vescom' });
+    } catch (err: unknown) {
+      setVescomTestMessage({ type: 'error', text: getErrorMessage(err, 'Ошибка подключения к Vescom') });
     } finally {
       setVescomTesting(false);
     }
@@ -526,8 +527,8 @@ export function SettingsView({ onSaved }: Props) {
         db_path: settings.metra_db_path.trim(),
       });
       setMetraTestMessage({ type: 'success', text: response.message ?? 'Подключение к Metra успешно' });
-    } catch (err: any) {
-      setMetraTestMessage({ type: 'error', text: err.message ?? 'Ошибка подключения к Metra' });
+    } catch (err: unknown) {
+      setMetraTestMessage({ type: 'error', text: getErrorMessage(err, 'Ошибка подключения к Metra') });
     } finally {
       setMetraTesting(false);
     }
