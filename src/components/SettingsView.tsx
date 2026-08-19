@@ -88,7 +88,7 @@ const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 const TRANSPORT_OPTIONS: { id: ScaleTransportKind; label: string }[] = [
   { id: 'web_serial', label: 'Web Serial (браузер)' },
   { id: 'tcp', label: 'TCP (сервер)' },
-  { id: 'serial', label: 'Serial COM (сервер, задел)' },
+  { id: 'serial', label: 'Serial COM (сервер / exe)' },
 ];
 
 const SETTINGS_TAB_IDS = ['org', 'site', 'cameras', 'weighing', 'integrations', 'data'] as const;
@@ -1041,8 +1041,8 @@ export function SettingsView({ onSaved }: Props) {
                       placeholder="COM3"
                       className={inputClass}
                     />
-                    <p className="mt-1 text-xs text-amber-700">
-                      Транспорт serial пока не реализован на сервере (ответ 501).
+                    <p className="mt-1 text-xs text-gray-500">
+                      Закройте другие программы, использующие этот COM-порт, перед подключением.
                     </p>
                   </div>
                 )}

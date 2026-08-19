@@ -10,6 +10,9 @@ import threading
 import time
 from typing import Any, Optional
 
+import serial
+from serial import SerialException
+
 logger = logging.getLogger('weighing-system')
 
 BUILTIN_ADAPTER_IDS = frozenset(
@@ -201,6 +204,33 @@ def parse_custom_frame(raw: str, connection: dict[str, Any]) -> Optional[dict[st
     return parse_mask_frame(raw, mask)
 
 
+def _map_parity(value: Any) -> str:
+    raw = str(value or 'none').lower()
+    if raw in ('even', 'e'):
+        return serial.PARITY_EVEN
+    if raw in ('odd', 'o'):
+        return serial.PARITY_ODD
+    return serial.PARITY_NONE
+
+
+def _map_stop_bits(value: Any) -> float:
+    try:
+        bits = int(value)
+    except (TypeError, ValueError):
+        bits = 1
+    if bits == 2:
+        return serial.STOPBITS_TWO
+    return serial.STOPBITS_ONE
+
+
+def _map_data_bits(value: Any) -> int:
+    try:
+        bits = int(value)
+    except (TypeError, ValueError):
+        bits = 8
+    return bits if bits in (5, 6, 7, 8) else 8
+
+
 def parse_frame(adapter_id: str, line: str, connection: dict[str, Any]) -> Optional[dict[str, Any]]:
     aid = normalize_adapter_id(adapter_id)
     if aid == 'custom':
@@ -279,6 +309,7 @@ class ScaleBackendSession:
         self._last_reading: Optional[dict[str, Any]] = None
         self._error: Optional[str] = None
         self._sock: Optional[socket.socket] = None
+        self._serial: Optional[serial.Serial] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
@@ -304,7 +335,9 @@ class ScaleBackendSession:
         with self._lock:
             self._stop.set()
             sock = self._sock
+            ser = self._serial
             self._sock = None
+            self._serial = None
             self._connected = False
             self._adapter_id = None
             self._scale_id = None
@@ -321,6 +354,11 @@ class ScaleBackendSession:
                 sock.close()
             except OSError:
                 pass
+        if ser is not None:
+            try:
+                ser.close()
+            except SerialException:
+                pass
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
@@ -333,12 +371,7 @@ class ScaleBackendSession:
         transport = ctx['transport'] or 'web_serial'
         if transport == 'web_serial':
             raise ValueError('Транспорт web_serial доступен только в браузере')
-        if transport == 'serial':
-            # Stub — not implemented in MVP
-            err = 'Транспорт serial (COM) пока не реализован'
-            raise NotImplementedError(err)
-
-        if transport != 'tcp':
+        if transport not in ('tcp', 'serial'):
             raise ValueError(f'Неизвестный транспорт: {transport}')
 
         connection = dict(ctx['connection'])
@@ -349,22 +382,35 @@ class ScaleBackendSession:
         if overrides.get('serialPath'):
             connection['serialPath'] = overrides['serialPath']
 
+        adapter_id = ctx['adapter_id']
+        self._validate_custom_connection(adapter_id, connection)
+        self.disconnect()
+
+        if transport == 'serial':
+            return self._connect_serial(ctx, connection, adapter_id)
+        return self._connect_tcp(ctx, connection, adapter_id)
+
+    def _validate_custom_connection(self, adapter_id: str, connection: dict[str, Any]) -> None:
+        if adapter_id != 'custom':
+            return
+        regex_src = (connection.get('parseRegex') or '').strip()
+        mask = (connection.get('parseMask') or '').strip()
+        if not regex_src and not mask:
+            raise ValueError('Задайте regex или маску разбора веса')
+        if regex_src:
+            try:
+                re.compile(regex_src)
+            except re.error as exc:
+                raise ValueError(f'Некорректное регулярное выражение: {exc}') from exc
+
+    def _connect_tcp(
+        self,
+        ctx: dict[str, Any],
+        connection: dict[str, Any],
+        adapter_id: str,
+    ) -> dict[str, Any]:
         host = connection.get('host') or '127.0.0.1'
         port = int(connection.get('tcpPort') or 9001)
-        adapter_id = ctx['adapter_id']
-
-        if adapter_id == 'custom':
-            regex_src = (connection.get('parseRegex') or '').strip()
-            mask = (connection.get('parseMask') or '').strip()
-            if not regex_src and not mask:
-                raise ValueError('Задайте regex или маску разбора веса')
-            if regex_src:
-                try:
-                    re.compile(regex_src)
-                except re.error as exc:
-                    raise ValueError(f'Некорректное регулярное выражение: {exc}') from exc
-
-        self.disconnect()
 
         sock = socket.create_connection((host, port), timeout=5.0)
         sock.settimeout(1.0)
@@ -381,7 +427,7 @@ class ScaleBackendSession:
             self._stop.clear()
 
         self._thread = threading.Thread(
-            target=self._read_loop,
+            target=self._read_loop_tcp,
             name='scale-tcp-reader',
             daemon=True,
         )
@@ -393,8 +439,81 @@ class ScaleBackendSession:
             'transport': 'tcp',
         }
 
-    def _read_loop(self) -> None:
-        term = (self._connection.get('lineTerminator') or '\r\n')
+    def _connect_serial(
+        self,
+        ctx: dict[str, Any],
+        connection: dict[str, Any],
+        adapter_id: str,
+    ) -> dict[str, Any]:
+        port_path = str(connection.get('serialPath') or '').strip()
+        if not port_path:
+            raise ValueError('Укажите COM-порт (например COM3)')
+
+        baud = int(connection.get('baudRate') or 9600)
+        try:
+            ser = serial.Serial(
+                port=port_path,
+                baudrate=baud,
+                parity=_map_parity(connection.get('parity')),
+                bytesize=_map_data_bits(connection.get('dataBits')),
+                stopbits=_map_stop_bits(connection.get('stopBits')),
+                timeout=1.0,
+            )
+        except SerialException as exc:
+            raise OSError(f'Не удалось открыть {port_path}: {exc}') from exc
+
+        with self._lock:
+            self._serial = ser
+            self._connected = True
+            self._adapter_id = adapter_id
+            self._scale_id = ctx['scale_id']
+            self._transport = 'serial'
+            self._connection = connection
+            self._last_reading = None
+            self._error = None
+            self._stop.clear()
+
+        self._thread = threading.Thread(
+            target=self._read_loop_serial,
+            name='scale-serial-reader',
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info('Scale serial connected to %s adapter=%s baud=%s', port_path, adapter_id, baud)
+        return {
+            'connected': True,
+            'adapter_id': adapter_id,
+            'transport': 'serial',
+            'serialPath': port_path,
+        }
+
+    def _process_buffer(self, buffer: str) -> str:
+        term = self._connection.get('lineTerminator') or '\r\n'
+        while True:
+            idx = buffer.find(term)
+            if idx == -1:
+                break
+            line = buffer[:idx].strip()
+            buffer = buffer[idx + len(term) :]
+            if not line:
+                continue
+            try:
+                reading = parse_frame(
+                    self._adapter_id or 'microsim-m0601',
+                    line,
+                    self._connection,
+                )
+            except ValueError as exc:
+                with self._lock:
+                    self._error = str(exc)
+                continue
+            if reading:
+                with self._lock:
+                    self._last_reading = reading
+                    self._error = None
+        return buffer
+
+    def _read_loop_tcp(self) -> None:
         buffer = ''
         sock = self._sock
         if sock is None:
@@ -405,24 +524,7 @@ class ScaleBackendSession:
                 if not chunk:
                     break
                 buffer += chunk.decode('utf-8', errors='replace')
-                while True:
-                    idx = buffer.find(term)
-                    if idx == -1:
-                        break
-                    line = buffer[:idx].strip()
-                    buffer = buffer[idx + len(term) :]
-                    if not line:
-                        continue
-                    try:
-                        reading = parse_frame(self._adapter_id or 'microsim-m0601', line, self._connection)
-                    except ValueError as exc:
-                        with self._lock:
-                            self._error = str(exc)
-                        continue
-                    if reading:
-                        with self._lock:
-                            self._last_reading = reading
-                            self._error = None
+                buffer = self._process_buffer(buffer)
             except socket.timeout:
                 continue
             except OSError as exc:
@@ -433,6 +535,27 @@ class ScaleBackendSession:
         with self._lock:
             self._connected = False
         logger.info('Scale TCP read loop ended')
+
+    def _read_loop_serial(self) -> None:
+        buffer = ''
+        ser = self._serial
+        if ser is None:
+            return
+        while not self._stop.is_set():
+            try:
+                chunk = ser.read(4096)
+                if not chunk:
+                    continue
+                buffer += chunk.decode('utf-8', errors='replace')
+                buffer = self._process_buffer(buffer)
+            except SerialException as exc:
+                with self._lock:
+                    self._error = f'Ошибка COM: {exc}'
+                    self._connected = False
+                break
+        with self._lock:
+            self._connected = False
+        logger.info('Scale serial read loop ended')
 
 
 _session = ScaleBackendSession()
