@@ -130,6 +130,205 @@ def fetch_vescom_rows(db_path: str, date_str: str, user: str, password: str):
     return items
 
 
+@app.post('/api/auth/login')
+def auth_login():
+    body = request.get_json(silent=True) or {}
+    username = str(body.get('username') or '').strip().lower()
+    password = body.get('password')
+    if not username or not isinstance(password, str):
+        return error_response('Укажите логин и пароль', 400)
+    try:
+        from auth_passwords import (
+            DEFAULT_ADMIN_PASSWORD,
+            DEFAULT_ADMIN_USERNAME,
+            hash_password,
+            needs_rehash,
+            verify_password,
+        )
+        from sqlite_store import (
+            _load_profiles,
+            _load_user_auth_row,
+            connect,
+            init_schema,
+        )
+
+        with connect() as connection:
+            init_schema(connection)
+            row = _load_user_auth_row(connection, username=username)
+            if not row or not verify_password(password, row['password_hash']):
+                return error_response('Неверный логин или пароль', 401)
+
+            must_change = bool(row['must_change_password'])
+            if username == DEFAULT_ADMIN_USERNAME and password == DEFAULT_ADMIN_PASSWORD:
+                must_change = True
+
+            if needs_rehash(row['password_hash']) or (
+                username == DEFAULT_ADMIN_USERNAME and password == DEFAULT_ADMIN_PASSWORD
+            ):
+                connection.execute(
+                    '''
+                    UPDATE users
+                    SET password_hash = ?, must_change_password = ?
+                    WHERE id = ?
+                    ''',
+                    (hash_password(password), 1 if must_change else 0, row['id']),
+                )
+            elif must_change != bool(row['must_change_password']):
+                connection.execute(
+                    'UPDATE users SET must_change_password = ? WHERE id = ?',
+                    (1 if must_change else 0, row['id']),
+                )
+
+            profiles = _load_profiles(connection)
+            profile = profiles.get(row['id'])
+            if not profile:
+                return error_response('Профиль пользователя не найден', 400)
+
+            return jsonify(
+                {
+                    'success': True,
+                    'user': {
+                        'id': row['id'],
+                        'email': row['email'],
+                        'username': row['username'],
+                    },
+                    'profile': profile,
+                    'must_change_password': must_change,
+                }
+            )
+    except Exception as exc:
+        logger.exception('auth login failed')
+        return error_response(f'Ошибка входа: {exc}')
+
+
+@app.post('/api/auth/change-password')
+def auth_change_password():
+    body = request.get_json(silent=True) or {}
+    user_id = str(body.get('user_id') or '').strip()
+    new_password = body.get('new_password')
+    current_password = body.get('current_password')
+    if not user_id or not isinstance(new_password, str):
+        return error_response('Укажите user_id и новый пароль', 400)
+    try:
+        from auth_passwords import hash_password, validate_new_password, verify_password
+        from sqlite_store import _load_user_auth_row, connect, init_schema
+
+        err = validate_new_password(new_password)
+        if err:
+            return error_response(err, 400)
+
+        with connect() as connection:
+            init_schema(connection)
+            row = _load_user_auth_row(connection, user_id=user_id)
+            if not row:
+                return error_response('Пользователь не найден', 404)
+
+            # Always prove identity: never allow reset by public user_id alone
+            # (must_change_password=1 previously skipped this and enabled LAN takeover).
+            if not isinstance(current_password, str) or not verify_password(
+                current_password, row['password_hash']
+            ):
+                return error_response('Неверный текущий пароль', 401)
+
+            connection.execute(
+                '''
+                UPDATE users
+                SET password_hash = ?, must_change_password = 0
+                WHERE id = ?
+                ''',
+                (hash_password(new_password), user_id),
+            )
+            return jsonify({'success': True, 'must_change_password': False})
+    except Exception as exc:
+        logger.exception('auth change-password failed')
+        return error_response(f'Ошибка смены пароля: {exc}')
+
+
+@app.post('/api/auth/register')
+def auth_register():
+    body = request.get_json(silent=True) or {}
+    username = str(body.get('username') or '').strip().lower()
+    password = body.get('password')
+    display_name = str(body.get('display_name') or '').strip() or username
+    if not username or not isinstance(password, str):
+        return error_response('Укажите логин и пароль', 400)
+    try:
+        import uuid
+
+        from auth_passwords import (
+            DEFAULT_ADMIN_PASSWORD,
+            DEFAULT_ADMIN_USERNAME,
+            hash_password,
+        )
+        from sqlite_store import _table_count, connect, init_schema
+
+        with connect() as connection:
+            init_schema(connection)
+            is_first = _table_count(connection, 'users') == 0
+            if not (
+                is_first
+                and username == DEFAULT_ADMIN_USERNAME
+                and password == DEFAULT_ADMIN_PASSWORD
+            ):
+                if len(password) < 6:
+                    return error_response('Пароль должен быть не короче 6 символов', 400)
+                if password == DEFAULT_ADMIN_PASSWORD:
+                    return error_response('Нельзя использовать пароль по умолчанию', 400)
+
+            existing = connection.execute(
+                'SELECT id FROM users WHERE username = ?', (username,)
+            ).fetchone()
+            if existing:
+                return error_response('Пользователь уже существует', 409)
+
+            user_id = str(uuid.uuid4())
+            must_change = (
+                1
+                if username == DEFAULT_ADMIN_USERNAME and password == DEFAULT_ADMIN_PASSWORD
+                else 0
+            )
+            role = 'admin' if is_first else 'user'
+            connection.execute(
+                '''
+                INSERT INTO users (id, email, username, password_hash, must_change_password)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (
+                    user_id,
+                    f'{username}@example.com',
+                    username,
+                    hash_password(password),
+                    must_change,
+                ),
+            )
+            connection.execute(
+                '''
+                INSERT INTO profiles (user_id, username, display_name, role)
+                VALUES (?, ?, ?, ?)
+                ''',
+                (user_id, username, display_name, role),
+            )
+            return jsonify(
+                {
+                    'success': True,
+                    'user': {
+                        'id': user_id,
+                        'email': f'{username}@example.com',
+                        'username': username,
+                    },
+                    'profile': {
+                        'username': username,
+                        'display_name': display_name,
+                        'role': role,
+                    },
+                    'must_change_password': bool(must_change),
+                }
+            )
+    except Exception as exc:
+        logger.exception('auth register failed')
+        return error_response(f'Ошибка регистрации: {exc}')
+
+
 @app.get('/api/health')
 def health():
     return jsonify({'success': True, 'service': 'weighing-system-api'})
@@ -289,20 +488,123 @@ def cameras_photo():
         return error_response(f'Ошибка чтения фото: {exc}')
 
 
+@app.get('/api/cameras/discover/brands')
+def cameras_discover_brands():
+    try:
+        import camera_discover as discover_mod
+
+        return jsonify({'success': True, 'brands': discover_mod.get_brands()})
+    except Exception as exc:
+        logger.exception('cameras discover brands failed')
+        return error_response(f'Ошибка списка брендов: {exc}')
+
+
+@app.post('/api/cameras/discover')
+def cameras_discover_start():
+    body = request.get_json(silent=True) or {}
+    ip = body.get('ip')
+    if not ip:
+        return error_response('Нужен ip')
+    username = body.get('username') or ''
+    password = body.get('password') or ''
+    brand = body.get('brand', None)
+    http_port = body.get('http_port', None)
+    rtsp_port = body.get('rtsp_port', None)
+    try:
+        import camera_discover as discover_mod
+
+        result = discover_mod.start_discover(
+            ip=str(ip),
+            username=str(username) if username is not None else '',
+            password=str(password) if password is not None else '',
+            brand=str(brand) if brand not in (None, '') else None,
+            http_port=int(http_port) if http_port is not None and http_port != '' else None,
+            rtsp_port=int(rtsp_port) if rtsp_port is not None and rtsp_port != '' else None,
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('cameras discover start failed')
+        return error_response(f'Ошибка поиска камеры: {exc}')
+
+
+@app.get('/api/cameras/discover/<session_id>')
+def cameras_discover_status(session_id: str):
+    try:
+        import camera_discover as discover_mod
+
+        return jsonify(discover_mod.get_discover(session_id))
+    except KeyError:
+        return error_response('Сессия поиска не найдена', 404)
+    except Exception as exc:
+        logger.exception('cameras discover status failed')
+        return error_response(f'Ошибка статуса поиска: {exc}')
+
+
+@app.post('/api/cameras/discover/<session_id>/cancel')
+def cameras_discover_cancel(session_id: str):
+    try:
+        import camera_discover as discover_mod
+
+        return jsonify(discover_mod.cancel_discover(session_id))
+    except KeyError:
+        return error_response('Сессия поиска не найдена', 404)
+    except Exception as exc:
+        logger.exception('cameras discover cancel failed')
+        return error_response(f'Ошибка отмены поиска: {exc}')
+
+
+@app.get('/api/anpr/capabilities')
+def anpr_capabilities():
+    try:
+        import anpr as anpr_mod
+
+        caps = anpr_mod.capabilities()
+        return jsonify({'success': True, **caps})
+    except Exception as exc:
+        logger.exception('anpr capabilities failed')
+        return error_response(f'Ошибка capabilities ANPR: {exc}')
+
+
+@app.post('/api/anpr/recognize')
+def anpr_recognize():
+    body = request.get_json(silent=True) or {}
+    site_id = body.get('site_id')
+    camera_id = body.get('camera_id')
+    try:
+        import anpr as anpr_mod
+
+        result = anpr_mod.recognize(
+            site_id=str(site_id) if site_id else None,
+            camera_id=str(camera_id) if camera_id else None,
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return error_response(str(exc), 400)
+    except Exception as exc:
+        logger.exception('anpr recognize failed')
+        return error_response(f'Ошибка распознавания ANPR: {exc}')
+
+
 @app.post('/api/shutdown')
 def shutdown_application():
-    shutdown_func = request.environ.get('werkzeug.server.shutdown')
+    """Stop the local API process after the HTTP response is sent.
+
+    Werkzeug removed ``werkzeug.server.shutdown``; always exit the process.
+    Delay long enough for the client to read the JSON body — otherwise the
+    browser shows ``Failed to fetch`` and the exit UI aborts.
+    """
 
     def _stop() -> None:
-        time.sleep(0.4)
-        if shutdown_func is not None:
-            shutdown_func()
-            return
+        time.sleep(1.2)
         os._exit(0)
 
     logger.info('Application shutdown requested from %s', request.remote_addr)
     threading.Thread(target=_stop, daemon=True).start()
-    return jsonify({'success': True, 'message': 'Приложение завершает работу'})
+    response = jsonify({'success': True, 'message': 'Приложение завершает работу'})
+    response.headers['Connection'] = 'close'
+    return response
 
 
 @app.get('/api/storage/paths')

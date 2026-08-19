@@ -3,6 +3,7 @@ import os
 import sqlite3
 import sys
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +53,7 @@ TICKET_COLUMNS = [
     'photo_entry_path', 'photo_exit_path', 'photo_overview_path',
     'manual_weight_reason',
     'auto_closed',
+    'anpr_plate_raw', 'plate_confidence', 'anpr_accepted', 'anpr_status',
 ]
 
 AUDIT_COLUMNS = [
@@ -133,6 +135,182 @@ def connect(path: str | None = None):
         connection.close()
 
 
+def _table_column_names(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        row['name']
+        for row in connection.execute(f'PRAGMA table_info({table})').fetchall()
+    }
+
+
+def _ensure_columns(
+    connection: sqlite3.Connection,
+    table: str,
+    column_defs: dict[str, str],
+) -> None:
+    """ADD COLUMN for missing fields. CREATE TABLE IF NOT EXISTS does not alter legacy tables."""
+    existing = _table_column_names(connection, table)
+    if not existing:
+        return
+    for name, typedef in column_defs.items():
+        if name not in existing:
+            connection.execute(f'ALTER TABLE {table} ADD COLUMN {name} {typedef}')
+
+
+def _insert_compat(
+    connection: sqlite3.Connection,
+    table: str,
+    values: dict[str, Any],
+) -> None:
+    """INSERT that also fills legacy extra NOT NULL columns (e.g. updated_at).
+
+    Older DBs may have columns our canonical INSERT list omits. Leaving them out
+    raises IntegrityError: NOT NULL constraint failed.
+    """
+    info = connection.execute(f'PRAGMA table_info({table})').fetchall()
+    if not info:
+        raise sqlite3.OperationalError(f'table {table} does not exist')
+
+    now = datetime.now().isoformat(timespec='seconds')
+    columns: list[str] = []
+    bind: list[Any] = []
+    for row in info:
+        name = str(row['name'])
+        notnull = int(row['notnull'] or 0) == 1
+        dflt = row['dflt_value']
+        if name in values:
+            columns.append(name)
+            bind.append(values[name])
+            continue
+        if not notnull or dflt is not None:
+            continue
+        columns.append(name)
+        if name.endswith('_at') or name in {'updated_at', 'created_at', 'switched_at'}:
+            bind.append(now)
+        elif name in {'enabled', 'is_default', 'sort_order', 'use_count', 'must_change_password'}:
+            bind.append(0)
+        else:
+            bind.append('')
+
+    placeholders = ', '.join(['?'] * len(columns))
+    connection.execute(
+        f'INSERT INTO {table} ({", ".join(columns)}) VALUES ({placeholders})',
+        bind,
+    )
+
+
+def _migrate_legacy_camera_urls(connection: sqlite3.Connection) -> None:
+    """Copy http_snapshot_url / rtsp_url into capture_url when present on legacy tables."""
+    cols = _table_column_names(connection, 'cameras')
+    if 'capture_url' not in cols:
+        return
+    if 'http_snapshot_url' in cols:
+        connection.execute(
+            '''
+            UPDATE cameras
+            SET capture_url = http_snapshot_url
+            WHERE (capture_url IS NULL OR capture_url = '')
+              AND http_snapshot_url IS NOT NULL AND http_snapshot_url != ''
+            '''
+        )
+    if 'rtsp_url' in cols:
+        connection.execute(
+            '''
+            UPDATE cameras
+            SET capture_url = rtsp_url
+            WHERE (capture_url IS NULL OR capture_url = '')
+              AND rtsp_url IS NOT NULL AND rtsp_url != ''
+            '''
+        )
+    if 'http_snapshot_url' in cols or 'rtsp_url' in cols:
+        # Prefer http snapshot kind when we copied from http_snapshot_url.
+        if 'capture_kind' in cols and 'http_snapshot_url' in cols:
+            connection.execute(
+                '''
+                UPDATE cameras
+                SET capture_kind = 'http_snapshot'
+                WHERE (capture_kind IS NULL OR capture_kind = '' OR capture_kind = 'auto')
+                  AND http_snapshot_url IS NOT NULL AND http_snapshot_url != ''
+                  AND capture_url = http_snapshot_url
+                '''
+            )
+
+
+def _ticket_photo_values(photo: dict[str, Any]) -> dict[str, Any]:
+    """Canonical + legacy aliases for ticket_photos INSERT (event/file_path/captured_at)."""
+    phase = str(photo.get('phase') or photo.get('event') or '')
+    relative = photo.get('relative_path')
+    if relative is None:
+        relative = photo.get('file_path')
+    created = str(photo.get('created_at') or photo.get('captured_at') or '')
+    error_message = photo.get('error_message')
+    if error_message is None:
+        error_message = photo.get('error_code')
+    return {
+        'id': str(photo.get('id', '')),
+        'ticket_id': str(photo.get('ticket_id', '')),
+        'phase': phase,
+        'event': phase,  # legacy stage-7 column name
+        'camera_id': photo.get('camera_id'),
+        'camera_role': str(photo.get('camera_role', '')),
+        'relative_path': relative,
+        'file_path': relative,  # legacy
+        'status': str(photo.get('status', 'skipped')),
+        'error_message': error_message,
+        'error_code': str(error_message or ''),
+        'camera_mode': str(photo.get('camera_mode', 'normal')),
+        'created_at': created,
+        'captured_at': created,  # legacy
+    }
+
+
+def write_ticket_photo_row(connection: sqlite3.Connection, photo: dict[str, Any]) -> None:
+    """Insert one ticket_photos row, filling legacy NOT NULL columns when present."""
+    _insert_compat(connection, 'ticket_photos', _ticket_photo_values(photo))
+
+
+def _migrate_legacy_ticket_photo_columns(connection: sqlite3.Connection) -> None:
+    """Backfill modern columns from legacy event/file_path/captured_at when empty."""
+    cols = _table_column_names(connection, 'ticket_photos')
+    if not cols:
+        return
+    if 'phase' in cols and 'event' in cols:
+        connection.execute(
+            '''
+            UPDATE ticket_photos
+            SET phase = event
+            WHERE (phase IS NULL OR phase = '')
+              AND event IS NOT NULL AND event != ''
+            '''
+        )
+    if 'relative_path' in cols and 'file_path' in cols:
+        connection.execute(
+            '''
+            UPDATE ticket_photos
+            SET relative_path = file_path
+            WHERE (relative_path IS NULL OR relative_path = '')
+              AND file_path IS NOT NULL AND file_path != ''
+            '''
+        )
+    if 'created_at' in cols and 'captured_at' in cols:
+        connection.execute(
+            '''
+            UPDATE ticket_photos
+            SET created_at = captured_at
+            WHERE (created_at IS NULL OR created_at = '')
+              AND captured_at IS NOT NULL AND captured_at != ''
+            '''
+        )
+    if 'error_message' in cols and 'error_code' in cols:
+        connection.execute(
+            '''
+            UPDATE ticket_photos
+            SET error_message = error_code
+            WHERE (error_message IS NULL OR error_message = '')
+              AND error_code IS NOT NULL AND error_code != ''
+            '''
+        )
+
+
 def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     """Ensure weighing_tickets columns, ticket_audit, revisions, vehicle_drivers, sites/scales."""
     connection.execute(
@@ -181,18 +359,7 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         )
         '''
     )
-    connection.execute(
-        '''
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_pair
-            ON vehicle_drivers(vehicle_number, driver_name)
-        '''
-    )
-    connection.execute(
-        '''
-        CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle
-            ON vehicle_drivers(vehicle_number)
-        '''
-    )
+    _ensure_vehicle_drivers_schema(connection)
 
     _ensure_site_tables(connection)
     _ensure_camera_tables(connection)
@@ -203,6 +370,13 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
     }
     if not existing:
         return
+
+    # Legacy DBs may lack core columns if table was created before schema settled.
+    if 'vehicle_number' not in existing:
+        connection.execute(
+            "ALTER TABLE weighing_tickets ADD COLUMN vehicle_number TEXT NOT NULL DEFAULT ''"
+        )
+        existing.add('vehicle_number')
 
     column_weighing_mode_added = False
     if 'weighing_mode' not in existing:
@@ -225,6 +399,8 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         'photo_exit_path',
         'photo_overview_path',
         'manual_weight_reason',
+        'anpr_plate_raw',
+        'anpr_status',
     ):
         if column not in existing:
             connection.execute(f'ALTER TABLE weighing_tickets ADD COLUMN {column} TEXT')
@@ -233,6 +409,12 @@ def ensure_ticket_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             'ALTER TABLE weighing_tickets ADD COLUMN auto_closed INTEGER DEFAULT 0'
         )
+
+    if 'plate_confidence' not in existing:
+        connection.execute('ALTER TABLE weighing_tickets ADD COLUMN plate_confidence REAL')
+
+    if 'anpr_accepted' not in existing:
+        connection.execute('ALTER TABLE weighing_tickets ADD COLUMN anpr_accepted INTEGER')
 
     if column_weighing_mode_added:
         # One-shot backfill: only right after ADD COLUMN weighing_mode.
@@ -252,6 +434,15 @@ def _ensure_site_tables(connection: sqlite3.Connection) -> None:
         )
         '''
     )
+    _ensure_columns(
+        connection,
+        'sites',
+        {
+            'name': "TEXT NOT NULL DEFAULT ''",
+            'is_default': 'INTEGER NOT NULL DEFAULT 0',
+            'created_at': "TEXT NOT NULL DEFAULT ''",
+        },
+    )
     connection.execute(
         '''
         CREATE TABLE IF NOT EXISTS scales (
@@ -266,6 +457,19 @@ def _ensure_site_tables(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (site_id) REFERENCES sites(id)
         )
         '''
+    )
+    _ensure_columns(
+        connection,
+        'scales',
+        {
+            'site_id': "TEXT NOT NULL DEFAULT ''",
+            'role': "TEXT NOT NULL DEFAULT ''",
+            'name': "TEXT NOT NULL DEFAULT ''",
+            'adapter_id': "TEXT NOT NULL DEFAULT ''",
+            'connection': "TEXT NOT NULL DEFAULT '{}'",
+            'enabled': 'INTEGER NOT NULL DEFAULT 1',
+            'created_at': "TEXT NOT NULL DEFAULT ''",
+        },
     )
     connection.execute(
         'CREATE INDEX IF NOT EXISTS idx_scales_site_role ON scales(site_id, role)'
@@ -285,6 +489,19 @@ def _ensure_site_tables(connection: sqlite3.Connection) -> None:
         )
         '''
     )
+    _ensure_columns(
+        connection,
+        'site_runtime',
+        {
+            'active_scale_set': "TEXT NOT NULL DEFAULT 'primary'",
+            'camera_mode': "TEXT NOT NULL DEFAULT 'normal'",
+            'anpr_mode': "TEXT NOT NULL DEFAULT 'enabled'",
+            'switch_reason': 'TEXT',
+            'switch_by_operator_id': 'TEXT',
+            'switch_by_operator_name': 'TEXT',
+            'switch_at': 'TEXT',
+        },
+    )
     connection.execute(
         '''
         CREATE TABLE IF NOT EXISTS site_scale_switches (
@@ -300,6 +517,20 @@ def _ensure_site_tables(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (site_id) REFERENCES sites(id)
         )
         '''
+    )
+    _ensure_columns(
+        connection,
+        'site_scale_switches',
+        {
+            'site_id': "TEXT NOT NULL DEFAULT ''",
+            'from_set': "TEXT NOT NULL DEFAULT ''",
+            'to_set': "TEXT NOT NULL DEFAULT ''",
+            'reason': "TEXT NOT NULL DEFAULT ''",
+            'operator_id': 'TEXT',
+            'operator_name': "TEXT NOT NULL DEFAULT ''",
+            'at': "TEXT NOT NULL DEFAULT ''",
+            'camera_ack': 'TEXT',
+        },
     )
     connection.execute(
         '''
@@ -329,6 +560,24 @@ def _ensure_camera_tables(connection: sqlite3.Connection) -> None:
         )
         '''
     )
+    _ensure_columns(
+        connection,
+        'cameras',
+        {
+            'site_id': "TEXT NOT NULL DEFAULT ''",
+            'role': "TEXT NOT NULL DEFAULT ''",
+            'name': "TEXT NOT NULL DEFAULT ''",
+            'capture_url': "TEXT NOT NULL DEFAULT ''",
+            'capture_kind': "TEXT NOT NULL DEFAULT 'auto'",
+            'enabled': 'INTEGER NOT NULL DEFAULT 1',
+            'sort_order': 'INTEGER NOT NULL DEFAULT 0',
+            'roi_json': 'TEXT',
+            'reference_normal_path': 'TEXT',
+            'reference_spare_path': 'TEXT',
+            'created_at': "TEXT NOT NULL DEFAULT ''",
+        },
+    )
+    _migrate_legacy_camera_urls(connection)
     connection.execute(
         'CREATE INDEX IF NOT EXISTS idx_cameras_site ON cameras(site_id, sort_order)'
     )
@@ -349,6 +598,22 @@ def _ensure_camera_tables(connection: sqlite3.Connection) -> None:
         )
         '''
     )
+    _ensure_columns(
+        connection,
+        'ticket_photos',
+        {
+            'ticket_id': "TEXT NOT NULL DEFAULT ''",
+            'phase': "TEXT NOT NULL DEFAULT ''",
+            'camera_id': 'TEXT',
+            'camera_role': "TEXT NOT NULL DEFAULT ''",
+            'relative_path': 'TEXT',
+            'status': "TEXT NOT NULL DEFAULT ''",
+            'error_message': 'TEXT',
+            'camera_mode': "TEXT NOT NULL DEFAULT 'normal'",
+            'created_at': "TEXT NOT NULL DEFAULT ''",
+        },
+    )
+    _migrate_legacy_ticket_photo_columns(connection)
     connection.execute(
         '''
         CREATE INDEX IF NOT EXISTS idx_ticket_photos_ticket
@@ -366,7 +631,8 @@ def init_schema(connection: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             email TEXT NOT NULL,
             username TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL
+            password_hash TEXT NOT NULL,
+            must_change_password INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS profiles (
@@ -418,7 +684,11 @@ def init_schema(connection: sqlite3.Connection) -> None:
             photo_exit_path TEXT,
             photo_overview_path TEXT,
             manual_weight_reason TEXT,
-            auto_closed INTEGER DEFAULT 0
+            auto_closed INTEGER DEFAULT 0,
+            anpr_plate_raw TEXT,
+            plate_confidence REAL,
+            anpr_accepted INTEGER,
+            anpr_status TEXT
         );
 
         CREATE TABLE IF NOT EXISTS dictionary_entries (
@@ -473,12 +743,6 @@ def init_schema(connection: sqlite3.Connection) -> None:
             driver_id TEXT
         );
 
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_pair
-            ON vehicle_drivers(vehicle_number, driver_name);
-
-        CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle
-            ON vehicle_drivers(vehicle_number);
-
         CREATE TABLE IF NOT EXISTS sites (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -530,6 +794,133 @@ def init_schema(connection: sqlite3.Connection) -> None:
         '''
     )
     ensure_ticket_schema(connection)
+    _ensure_users_schema(connection)
+
+
+def _ensure_vehicle_drivers_schema(connection: sqlite3.Connection) -> None:
+    """Migrate legacy vehicle_drivers and create indexes only when columns exist.
+
+    Older DBs may have a vehicle_drivers table without vehicle_number; CREATE INDEX
+    IF NOT EXISTS still fails with OperationalError: no such column.
+    """
+    cols = {
+        row['name']
+        for row in connection.execute('PRAGMA table_info(vehicle_drivers)').fetchall()
+    }
+    if not cols:
+        return
+
+    required = {'id', 'vehicle_number', 'driver_name', 'last_used_at', 'use_count'}
+    if not required.issubset(cols):
+        connection.execute('ALTER TABLE vehicle_drivers RENAME TO vehicle_drivers_legacy')
+        connection.execute(
+            '''
+            CREATE TABLE vehicle_drivers (
+                id TEXT PRIMARY KEY,
+                vehicle_number TEXT NOT NULL,
+                driver_name TEXT NOT NULL,
+                last_used_at TEXT NOT NULL,
+                use_count INTEGER NOT NULL DEFAULT 1,
+                driver_id TEXT
+            )
+            '''
+        )
+        legacy_cols = {
+            row['name']
+            for row in connection.execute(
+                'PRAGMA table_info(vehicle_drivers_legacy)'
+            ).fetchall()
+        }
+        # Best-effort copy of overlapping columns; missing vehicle_number → drop legacy rows.
+        if 'vehicle_number' in legacy_cols and 'driver_name' in legacy_cols:
+            select_id = 'id' if 'id' in legacy_cols else "hex(randomblob(16))"
+            select_last = (
+                'last_used_at' if 'last_used_at' in legacy_cols else "datetime('now')"
+            )
+            select_count = 'use_count' if 'use_count' in legacy_cols else '1'
+            select_driver_id = 'driver_id' if 'driver_id' in legacy_cols else 'NULL'
+            connection.execute(
+                f'''
+                INSERT INTO vehicle_drivers (
+                    id, vehicle_number, driver_name, last_used_at, use_count, driver_id
+                )
+                SELECT {select_id}, vehicle_number, driver_name, {select_last},
+                       {select_count}, {select_driver_id}
+                FROM vehicle_drivers_legacy
+                WHERE vehicle_number IS NOT NULL AND vehicle_number != ''
+                  AND driver_name IS NOT NULL AND driver_name != ''
+                '''
+            )
+        connection.execute('DROP TABLE vehicle_drivers_legacy')
+        cols = {
+            row['name']
+            for row in connection.execute('PRAGMA table_info(vehicle_drivers)').fetchall()
+        }
+
+    if 'driver_id' not in cols:
+        connection.execute('ALTER TABLE vehicle_drivers ADD COLUMN driver_id TEXT')
+
+    connection.execute(
+        '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_drivers_pair
+            ON vehicle_drivers(vehicle_number, driver_name)
+        '''
+    )
+    connection.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_vehicle_drivers_vehicle
+            ON vehicle_drivers(vehicle_number)
+        '''
+    )
+
+
+def _ensure_users_schema(connection: sqlite3.Connection) -> None:
+    existing = {
+        row['name']
+        for row in connection.execute('PRAGMA table_info(users)').fetchall()
+    }
+    if not existing:
+        return
+    if 'must_change_password' not in existing:
+        connection.execute(
+            'ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0'
+        )
+
+
+def ensure_default_admin(connection: sqlite3.Connection) -> None:
+    """Bootstrap admin/admin123 with must_change_password=1 when users table is empty."""
+    from auth_passwords import (
+        DEFAULT_ADMIN_PASSWORD,
+        DEFAULT_ADMIN_USERNAME,
+        hash_password,
+    )
+
+    count = _table_count(connection, 'users')
+    if count > 0:
+        return
+
+    import uuid
+
+    user_id = str(uuid.uuid4())
+    connection.execute(
+        '''
+        INSERT INTO users (id, email, username, password_hash, must_change_password)
+        VALUES (?, ?, ?, ?, 1)
+        ''',
+        (
+            user_id,
+            f'{DEFAULT_ADMIN_USERNAME}@example.com',
+            DEFAULT_ADMIN_USERNAME,
+            hash_password(DEFAULT_ADMIN_PASSWORD),
+        ),
+    )
+    connection.execute(
+        '''
+        INSERT INTO profiles (user_id, username, display_name, role)
+        VALUES (?, ?, ?, ?)
+        ''',
+        (user_id, DEFAULT_ADMIN_USERNAME, 'Администратор', 'admin'),
+    )
 
 
 def _table_count(connection: sqlite3.Connection, table: str) -> int:
@@ -579,18 +970,55 @@ def migrate_json_database_if_needed() -> None:
 
 
 def _load_users(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Public sync shape: never expose passwordHash to the client."""
     rows = connection.execute(
-        'SELECT id, email, username, password_hash FROM users ORDER BY username'
+        '''
+        SELECT id, email, username, must_change_password
+        FROM users
+        ORDER BY username
+        '''
     ).fetchall()
     return [
         {
             'id': row['id'],
             'email': row['email'],
             'username': row['username'],
-            'passwordHash': row['password_hash'],
+            'mustChangePassword': bool(row['must_change_password']),
         }
         for row in rows
     ]
+
+
+def _load_user_auth_row(
+    connection: sqlite3.Connection, *, username: str | None = None, user_id: str | None = None
+) -> dict[str, Any] | None:
+    if user_id:
+        row = connection.execute(
+            '''
+            SELECT id, email, username, password_hash, must_change_password
+            FROM users WHERE id = ?
+            ''',
+            (user_id,),
+        ).fetchone()
+    elif username:
+        row = connection.execute(
+            '''
+            SELECT id, email, username, password_hash, must_change_password
+            FROM users WHERE username = ?
+            ''',
+            (username.strip().lower(),),
+        ).fetchone()
+    else:
+        return None
+    if not row:
+        return None
+    return {
+        'id': row['id'],
+        'email': row['email'],
+        'username': row['username'],
+        'password_hash': row['password_hash'],
+        'must_change_password': bool(row['must_change_password']),
+    }
 
 
 def _load_profiles(connection: sqlite3.Connection) -> dict[str, dict[str, str]]:
@@ -627,6 +1055,11 @@ def _load_tickets(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     for row in rows:
         ticket = {column: row[column] for column in TICKET_COLUMNS}
         ticket['auto_closed'] = _soft_bool(ticket.get('auto_closed'))
+        accepted = ticket.get('anpr_accepted')
+        if accepted is None or accepted == '':
+            ticket['anpr_accepted'] = None
+        else:
+            ticket['anpr_accepted'] = _soft_bool(accepted)
         tickets.append(ticket)
     return tickets
 
@@ -744,11 +1177,61 @@ def _load_cameras(connection: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def _load_ticket_photos(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    cols = _table_column_names(connection, 'ticket_photos')
+    if not cols:
+        return []
+    order_col = 'created_at' if 'created_at' in cols else (
+        'captured_at' if 'captured_at' in cols else 'rowid'
+    )
+    select_cols = [c for c in TICKET_PHOTO_COLUMNS if c in cols]
+    # Pull legacy aliases when modern columns are absent.
+    for legacy, modern in (
+        ('event', 'phase'),
+        ('file_path', 'relative_path'),
+        ('captured_at', 'created_at'),
+        ('error_code', 'error_message'),
+    ):
+        if modern not in select_cols and legacy in cols:
+            select_cols.append(legacy)
+    # Always include legacy aliases when present so we can backfill empty modern cols.
+    for legacy in ('event', 'file_path', 'captured_at', 'error_code'):
+        if legacy in cols and legacy not in select_cols:
+            select_cols.append(legacy)
+    if not select_cols:
+        return []
     rows = connection.execute(
-        f'SELECT {", ".join(TICKET_PHOTO_COLUMNS)} FROM ticket_photos'
-        ' ORDER BY created_at ASC'
+        f'SELECT {", ".join(select_cols)} FROM ticket_photos ORDER BY {order_col} ASC'
     ).fetchall()
-    return [{column: row[column] for column in TICKET_PHOTO_COLUMNS} for row in rows]
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        keys = set(row.keys())
+
+        def _get(*names: str) -> Any:
+            for name in names:
+                if name in keys:
+                    value = row[name]
+                    if value is not None and value != '':
+                        return value
+            for name in names:
+                if name in keys:
+                    return row[name]
+            return None
+
+        result.append(
+            {
+                'id': str(_get('id') or ''),
+                'ticket_id': str(_get('ticket_id') or ''),
+                'phase': str(_get('phase', 'event') or ''),
+                'camera_id': _get('camera_id'),
+                'camera_role': str(_get('camera_role') or ''),
+                'relative_path': _get('relative_path', 'file_path'),
+                'status': str(_get('status') or 'skipped'),
+                'error_message': _get('error_message', 'error_code'),
+                'camera_mode': str(_get('camera_mode') or 'normal'),
+                'created_at': str(_get('created_at', 'captured_at') or ''),
+            }
+        )
+    return result
 
 
 def _load_dictionary(connection: sqlite3.Connection, category: str) -> list[dict[str, Any]]:
@@ -785,6 +1268,7 @@ def _load_session(connection: sqlite3.Connection) -> str | None:
 
 
 def _read_database_from_connection(connection: sqlite3.Connection) -> dict[str, str]:
+    ensure_default_admin(connection)
     result: dict[str, str] = {}
 
     users = _load_users(connection)
@@ -869,21 +1353,39 @@ def read_database_at(path: str) -> dict[str, str]:
 
 
 def _replace_users(connection: sqlite3.Connection, users: list[Any]) -> None:
+    """Replace user rows; preserve existing password_hash (client must not set hashes)."""
+    existing_hashes: dict[str, str] = {}
+    existing_flags: dict[str, int] = {}
+    for row in connection.execute(
+        'SELECT id, password_hash, must_change_password FROM users'
+    ).fetchall():
+        existing_hashes[str(row['id'])] = str(row['password_hash'] or '')
+        existing_flags[str(row['id'])] = int(row['must_change_password'] or 0)
+
     connection.execute('DELETE FROM profiles')
     connection.execute('DELETE FROM users')
     for user in users:
         if not isinstance(user, dict):
             continue
+        user_id = str(user.get('id', ''))
+        if not user_id:
+            continue
+        # Ignore client passwordHash; keep server hash or leave placeholder for orphan rows.
+        password_hash = existing_hashes.get(user_id) or ''
+        # must_change_password is server-owned: login may force=1, change-password
+        # clears to 0. Client sync must never clear the gate while keeping the default hash.
+        must_change = existing_flags.get(user_id, 0)
         connection.execute(
             '''
-            INSERT INTO users (id, email, username, password_hash)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO users (id, email, username, password_hash, must_change_password)
+            VALUES (?, ?, ?, ?, ?)
             ''',
             (
-                str(user.get('id', '')),
+                user_id,
                 str(user.get('email', '')),
                 str(user.get('username', '')),
-                str(user.get('passwordHash', '')),
+                password_hash,
+                must_change,
             ),
         )
 
@@ -916,30 +1418,107 @@ def _default_weighing_mode(ticket: dict[str, Any]) -> str:
     return 'dual' if status == 'open' else 'single'
 
 
-def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None:
-    # ticket_photos.ticket_id → weighing_tickets(id): clear children first
-    connection.execute('DELETE FROM ticket_photos')
-    connection.execute('DELETE FROM weighing_tickets')
-    for ticket in tickets:
-        if not isinstance(ticket, dict):
-            continue
-        values = []
-        for column in TICKET_COLUMNS:
-            if column == 'weighing_mode':
-                values.append(_default_weighing_mode(ticket))
-            elif column == 'version':
-                values.append(ticket.get(column) if ticket.get(column) is not None else 1)
-            elif column == 'auto_closed':
-                values.append(1 if _soft_bool(ticket.get('auto_closed')) else 0)
+def _ticket_column_values(ticket: dict[str, Any]) -> list[Any]:
+    values: list[Any] = []
+    for column in TICKET_COLUMNS:
+        if column == 'weighing_mode':
+            values.append(_default_weighing_mode(ticket))
+        elif column == 'version':
+            values.append(ticket.get(column) if ticket.get(column) is not None else 1)
+        elif column == 'auto_closed':
+            values.append(1 if _soft_bool(ticket.get('auto_closed')) else 0)
+        elif column == 'anpr_accepted':
+            raw_accepted = ticket.get('anpr_accepted')
+            if raw_accepted is None or raw_accepted == '':
+                values.append(None)
             else:
-                values.append(ticket.get(column))
-        connection.execute(
-            f'''
-            INSERT INTO weighing_tickets ({", ".join(TICKET_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(TICKET_COLUMNS))})
-            ''',
-            values,
-        )
+                values.append(1 if _soft_bool(raw_accepted) else 0)
+        else:
+            values.append(ticket.get(column))
+    return values
+
+
+def _insert_ticket_row(connection: sqlite3.Connection, ticket: dict[str, Any]) -> None:
+    values = _ticket_column_values(ticket)
+    connection.execute(
+        f'''
+        INSERT INTO weighing_tickets ({", ".join(TICKET_COLUMNS)})
+        VALUES ({", ".join(['?'] * len(TICKET_COLUMNS))})
+        ''',
+        values,
+    )
+
+
+def _update_ticket_row(connection: sqlite3.Connection, ticket: dict[str, Any]) -> None:
+    values = _ticket_column_values(ticket)
+    ticket_id = values[0]
+    non_id_columns = TICKET_COLUMNS[1:]
+    non_id_values = values[1:]
+    connection.execute(
+        f'''
+        UPDATE weighing_tickets
+        SET {", ".join(f"{column} = ?" for column in non_id_columns)}
+        WHERE id = ?
+        ''',
+        (*non_id_values, ticket_id),
+    )
+
+
+def _replace_tickets(
+    connection: sqlite3.Connection,
+    tickets: list[Any],
+    *,
+    preserve_photos: bool = False,
+) -> None:
+    """Replace weighing_tickets.
+
+    When preserve_photos is False (full tickets+photos sync), wipe ticket_photos
+    then tickets and re-insert (photos replaced later by _replace_ticket_photos).
+
+    When preserve_photos is True (tickets-only partial POST), keep existing
+    ticket_photos for surviving ticket ids; drop photos only for removed tickets.
+    """
+    if not preserve_photos:
+        # ticket_photos.ticket_id → weighing_tickets(id): clear children first
+        connection.execute('DELETE FROM ticket_photos')
+        connection.execute('DELETE FROM weighing_tickets')
+        for ticket in tickets:
+            if isinstance(ticket, dict):
+                _insert_ticket_row(connection, ticket)
+        return
+
+    new_ids = {
+        str(ticket.get('id', ''))
+        for ticket in tickets
+        if isinstance(ticket, dict) and ticket.get('id')
+    }
+    old_ids = [
+        row[0]
+        for row in connection.execute('SELECT id FROM weighing_tickets').fetchall()
+    ]
+    for old_id in old_ids:
+        if old_id not in new_ids:
+            connection.execute(
+                'DELETE FROM ticket_photos WHERE ticket_id = ?',
+                (old_id,),
+            )
+            connection.execute(
+                'DELETE FROM weighing_tickets WHERE id = ?',
+                (old_id,),
+            )
+
+    existing_ids = {
+        row[0]
+        for row in connection.execute('SELECT id FROM weighing_tickets').fetchall()
+    }
+    for ticket in tickets:
+        if not isinstance(ticket, dict) or not ticket.get('id'):
+            continue
+        ticket_id = str(ticket.get('id'))
+        if ticket_id in existing_ids:
+            _update_ticket_row(connection, ticket)
+        else:
+            _insert_ticket_row(connection, ticket)
 
 
 def _replace_ticket_audit(connection: sqlite3.Connection, events: list[Any]) -> None:
@@ -1029,17 +1608,15 @@ def _replace_sites(connection: sqlite3.Connection, sites: list[Any]) -> None:
         if not isinstance(site, dict):
             continue
         is_default = site.get('is_default')
-        connection.execute(
-            f'''
-            INSERT INTO sites ({", ".join(SITE_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(SITE_COLUMNS))})
-            ''',
-            (
-                str(site.get('id', '')),
-                str(site.get('name', '')),
-                1 if is_default else 0,
-                str(site.get('created_at', '')),
-            ),
+        _insert_compat(
+            connection,
+            'sites',
+            {
+                'id': str(site.get('id', '')),
+                'name': str(site.get('name', '')),
+                'is_default': 1 if is_default else 0,
+                'created_at': str(site.get('created_at', '')),
+            },
         )
 
 
@@ -1054,21 +1631,19 @@ def _replace_scales(connection: sqlite3.Connection, scales: list[Any]) -> None:
         else:
             connection_json = str(conn_val or '{}')
         enabled = scale.get('enabled')
-        connection.execute(
-            f'''
-            INSERT INTO scales ({", ".join(SCALE_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(SCALE_COLUMNS))})
-            ''',
-            (
-                str(scale.get('id', '')),
-                str(scale.get('site_id', '')),
-                str(scale.get('role', '')),
-                str(scale.get('name', '')),
-                str(scale.get('adapter_id', '')),
-                connection_json,
-                1 if enabled else 0,
-                str(scale.get('created_at', '')),
-            ),
+        _insert_compat(
+            connection,
+            'scales',
+            {
+                'id': str(scale.get('id', '')),
+                'site_id': str(scale.get('site_id', '')),
+                'role': str(scale.get('role', '')),
+                'name': str(scale.get('name', '')),
+                'adapter_id': str(scale.get('adapter_id', '')),
+                'connection': connection_json,
+                'enabled': 1 if enabled else 0,
+                'created_at': str(scale.get('created_at', '')),
+            },
         )
 
 
@@ -1077,21 +1652,19 @@ def _replace_site_runtime(connection: sqlite3.Connection, rows: list[Any]) -> No
     for row in rows:
         if not isinstance(row, dict):
             continue
-        connection.execute(
-            f'''
-            INSERT INTO site_runtime ({", ".join(SITE_RUNTIME_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(SITE_RUNTIME_COLUMNS))})
-            ''',
-            (
-                str(row.get('site_id', '')),
-                str(row.get('active_scale_set', 'primary')),
-                str(row.get('camera_mode', 'normal')),
-                str(row.get('anpr_mode', 'enabled')),
-                row.get('switch_reason'),
-                row.get('switch_by_operator_id'),
-                row.get('switch_by_operator_name'),
-                row.get('switch_at'),
-            ),
+        _insert_compat(
+            connection,
+            'site_runtime',
+            {
+                'site_id': str(row.get('site_id', '')),
+                'active_scale_set': str(row.get('active_scale_set', 'primary')),
+                'camera_mode': str(row.get('camera_mode', 'normal')),
+                'anpr_mode': str(row.get('anpr_mode', 'enabled')),
+                'switch_reason': row.get('switch_reason'),
+                'switch_by_operator_id': row.get('switch_by_operator_id'),
+                'switch_by_operator_name': row.get('switch_by_operator_name'),
+                'switch_at': row.get('switch_at'),
+            },
         )
 
 
@@ -1100,22 +1673,20 @@ def _replace_site_scale_switches(connection: sqlite3.Connection, events: list[An
     for event in events:
         if not isinstance(event, dict):
             continue
-        connection.execute(
-            f'''
-            INSERT INTO site_scale_switches ({", ".join(SITE_SCALE_SWITCH_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(SITE_SCALE_SWITCH_COLUMNS))})
-            ''',
-            (
-                str(event.get('id', '')),
-                str(event.get('site_id', '')),
-                str(event.get('from_set', '')),
-                str(event.get('to_set', '')),
-                str(event.get('reason', '')),
-                event.get('operator_id'),
-                str(event.get('operator_name', '')),
-                str(event.get('at', '')),
-                event.get('camera_ack'),
-            ),
+        _insert_compat(
+            connection,
+            'site_scale_switches',
+            {
+                'id': str(event.get('id', '')),
+                'site_id': str(event.get('site_id', '')),
+                'from_set': str(event.get('from_set', '')),
+                'to_set': str(event.get('to_set', '')),
+                'reason': str(event.get('reason', '')),
+                'operator_id': event.get('operator_id'),
+                'operator_name': str(event.get('operator_name', '')),
+                'at': str(event.get('at', '')),
+                'camera_ack': event.get('camera_ack'),
+            },
         )
 
 
@@ -1144,25 +1715,23 @@ def _replace_cameras(connection: sqlite3.Connection, cameras: list[Any]) -> None
             sort_order = int(cam.get('sort_order') if cam.get('sort_order') is not None else 0)
         except (TypeError, ValueError):
             sort_order = 0
-        connection.execute(
-            f'''
-            INSERT INTO cameras ({", ".join(CAMERA_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(CAMERA_COLUMNS))})
-            ''',
-            (
-                str(cam.get('id', '')),
-                site_id,
-                str(cam.get('role', '')),
-                str(cam.get('name', '')),
-                str(cam.get('capture_url', '')),
-                str(cam.get('capture_kind') or 'auto'),
-                1 if enabled else 0,
-                sort_order,
-                roi_json,
-                cam.get('reference_normal_path'),
-                cam.get('reference_spare_path'),
-                str(cam.get('created_at', '')),
-            ),
+        _insert_compat(
+            connection,
+            'cameras',
+            {
+                'id': str(cam.get('id', '')),
+                'site_id': str(cam.get('site_id', '')),
+                'role': str(cam.get('role', '')),
+                'name': str(cam.get('name', '')),
+                'capture_url': str(cam.get('capture_url', '')),
+                'capture_kind': str(cam.get('capture_kind') or 'auto'),
+                'enabled': 1 if enabled else 0,
+                'sort_order': sort_order,
+                'roi_json': roi_json,
+                'reference_normal_path': cam.get('reference_normal_path'),
+                'reference_spare_path': cam.get('reference_spare_path'),
+                'created_at': str(cam.get('created_at', '')),
+            },
         )
 
 
@@ -1171,24 +1740,7 @@ def _replace_ticket_photos(connection: sqlite3.Connection, photos: list[Any]) ->
     for photo in photos:
         if not isinstance(photo, dict):
             continue
-        connection.execute(
-            f'''
-            INSERT INTO ticket_photos ({", ".join(TICKET_PHOTO_COLUMNS)})
-            VALUES ({", ".join(['?'] * len(TICKET_PHOTO_COLUMNS))})
-            ''',
-            (
-                str(photo.get('id', '')),
-                str(photo.get('ticket_id', '')),
-                str(photo.get('phase', '')),
-                photo.get('camera_id'),
-                str(photo.get('camera_role', '')),
-                photo.get('relative_path'),
-                str(photo.get('status', 'skipped')),
-                photo.get('error_message'),
-                str(photo.get('camera_mode', 'normal')),
-                str(photo.get('created_at', '')),
-            ),
-        )
+        write_ticket_photo_row(connection, photo)
 
 
 def _replace_dictionary(connection: sqlite3.Connection, category: str, items: list[Any]) -> None:
@@ -1246,7 +1798,13 @@ def write_database(data: dict[str, Any]) -> None:
             try:
                 tickets = json.loads(str(data[STORAGE_KEYS['tickets']]))
                 if isinstance(tickets, list):
-                    _replace_tickets(connection, tickets)
+                    # Partial POST without app_ticket_photos must not wipe capture rows.
+                    preserve_photos = STORAGE_KEYS['ticket_photos'] not in data
+                    _replace_tickets(
+                        connection,
+                        tickets,
+                        preserve_photos=preserve_photos,
+                    )
             except json.JSONDecodeError:
                 pass
 

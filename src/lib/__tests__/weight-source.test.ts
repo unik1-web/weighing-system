@@ -41,6 +41,16 @@ describe('resolveTareAutofill', () => {
     ).toEqual({ tare_weight: 3200, tare_source: 'dictionary' });
   });
 
+  it('uses last completed tare as dictionary before tara_default', () => {
+    expect(
+      resolveTareAutofill({
+        defaultTareWeight: null,
+        lastCompletedTareWeight: 3100,
+        taraDefault: 2500,
+      }),
+    ).toEqual({ tare_weight: 3100, tare_source: 'dictionary' });
+  });
+
   it('uses tara_default when vehicle card has no tare', () => {
     expect(
       resolveTareAutofill({ defaultTareWeight: null, taraDefault: 2500 }),

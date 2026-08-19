@@ -121,11 +121,9 @@ export function CameraSetupPreview({
 
       {opencvMissing && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-          URL выглядит как RTSP, но текущий backend сообщает, что OpenCV недоступен. Снимок
-          недоступен. Варианты:{' '}
+          URL выглядит как RTSP, а в этой сборке нет OpenCV — снимок недоступен. Варианты:{' '}
           <code className="rounded bg-amber-100 px-1">pip install opencv-python-headless</code> и
-          перезапуск сервера, запуск свежей portable-сборки, либо HTTP snapshot URL (тип
-          «HTTP snapshot»), например{' '}
+          перезапуск сервера, либо HTTP snapshot URL (тип «HTTP snapshot»), например{' '}
           <code className="rounded bg-amber-100 px-1">
             http://IP/ISAPI/Streaming/channels/101/picture
           </code>

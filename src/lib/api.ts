@@ -46,7 +46,19 @@ export async function apiGet<T>(path: string, params?: Record<string, string>): 
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
-  logger.debug('api', `POST ${path}`, body);
+  const shouldMaskPassword =
+    (path.startsWith('/api/auth/') || path === '/api/cameras/discover') &&
+    body &&
+    typeof body === 'object';
+  const logBody = shouldMaskPassword
+    ? {
+        ...(body as Record<string, unknown>),
+        password: body && 'password' in (body as object) ? '***' : undefined,
+        new_password: undefined,
+        current_password: undefined,
+      }
+    : body;
+  logger.debug('api', `POST ${path}`, logBody);
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       method: 'POST',
@@ -119,8 +131,21 @@ export interface WaWeighingItem {
 export async function exitApplication(): Promise<void> {
   const { flushDatabaseSync, flushStorageSync } = await import('./storage-sync');
   flushStorageSync();
-  await flushDatabaseSync();
-  await apiPost<{ success: true; message?: string }>('/api/shutdown', {});
+  try {
+    await flushDatabaseSync();
+  } catch {
+    // Best-effort flush before shutdown.
+  }
+
+  try {
+    await apiPost<{ success: true; message?: string }>('/api/shutdown', {});
+  } catch (error: unknown) {
+    // Process may die before the response body is fully read.
+    const message = error instanceof Error ? error.message : String(error ?? '');
+    if (!/failed to fetch|networkerror|load failed|network request failed|fetch aborted/i.test(message)) {
+      throw error;
+    }
+  }
 }
 
 export function normalizeImportDateTime(value: string | null | undefined): string {

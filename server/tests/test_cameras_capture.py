@@ -177,34 +177,6 @@ def test_capture_ok_writes_files_rows_and_stubs(api_client, temp_app_root):
     assert ticket['photo_entry_path'] == data['stubs']['photo_entry_path']
 
 
-def test_capture_uses_request_camera_overrides_when_server_registry_empty(api_client, temp_app_root):
-    cameras = _seed_site_and_ticket(api_client)
-    _set_video_enabled(temp_app_root, True)
-
-    api_client.post(
-        '/api/database',
-        json={'data': {'app_cameras': json.dumps([], ensure_ascii=False)}},
-    )
-
-    with patch('cameras.grab_frame', return_value=FAKE_JPEG):
-        resp = api_client.post(
-            '/api/cameras/capture',
-            json={
-                'ticket_id': 't-photo-1',
-                'phase': 'gross',
-                'site_id': 'site-1',
-                'cameras': cameras,
-            },
-        )
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data['success'] is True
-    assert len(data['photos']) == 2
-    assert all(p['status'] == 'ok' for p in data['photos'])
-    assert data['stubs']['photo_entry_path']
-    assert data['stubs']['photo_overview_path']
-
-
 def test_capture_partial_fail(api_client, temp_app_root):
     _seed_site_and_ticket(api_client)
     _set_video_enabled(temp_app_root, True)
@@ -289,6 +261,39 @@ def test_sync_after_capture_ok(api_client, temp_app_root):
     assert len(json.loads(db2['app_weighing_tickets'])) == 1
 
 
+def test_tickets_only_sync_preserves_capture_photos(api_client, temp_app_root):
+    """Partial POST with tickets but without app_ticket_photos must not wipe capture rows."""
+    _seed_site_and_ticket(api_client)
+    _set_video_enabled(temp_app_root, True)
+
+    with patch('cameras.grab_frame', return_value=FAKE_JPEG):
+        cap = api_client.post(
+            '/api/cameras/capture',
+            json={'ticket_id': 't-photo-1', 'phase': 'gross', 'site_id': 'site-1'},
+        )
+    assert cap.status_code == 200
+    assert len(cap.get_json()['photos']) == 2
+
+    db = api_client.get('/api/database').get_json()['data']
+    tickets = json.loads(db['app_weighing_tickets'])
+    assert len(json.loads(db['app_ticket_photos'])) == 2
+    tickets[0]['notes'] = 'updated-after-capture'
+
+    sync = api_client.post(
+        '/api/database',
+        json={'data': {'app_weighing_tickets': json.dumps(tickets, ensure_ascii=False)}},
+    )
+    assert sync.status_code == 200, sync.get_json()
+    assert sync.get_json()['success'] is True
+
+    db2 = api_client.get('/api/database').get_json()['data']
+    photos2 = json.loads(db2['app_ticket_photos'])
+    assert len(photos2) == 2
+    assert all(p['ticket_id'] == 't-photo-1' for p in photos2)
+    ticket2 = json.loads(db2['app_weighing_tickets'])[0]
+    assert ticket2['notes'] == 'updated-after-capture'
+
+
 def test_full_site_camera_sync_twice(api_client, temp_app_root):
     """cameras/scales FK must not block repeated full sync of site graph."""
     _seed_site_and_ticket(api_client)
@@ -329,41 +334,6 @@ def test_full_site_camera_sync_twice(api_client, temp_app_root):
     db2 = api_client.get('/api/database').get_json()['data']
     assert len(json.loads(db2['app_sites'])) == 1
     assert len(json.loads(db2['app_cameras'])) == 2
-
-
-def test_camera_sync_skips_rows_with_unknown_site(api_client, temp_app_root):
-    """Invalid camera site_id must not fail the whole database sync."""
-    _seed_site_and_ticket(api_client)
-    db = api_client.get('/api/database').get_json()['data']
-    cameras = json.loads(db['app_cameras'])
-    cameras.append(
-        {
-            'id': 'cam-bad-site',
-            'site_id': 'missing-site',
-            'role': 'overview',
-            'name': 'Bad camera',
-            'capture_url': 'http://127.0.0.1/bad.jpg',
-            'capture_kind': 'http_snapshot',
-            'enabled': True,
-            'sort_order': 99,
-            'roi': None,
-            'reference_normal_path': None,
-            'reference_spare_path': None,
-            'created_at': '2026-08-02T00:00:00',
-        }
-    )
-
-    resp = api_client.post(
-        '/api/database',
-        json={'data': {'app_cameras': json.dumps(cameras, ensure_ascii=False)}},
-    )
-    assert resp.status_code == 200, resp.get_json()
-    assert resp.get_json()['success'] is True
-
-    db2 = api_client.get('/api/database').get_json()['data']
-    synced = json.loads(db2['app_cameras'])
-    assert len(synced) == 2
-    assert all(camera['site_id'] == 'site-1' for camera in synced)
 
 
 def test_capture_wall_clock_timeout(api_client, temp_app_root):

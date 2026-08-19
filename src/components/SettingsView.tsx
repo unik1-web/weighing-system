@@ -4,10 +4,8 @@ import {
   DictionaryStorage,
   TicketStorage,
   PRINT_LAYOUT_LABELS,
-  NAV_TAB_MODE_LABELS,
   clearAllDictionaries,
   type AppSettings,
-  type NavTabMode,
   type PrintLayout,
   type Scale,
   type Camera,
@@ -26,6 +24,7 @@ import {
   upsertCamera,
   type CameraCapabilities,
 } from '@/lib/cameras';
+import { fetchAnprCapabilities, type AnprCapabilities } from '@/lib/anpr';
 import { DRIVER_INPUT_MODE_LABELS, type DriverInputMode } from '@/lib/vehicle-resolve';
 import {
   ADAPTER_LIST,
@@ -56,9 +55,10 @@ import {
   isSpareEnabled,
 } from '@/lib/site-runtime';
 import { SpareSwitchWizard } from '@/components/SpareSwitchWizard';
-import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, LayoutPanelTop, Server, ArrowLeftRight, CalendarRange, Camera as CameraIcon } from 'lucide-react';
+import { Settings, Building2, Printer, Save, CheckCircle2, Radio, AlertCircle, Database, Scale as ScaleIcon, Download, Upload, FolderOpen, Trash2, Server, ArrowLeftRight, CalendarRange, Camera as CameraIcon, Link2 } from 'lucide-react';
 import { apiPost } from '@/lib/api';
 import { logger } from '@/lib/logger';
+import { getErrorMessage } from '@/lib/errors';
 import { useAuth } from '@/hooks/useAuth';
 import {
   exportStorageBackup,
@@ -77,14 +77,45 @@ import {
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 import { CameraSetupPreview } from '@/components/CameraSetupPreview';
+import {
+  CameraDiscoverPanel,
+  readCamerasSubTab,
+  writeCamerasSubTab,
+  type CamerasSubTab,
+} from '@/components/CameraDiscoverPanel';
 
 const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
-const NAV_TAB_OPTIONS: NavTabMode[] = ['full', 'compact'];
 const TRANSPORT_OPTIONS: { id: ScaleTransportKind; label: string }[] = [
   { id: 'web_serial', label: 'Web Serial (браузер)' },
   { id: 'tcp', label: 'TCP (сервер)' },
   { id: 'serial', label: 'Serial COM (сервер, задел)' },
 ];
+
+const SETTINGS_TAB_IDS = ['org', 'site', 'cameras', 'weighing', 'integrations', 'data'] as const;
+type SettingsTabId = (typeof SETTINGS_TAB_IDS)[number];
+const SETTINGS_TAB_STORAGE_KEY = 'app_settings_tab';
+
+const SETTINGS_TABS: { id: SettingsTabId; label: string; Icon: typeof Building2 }[] = [
+  { id: 'org', label: 'Организация и печать', Icon: Building2 },
+  { id: 'site', label: 'Площадка и весы', Icon: ArrowLeftRight },
+  { id: 'cameras', label: 'Камеры и фото', Icon: CameraIcon },
+  { id: 'weighing', label: 'Режимы взвешивания', Icon: ScaleIcon },
+  { id: 'integrations', label: 'Интеграции', Icon: Link2 },
+  { id: 'data', label: 'Год и данные', Icon: Database },
+];
+
+function readSettingsTab(): SettingsTabId {
+  try {
+    const raw = sessionStorage.getItem(SETTINGS_TAB_STORAGE_KEY);
+    if (raw && (SETTINGS_TAB_IDS as readonly string[]).includes(raw)) {
+      return raw as SettingsTabId;
+    }
+  } catch {
+    // ignore
+  }
+  return 'org';
+}
+
 
 function patchScaleConnection(
   scale: Scale,
@@ -104,11 +135,10 @@ interface Props {
   onSaved?: () => void;
 }
 
-type SettingsSection = 'general' | 'site' | 'integrations' | 'data';
-
 export function SettingsView({ onSaved }: Props) {
   const { isAdmin, session, displayName } = useAuth();
   const [settings, setSettings] = useState<AppSettings>(() => SettingsStorage.getAppSettings());
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId>(() => readSettingsTab());
   const [cargoOptions, setCargoOptions] = useState<string[]>([]);
   const [saved, setSaved] = useState(false);
   const [rotatePreview, setRotatePreview] = useState<RotatePreview | null>(null);
@@ -143,13 +173,20 @@ export function SettingsView({ onSaved }: Props) {
   const [switchHistory, setSwitchHistory] = useState<
     ReturnType<typeof listSwitchHistory>
   >([]);
+  const [showAllSwitchHistory, setShowAllSwitchHistory] = useState(false);
   const [wizardDirection, setWizardDirection] = useState<'to_spare' | 'to_primary' | null>(null);
   const [siteMessage, setSiteMessage] = useState<string | null>(null);
   const [activeOnSpare, setActiveOnSpare] = useState(false);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [cameraCaps, setCameraCaps] = useState<CameraCapabilities | null>(null);
+  const [anprCaps, setAnprCaps] = useState<AnprCapabilities | null>(null);
   const [cameraBusyId, setCameraBusyId] = useState<string | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSection>('general');
+  const [camerasSubTab, setCamerasSubTab] = useState<CamerasSubTab>(() => readCamerasSubTab());
+
+  const selectCamerasSubTab = (tab: CamerasSubTab) => {
+    setCamerasSubTab(tab);
+    writeCamerasSubTab(tab);
+  };
 
   const reloadSiteState = () => {
     ensureSiteMigrated();
@@ -163,7 +200,7 @@ export function SettingsView({ onSaved }: Props) {
     setActiveSetLabel(ACTIVE_SCALE_SET_LABELS[ctx.runtime.active_scale_set]);
     setActiveOnSpare(ctx.runtime.active_scale_set === 'spare');
     setSpareEnabled(isSpareEnabled(site.id));
-    setSwitchHistory(listSwitchHistory(site.id).slice().reverse().slice(0, 10));
+    setSwitchHistory(listSwitchHistory(site.id).slice().reverse());
     setSettings(SettingsStorage.getAppSettings());
     setCameras(CamerasStorage.forSite(site.id));
   };
@@ -180,6 +217,7 @@ export function SettingsView({ onSaved }: Props) {
     );
     void fetchStoragePaths().then(setStoragePaths);
     void fetchCapabilities().then(setCameraCaps);
+    void fetchAnprCapabilities(true).then(setAnprCaps);
     void fetchRotatePreview()
       .then((preview) => {
         setRotatePreview(preview);
@@ -204,13 +242,13 @@ export function SettingsView({ onSaved }: Props) {
     let confirmReo = true;
     if (rotatePreview.reo_pending_count > 0) {
       confirmReo = window.confirm(
-        `Есть ${rotatePreview.reo_pending_count} тикетов с ожидающей отправкой в РЭО. Продолжить ротацию?`,
+        `Есть ${rotatePreview.reo_pending_count} провесок с ожидающей отправкой в РЭО. Продолжить ротацию?`,
       );
       if (!confirmReo) return;
     }
     if (
       !window.confirm(
-        `Закрыть год ${rotatePreview.active_year} и открыть ${target}? Открытые тикеты будут автозакрыты, журнал останется в архиве.`,
+        `Закрыть год ${rotatePreview.active_year} и открыть ${target}? Открытые провески будут автозакрыты, журнал останется в архиве.`,
       )
     ) {
       return;
@@ -242,7 +280,7 @@ export function SettingsView({ onSaved }: Props) {
       if (e.error === 'reo_pending_confirm_required') {
         setRotateMessage({
           type: 'error',
-          text: 'Подтвердите ротацию при наличии тикетов, ожидающих РЭО',
+          text: 'Подтвердите ротацию при наличии провесок, ожидающих РЭО',
         });
       } else {
         setRotateMessage({ type: 'error', text: e.message || 'Не удалось выполнить ротацию' });
@@ -327,6 +365,7 @@ export function SettingsView({ onSaved }: Props) {
         scale_device_id: ctx.adapter_id,
         manual_weight_reason_mode: settings.manual_weight_reason_mode,
         video_enabled: settings.video_enabled,
+        anpr_enabled: settings.anpr_enabled,
       });
       setSettings((prev) => ({
         ...prev,
@@ -350,7 +389,9 @@ export function SettingsView({ onSaved }: Props) {
       scale_device_id: settings.scale_device_id,
       manual_weight_reason_mode: settings.manual_weight_reason_mode,
       video_enabled: settings.video_enabled,
+      anpr_enabled: settings.anpr_enabled,
     });
+    void fetchAnprCapabilities(true).then(setAnprCaps);
     logger.info('settings', 'Настройки сохранены');
     setSaved(true);
     onSaved?.();
@@ -597,45 +638,58 @@ export function SettingsView({ onSaved }: Props) {
   const inputClass =
     'w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 outline-none transition';
   const labelClass = 'block text-xs font-medium text-slate-600 mb-1';
-  const sectionCardClass = (section: SettingsSection) =>
-    `${activeSection === section ? '' : 'hidden '}rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4`;
+
+  const selectSettingsTab = (id: SettingsTabId) => {
+    setSettingsTab(id);
+    try {
+      sessionStorage.setItem(SETTINGS_TAB_STORAGE_KEY, id);
+    } catch {
+      // ignore
+    }
+  };
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6 max-w-2xl">
       <div className="flex items-center gap-2">
         <Settings size={22} className="text-blue-600" />
         <h2 className="text-lg font-bold text-slate-800">Настройки</h2>
       </div>
 
-      <div className="inline-flex flex-wrap gap-1 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
-        {([
-          ['general', 'Общие'],
-          ['site', 'Площадка и камеры'],
-          ['integrations', 'Интеграции'],
-          ['data', 'Данные'],
-        ] as const).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setActiveSection(id)}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-              activeSection === id
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-slate-600 hover:bg-slate-50 hover:text-slate-800'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      <div
+        role="tablist"
+        aria-label="Разделы настроек"
+        className="flex gap-1 overflow-x-auto pb-1 -mx-1 px-1"
+      >
+        {SETTINGS_TABS.map(({ id, label, Icon }) => {
+          const selected = settingsTab === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              onClick={() => selectSettingsTab(id)}
+              className={`flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition ${
+                selected
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              <Icon size={14} />
+              <span className="whitespace-nowrap">{label}</span>
+            </button>
+          );
+        })}
       </div>
 
-      <div className={sectionCardClass('general')}>
+      {settingsTab === 'org' && (
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <Building2 size={18} className="text-blue-600" />
           <h3 className="text-sm font-semibold text-slate-800">Реквизиты организации</h3>
         </div>
         <p className="text-xs text-slate-500">
-          Используются в шапке талона (макет «Квитанция») и в актах взвешивания.
+          Используются в шапке печатного талона (макет «Квитанция») и в актах взвешивания.
         </p>
 
         <div className="grid gap-4 sm:grid-cols-2">
@@ -708,7 +762,9 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
-      <div className={sectionCardClass('site')}>
+      )}
+      {settingsTab === 'site' && (
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <ArrowLeftRight size={18} className="text-blue-600" />
           <h3 className="text-sm font-semibold text-slate-800">Площадка и весы</h3>
@@ -1166,15 +1222,27 @@ export function SettingsView({ onSaved }: Props) {
 
         {switchHistory.length > 0 && (
           <div className="space-y-1 border-t border-slate-100 pt-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Журнал переключений
-            </p>
-            <ul className="max-h-40 space-y-1 overflow-y-auto text-xs text-slate-600">
-              {switchHistory.map((ev) => (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Журнал переключений ({switchHistory.length})
+              </p>
+              {switchHistory.length > 10 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllSwitchHistory((v) => !v)}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-700"
+                >
+                  {showAllSwitchHistory ? 'Свернуть' : 'Показать все'}
+                </button>
+              )}
+            </div>
+            <ul className="max-h-56 space-y-1 overflow-y-auto text-xs text-slate-600">
+              {(showAllSwitchHistory ? switchHistory : switchHistory.slice(0, 10)).map((ev) => (
                 <li key={ev.id}>
                   {new Date(ev.at).toLocaleString('ru-RU')} —{' '}
                   {ACTIVE_SCALE_SET_LABELS[ev.from_set]} → {ACTIVE_SCALE_SET_LABELS[ev.to_set]},{' '}
                   {SWITCH_REASON_LABELS[ev.reason]}, {ev.operator_name}
+                  {ev.camera_ack ? `, камеры: ${ev.camera_ack}` : ''}
                 </li>
               ))}
             </ul>
@@ -1182,8 +1250,9 @@ export function SettingsView({ onSaved }: Props) {
         )}
       </div>
 
-      {shouldShowCameraSettings(cameraCaps, cameras.length > 0) && (
-        <div className={sectionCardClass('site')}>
+      )}
+      {settingsTab === 'cameras' && shouldShowCameraSettings(cameraCaps, cameras.length > 0) && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
           <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
             <CameraIcon size={18} className="text-blue-600" />
             <h3 className="text-sm font-semibold text-slate-800">Камеры и фото</h3>
@@ -1199,6 +1268,42 @@ export function SettingsView({ onSaved }: Props) {
             )}
           </p>
 
+          <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+            <button
+              type="button"
+              onClick={() => selectCamerasSubTab('registry')}
+              className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                camerasSubTab === 'registry'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-800'
+              }`}
+            >
+              Реестр
+            </button>
+            <button
+              type="button"
+              onClick={() => selectCamerasSubTab('discover')}
+              className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                camerasSubTab === 'discover'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-800'
+              }`}
+            >
+              Поиск камеры
+            </button>
+          </div>
+
+          {camerasSubTab === 'discover' ? (
+            <CameraDiscoverPanel
+              siteId={siteId || null}
+              cameras={cameras}
+              setCameras={setCameras}
+              cameraCaps={cameraCaps}
+              onDirty={() => setSaved(false)}
+              onApplied={() => selectCamerasSubTab('registry')}
+            />
+          ) : (
+            <>
           <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
             <input
               type="checkbox"
@@ -1213,6 +1318,31 @@ export function SettingsView({ onSaved }: Props) {
               </span>
             </span>
           </label>
+
+          <label className="flex cursor-pointer items-start gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={settings.anpr_enabled}
+              onChange={(e) => updateField('anpr_enabled', e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              Распознавание номеров (ANPR)
+              <span className="block text-xs text-slate-500">
+                Локальное распознавание по камере обзора. По умолчанию выкл.; включать после спайка
+                с точностью ≥ 50%. На резерве движок не вызывается.
+              </span>
+            </span>
+          </label>
+          <p className="text-xs text-slate-500">
+            Модель:{' '}
+            {anprCaps?.model_loaded
+              ? 'загружена'
+              : 'недоступна (нужна полная сборка с onnxruntime и файл models/anpr/plate.onnx)'}
+            {anprCaps && anprCaps.success === false && (
+              <> — не удалось связаться с API ANPR.</>
+            )}
+          </p>
 
           <div className="space-y-3">
             {cameras.map((cam, index) => (
@@ -1437,10 +1567,13 @@ export function SettingsView({ onSaved }: Props) {
           >
             Добавить камеру
           </button>
+            </>
+          )}
         </div>
       )}
 
-      <div className={sectionCardClass('general')}>
+      {settingsTab === 'weighing' && (
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <ScaleIcon size={18} className="text-blue-600" />
           <h3 className="text-sm font-semibold text-slate-800">Режимы взвешивания</h3>
@@ -1589,45 +1722,9 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
-      <div className={sectionCardClass('general')}>
-        <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-          <LayoutPanelTop size={18} className="text-blue-600" />
-          <h3 className="text-sm font-semibold text-slate-800">Вкладки меню</h3>
-        </div>
-        <p className="text-xs text-slate-500">
-          Как отображать пункты навигации в верхней панели.
-        </p>
-
-        <div className="space-y-3">
-          {NAV_TAB_OPTIONS.map((mode) => (
-            <label
-              key={mode}
-              className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 transition ${
-                settings.nav_tab_mode === mode
-                  ? 'border-blue-500 bg-blue-50/50 ring-1 ring-blue-500/30'
-                  : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
-              }`}
-            >
-              <input
-                type="radio"
-                name="nav_tab_mode"
-                value={mode}
-                checked={settings.nav_tab_mode === mode}
-                onChange={() => updateField('nav_tab_mode', mode)}
-                className="mt-1"
-              />
-              <div>
-                <div className="text-sm font-semibold text-slate-800">
-                  {mode === 'full' ? 'Полное' : 'Сжатое'}
-                </div>
-                <div className="text-xs text-slate-500">{NAV_TAB_MODE_LABELS[mode]}</div>
-              </div>
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className={sectionCardClass('general')}>
+      )}
+      {settingsTab === 'org' && (
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <Printer size={18} className="text-blue-600" />
           <h3 className="text-sm font-semibold text-slate-800">Макет печати</h3>
@@ -1666,7 +1763,10 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
-      <div className={sectionCardClass('integrations')}>
+      )}
+      {settingsTab === 'integrations' && (
+        <>
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <Radio size={18} className="text-indigo-600" />
           <h3 className="text-sm font-semibold text-slate-800">Интеграция с РЭО</h3>
@@ -1749,7 +1849,7 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
-      <div className={sectionCardClass('integrations')}>
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <Database size={18} className="text-blue-600" />
           <h3 className="text-sm font-semibold text-slate-800">База Vescom (Firebird)</h3>
@@ -1832,7 +1932,7 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
-      <div className={sectionCardClass('integrations')}>
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <ScaleIcon size={18} className="text-violet-600" />
           <h3 className="text-sm font-semibold text-slate-800">База Metra (TWeights.db)</h3>
@@ -1896,7 +1996,7 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
-      <div className={sectionCardClass('integrations')}>
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <Server size={18} className="text-teal-600" />
           <h3 className="text-sm font-semibold text-slate-800">База WA («Весы Авто»)</h3>
@@ -1982,18 +2082,22 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
-      <div className={sectionCardClass('data')}>
+        </>
+      )}
+      {settingsTab === 'data' && (
+        <>
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <CalendarRange size={18} className="text-slate-600" />
           <h3 className="text-sm font-semibold text-slate-800">Год и архив</h3>
         </div>
         <p className="text-xs text-slate-500">
-          Рабочие данные хранятся в годовом файле <code>BD/weighing-ГГГГ.db</code>. Смена года — операция администратора: автозакрытие открытых тикетов, бэкап и перенос справочников.
+          Рабочие данные хранятся в годовом файле <code>BD/weighing-ГГГГ.db</code>. Смена года — операция администратора: автозакрытие открытых провесок, бэкап и перенос справочников.
         </p>
         {rotatePreview && (
           <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600 space-y-1">
             <div><span className="font-medium">Активный год:</span> {rotatePreview.active_year}</div>
-            <div><span className="font-medium">Открытых тикетов:</span> {rotatePreview.open_count}</div>
+            <div><span className="font-medium">Открытых провесок:</span> {rotatePreview.open_count}</div>
             <div><span className="font-medium">Ожидают РЭО:</span> {rotatePreview.reo_pending_count}</div>
             {rotatePreview.active_year < new Date().getFullYear() && (
               <div className="text-amber-700 font-medium">
@@ -2048,7 +2152,7 @@ export function SettingsView({ onSaved }: Props) {
         )}
       </div>
 
-      <div className={sectionCardClass('data')}>
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
         <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
           <FolderOpen size={18} className="text-slate-600" />
           <h3 className="text-sm font-semibold text-slate-800">Данные и резервное копирование</h3>
@@ -2109,6 +2213,8 @@ export function SettingsView({ onSaved }: Props) {
         </div>
       </div>
 
+        </>
+      )}
       <PathBrowserModal
         open={pathPicker === 'vescom'}
         mode="file"

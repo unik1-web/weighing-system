@@ -150,6 +150,7 @@ function pickText(...candidates: Array<string | null | undefined>): string {
 export function resolveVehicle(
   plate: string,
   context: VehicleResolveContext,
+  options?: { plateSourceOverride?: PlateSource },
 ): VehicleResolveResult {
   const normalizedPlate = formatVehiclePlate(plate);
   const card =
@@ -185,6 +186,9 @@ export function resolveVehicle(
     }
   }
 
+  const resolvedSource: PlateSource = card ? 'directory' : 'operator';
+  const plate_source = options?.plateSourceOverride ?? resolvedSource;
+
   return {
     vehicle_brand,
     driver_name,
@@ -192,7 +196,7 @@ export function resolveVehicle(
     shipper_name,
     tare,
     driver_candidates,
-    plate_source: card ? 'directory' : 'operator',
+    plate_source,
     matched_vehicle_id: card?.id ?? null,
   };
 }

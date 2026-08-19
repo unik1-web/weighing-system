@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   softReadBool,
+  type TicketAuditEvent,
+  type TicketRevision,
   type WeighingTicket,
 } from '@/lib/storage';
 import { useAuth } from '@/hooks/useAuth';
@@ -10,6 +12,7 @@ import {
   updateArchiveTicket,
 } from '@/lib/year-archive';
 import { printTicket } from '@/components/PrintAct';
+import { TicketHistoryPanel } from '@/components/TicketHistoryPanel';
 import { Archive, Eye, Printer, Search, X, Pencil, Loader2 } from 'lucide-react';
 
 export function ArchiveView() {
@@ -18,6 +21,8 @@ export function ArchiveView() {
   const [activeYear, setActiveYear] = useState<number | null>(null);
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
   const [tickets, setTickets] = useState<WeighingTicket[]>([]);
+  const [archiveAudit, setArchiveAudit] = useState<TicketAuditEvent[]>([]);
+  const [archiveRevisions, setArchiveRevisions] = useState<TicketRevision[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -50,9 +55,23 @@ export function ArchiveView() {
     try {
       const data = await fetchArchiveYear(year);
       setTickets(data.tickets);
+      try {
+        const auditRaw = data.data['app_ticket_audit'];
+        setArchiveAudit(auditRaw ? (JSON.parse(auditRaw) as TicketAuditEvent[]) : []);
+      } catch {
+        setArchiveAudit([]);
+      }
+      try {
+        const revRaw = data.data['app_ticket_revisions'];
+        setArchiveRevisions(revRaw ? (JSON.parse(revRaw) as TicketRevision[]) : []);
+      } catch {
+        setArchiveRevisions([]);
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Не удалось загрузить архив');
       setTickets([]);
+      setArchiveAudit([]);
+      setArchiveRevisions([]);
     }
     setLoading(false);
   }, []);
@@ -96,7 +115,7 @@ export function ArchiveView() {
       let confirmReo = false;
       if (editTicket.reo_status === 'sent') {
         confirmReo = window.confirm(
-          'Тикет уже отправлен в РЭО. Сохранить изменения?',
+          'Провеска уже отправлена в РЭО. Сохранить изменения?',
         );
         if (!confirmReo) {
           setSaving(false);
@@ -122,7 +141,7 @@ export function ArchiveView() {
     } catch (err: unknown) {
       const e = err as Error & { error?: string };
       if (e.error === 'reo_sent_confirm_required') {
-        setError('Требуется подтверждение изменения отправленного в РЭО тикета');
+        setError('Требуется подтверждение изменения отправленной в РЭО провески');
       } else {
         setError(e.message || 'Не удалось сохранить');
       }
@@ -175,7 +194,7 @@ export function ArchiveView() {
       </div>
 
       <p className="text-xs text-slate-500">
-        Просмотр и печать архивных тикетов.
+        Просмотр и печать архивных провесок.
         {isAdmin ? ' Администратор может править записи с записью аудита.' : ' Изменение данных недоступно.'}
       </p>
 
@@ -279,7 +298,7 @@ export function ArchiveView() {
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
               <h3 className="text-sm font-semibold text-slate-800">
-                Архив · тикет №{viewTicket.ticket_number ?? '—'}
+                Архив · провеска №{viewTicket.ticket_number ?? '—'}
               </h3>
               <button type="button" onClick={() => setViewTicket(null)} className="rounded p-1 text-slate-400 hover:bg-slate-100">
                 <X size={16} />
@@ -294,6 +313,11 @@ export function ArchiveView() {
                 <div className="text-violet-700">Закрыт при ротации года</div>
               )}
               {viewTicket.notes && <div><span className="text-slate-500">Заметки:</span> {viewTicket.notes}</div>}
+              <TicketHistoryPanel
+                ticketId={viewTicket.id}
+                audit={archiveAudit.filter((e) => e.ticket_id === viewTicket.id)}
+                revisions={archiveRevisions.filter((r) => r.ticket_id === viewTicket.id)}
+              />
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-3">
               {isAdmin && (
@@ -363,7 +387,7 @@ export function ArchiveView() {
               </label>
               {editTicket.reo_status === 'sent' && (
                 <p className="text-xs text-amber-700">
-                  Тикет отправлен в РЭО — при сохранении потребуется подтверждение.
+                  Провеска отправлена в РЭО — при сохранении потребуется подтверждение.
                 </p>
               )}
             </div>

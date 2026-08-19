@@ -1,5 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { type WeighingTicket, TicketStorage, REO_STATUS_LABELS, SettingsStorage, softReadBool } from '@/lib/storage';
+import {
+  type WeighingTicket,
+  TicketStorage,
+  REO_STATUS_LABELS,
+  SettingsStorage,
+  softReadBool,
+  SitesStorage,
+  ScalesStorage,
+} from '@/lib/storage';
 import { getReoSendState, sendTicketsToReo, isReoCargoEligible, downloadReoJsonFile, getReoComplianceIssues } from '@/lib/reo';
 import {
   type WeightSource,
@@ -8,12 +16,22 @@ import {
   normalizeWeightSource,
   ticketMatchesWeightSources,
 } from '@/lib/weight-source';
-import { getErrorMessage } from '@/lib/errors';
+import {
+  ANPR_STATUS_LABELS,
+  DEFAULT_JOURNAL_FILTERS,
+  matchJournalFilters,
+  SCALE_ROLE_LABELS,
+  ticketHasPhotos,
+  WEIGHING_MODE_LABELS,
+  type JournalFilterState,
+} from '@/lib/journal-filters';
+import { ACTIVE_SCALE_SET_LABELS } from '@/lib/site-runtime';
 import { logger } from '@/lib/logger';
 import { printTicket } from './PrintAct';
 import { TicketPhotoPreview } from '@/components/TicketPhotoPreview';
+import { TicketHistoryPanel } from '@/components/TicketHistoryPanel';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
-import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson, Camera, X } from 'lucide-react';
+import { Search, Download, Trash2, CheckCircle2, Clock, AlertCircle, Printer, Send, RotateCcw, Loader2, FileJson, Eye, X } from 'lucide-react';
 
 const SOURCE_FILTER_OPTIONS = WEIGHT_SOURCES.map((source) => WEIGHT_SOURCE_LABELS[source]);
 const LABEL_TO_SOURCE = Object.fromEntries(
@@ -23,6 +41,35 @@ const LABEL_TO_SOURCE = Object.fromEntries(
 function sourceLabelForWeight(weight: number | null, source: unknown): string {
   if (weight == null) return '—';
   return WEIGHT_SOURCE_LABELS[normalizeWeightSource(source)];
+}
+
+function siteNameFor(ticket: WeighingTicket): string {
+  if (!ticket.site_id) return '—';
+  const site = SitesStorage.getAll().find((s) => s.id === ticket.site_id);
+  return site?.name || ticket.site_id;
+}
+
+function scaleNameFor(ticket: WeighingTicket): string {
+  if (!ticket.scale_id) return '—';
+  const scale = ScalesStorage.getAll().find((s) => s.id === ticket.scale_id);
+  return scale?.name || ticket.scale_id;
+}
+
+function scaleRoleLabel(ticket: WeighingTicket): string {
+  if (ticket.scale_role === 'primary' || ticket.scale_role === 'spare') {
+    return SCALE_ROLE_LABELS[ticket.scale_role] ?? ACTIVE_SCALE_SET_LABELS[ticket.scale_role];
+  }
+  return '—';
+}
+
+function anprLabel(ticket: WeighingTicket): string {
+  if (!ticket.anpr_status) return 'не задано';
+  return ANPR_STATUS_LABELS[ticket.anpr_status] ?? ticket.anpr_status;
+}
+
+function modeLabel(ticket: WeighingTicket): string {
+  const mode = ticket.weighing_mode ?? 'single';
+  return WEIGHING_MODE_LABELS[mode] ?? mode;
 }
 
 interface Props {
@@ -39,6 +86,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'completed'>('all');
   const [reoFilter, setReoFilter] = useState<'all' | 'pending' | 'sent'>('all');
   const [sourceFilter, setSourceFilter] = useState<WeightSource[]>([]);
+  const [extraFilters, setExtraFilters] = useState<JournalFilterState>(DEFAULT_JOURNAL_FILTERS);
   const [sendingBulk, setSendingBulk] = useState(false);
   const [viewTicket, setViewTicket] = useState<WeighingTicket | null>(null);
 
@@ -46,6 +94,9 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
     () => sourceFilter.map((source) => WEIGHT_SOURCE_LABELS[source]),
     [sourceFilter],
   );
+
+  const siteOptions = useMemo(() => SitesStorage.getAll(), [refreshKey, tickets.length]);
+  const scaleOptions = useMemo(() => ScalesStorage.getAll(), [refreshKey, tickets.length]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,8 +110,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
         allTickets = allTickets.filter(t => t.reo_status === reoFilter);
       }
       setTickets(allTickets);
-    } catch (err: unknown) {
-      setError(getErrorMessage(err, 'Не удалось загрузить журнал'));
+    } catch (err: any) {
+      setError(err.message);
     }
     setLoading(false);
   }, [statusFilter, reoFilter, reoEnabled]);
@@ -77,6 +128,7 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
 
   const filtered = tickets.filter((t) => {
     if (!ticketMatchesWeightSources(t, sourceFilter)) return false;
+    if (!matchJournalFilters(t, extraFilters)) return false;
     if (!search) return true;
     const s = search.toLowerCase();
     return t.vehicle_number?.toLowerCase().includes(s) || t.driver_name?.toLowerCase().includes(s) || t.cargo_name?.toLowerCase().includes(s) || t.shipper_name?.toLowerCase().includes(s) || t.receiver_name?.toLowerCase().includes(s) || t.carrier_name?.toLowerCase().includes(s) || t.operator_name?.toLowerCase().includes(s) || String(t.ticket_number ?? '').includes(s);
@@ -87,8 +139,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
     try {
       TicketStorage.delete(id);
       await load();
-    } catch (err: unknown) {
-      setError(getErrorMessage(err, 'Не удалось удалить запись'));
+    } catch (err: any) {
+      setError(err.message);
     }
   };
 
@@ -109,8 +161,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
       eligibleTickets.forEach((ticket) => TicketStorage.markReoSent(ticket.id));
       logger.info('reo', `Отправлено в РЭО записей: ${eligibleTickets.length}`);
       await load();
-    } catch (err: unknown) {
-      setError(getErrorMessage(err, 'Не удалось отправить данные в РЭО'));
+    } catch (err: any) {
+      setError(err.message ?? 'Не удалось отправить данные в РЭО');
     } finally {
       setSendingBulk(false);
     }
@@ -121,8 +173,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
     try {
       TicketStorage.markReoPending(ticket.id);
       await load();
-    } catch (err: unknown) {
-      setError(getErrorMessage(err, 'Не удалось обновить статус РЭО'));
+    } catch (err: any) {
+      setError(err.message);
     }
   };
 
@@ -142,10 +194,26 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   };
 
   const exportCSV = () => {
+    const extraHeaders = [
+      'Площадка',
+      'Роль весов',
+      'Весы',
+      'Есть фото',
+      'ANPR',
+      'Режим',
+    ];
     const headers = reoEnabled
-      ? ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Статус', 'РЭО', 'Дата отправки в РЭО']
-      : ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Статус'];
+      ? ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Источник брутто', 'Источник тары', 'Устройство весов', ...extraHeaders, 'Статус', 'РЭО', 'Дата отправки в РЭО']
+      : ['ID', 'Дата', 'Номер', 'Водитель', 'Груз', 'Отправитель', 'Получатель', 'Перевозчик', 'Брутто', 'Тара', 'Нетто', 'Цена/т', 'Сумма', 'Весовщик', 'Источник брутто', 'Источник тары', 'Устройство весов', ...extraHeaders, 'Статус'];
     const rows = filtered.map((t) => {
+      const extra = [
+        siteNameFor(t),
+        scaleRoleLabel(t),
+        scaleNameFor(t),
+        ticketHasPhotos(t) ? 'да' : 'нет',
+        anprLabel(t),
+        modeLabel(t),
+      ];
       const base = [
         t.ticket_number,
         new Date(t.created_at).toLocaleString('ru-RU'),
@@ -161,6 +229,10 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
         t.price,
         t.total_amount ?? '',
         t.operator_name,
+        sourceLabelForWeight(t.gross_weight, t.gross_source),
+        sourceLabelForWeight(t.tare_weight, t.tare_source),
+        t.scale_device || '',
+        ...extra,
         t.status === 'completed' ? 'Завершён' : 'Открыт',
       ];
       if (!reoEnabled) return base;
@@ -181,6 +253,8 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
   };
 
   const tableColSpan = reoEnabled ? 13 : 12;
+  const selectClass =
+    'rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500';
 
   return (
     <div className="space-y-4">
@@ -209,6 +283,100 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
             emptyMessage="Нет источников"
           />
         </div>
+        <select
+          className={selectClass}
+          value={extraFilters.siteId}
+          onChange={(e) =>
+            setExtraFilters((f) => ({ ...f, siteId: e.target.value as JournalFilterState['siteId'] }))
+          }
+          title="Площадка"
+        >
+          <option value="all">Площадка: все</option>
+          <option value="unset">Площадка: не задано</option>
+          {siteOptions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.scaleRole}
+          onChange={(e) =>
+            setExtraFilters((f) => ({
+              ...f,
+              scaleRole: e.target.value as JournalFilterState['scaleRole'],
+            }))
+          }
+          title="Роль весов"
+        >
+          <option value="all">Весы: все</option>
+          <option value="primary">Основные</option>
+          <option value="spare">Резервные</option>
+          <option value="unset">Роль не задана</option>
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.scaleId}
+          onChange={(e) => setExtraFilters((f) => ({ ...f, scaleId: e.target.value }))}
+          title="Весы"
+        >
+          <option value="">Весы: все</option>
+          <option value="unset">Весы: не задано</option>
+          {scaleOptions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.photo}
+          onChange={(e) =>
+            setExtraFilters((f) => ({ ...f, photo: e.target.value as JournalFilterState['photo'] }))
+          }
+        >
+          <option value="all">Фото: все</option>
+          <option value="has">Есть фото</option>
+          <option value="none">Нет фото</option>
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.anprStatus}
+          onChange={(e) =>
+            setExtraFilters((f) => ({
+              ...f,
+              anprStatus: e.target.value as JournalFilterState['anprStatus'],
+            }))
+          }
+        >
+          <option value="all">ANPR: все</option>
+          <option value="unset">ANPR: не задано</option>
+          <option value="enabled">Включён</option>
+          <option value="disabled_by_configuration">Выкл. конфигурацией</option>
+          <option value="failed">Ошибка</option>
+        </select>
+        <select
+          className={selectClass}
+          value={extraFilters.weighingMode}
+          onChange={(e) =>
+            setExtraFilters((f) => ({
+              ...f,
+              weighingMode: e.target.value as JournalFilterState['weighingMode'],
+            }))
+          }
+        >
+          <option value="all">Режим: все</option>
+          <option value="single">Одиночное</option>
+          <option value="dual">Двойное</option>
+        </select>
+        <input
+          type="text"
+          value={extraFilters.operator}
+          onChange={(e) => setExtraFilters((f) => ({ ...f, operator: e.target.value }))}
+          placeholder="Оператор"
+          className="w-[140px] rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500"
+        />
         {reoEnabled && (
           <>
             <div className="flex rounded-lg border border-slate-300 overflow-hidden">
@@ -261,25 +429,25 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
       {error && <div className="flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700"><AlertCircle size={18} className="mt-0.5 shrink-0" /> {error}</div>}
 
       <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-        <div className="max-h-[calc(100vh-18rem)] overflow-auto">
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 z-10 bg-slate-50 border-b border-slate-200 text-[11px] text-slate-500">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
               <tr>
-                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">ID</th>
-                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Дата</th>
-                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Номер</th>
-                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Груз</th>
-                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Отправитель</th>
-                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Получатель</th>
-                <th className="px-1.5 py-2 text-left font-medium whitespace-nowrap uppercase">Перевозчик</th>
-                <th className="px-1.5 py-2 text-right font-medium whitespace-nowrap uppercase">Брутто</th>
-                <th className="px-1.5 py-2 text-right font-medium whitespace-nowrap uppercase">Тара</th>
-                <th className="px-1.5 py-2 text-right font-medium whitespace-nowrap uppercase">Нетто</th>
-                <th className="px-1.5 py-2 text-center font-medium whitespace-nowrap uppercase">Статус</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">ID</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Дата</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Номер</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase w-[8rem] max-w-[8rem]">Груз</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Отправитель</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Получатель</th>
+                <th className="px-2 py-2.5 text-left font-medium whitespace-nowrap uppercase">Перевозчик</th>
+                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap uppercase">Брутто</th>
+                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap uppercase">Тара</th>
+                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap uppercase">Нетто</th>
+                <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap uppercase">Статус</th>
                 {reoEnabled && (
-                  <th className="px-1.5 py-2 text-center font-medium whitespace-nowrap" title="РЭО: + отправлено, − не отправлено">РЭО</th>
+                  <th className="px-2 py-2.5 text-center font-medium whitespace-nowrap" title="РЭО: + отправлено, − не отправлено">РЭО</th>
                 )}
-                <th className="px-1.5 py-2 text-center font-medium whitespace-nowrap"></th>
+                <th className="sticky right-0 z-10 bg-slate-50 px-2 py-2.5 text-center font-medium whitespace-nowrap shadow-[-4px_0_8px_-4px_rgba(15,23,42,0.12)]"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
@@ -288,78 +456,45 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={tableColSpan} className="px-4 py-8 text-center text-slate-400">Записей не найдено</td></tr>
               ) : (
-                filtered.map((t) => {
-                  const createdAt = new Date(t.created_at);
-                  return (
-                  <tr key={t.id} className="hover:bg-slate-50/50 transition">
-                    <td className="px-1.5 py-2 font-semibold text-slate-700 tabular-nums whitespace-nowrap">{t.ticket_number ?? '—'}</td>
-                    <td className="px-1.5 py-2 text-slate-500 tabular-nums whitespace-nowrap">
-                      <div className="leading-tight">
-                        <div>{createdAt.toLocaleDateString('ru-RU')}</div>
-                        <div className="text-[10px] text-slate-400">
-                          {createdAt.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
-                        </div>
-                      </div>
+                filtered.map((t) => (
+                  <tr key={t.id} className="group hover:bg-slate-50/50 transition">
+                    <td className="px-2 py-2.5 font-semibold text-slate-700 tabular-nums whitespace-nowrap">{t.ticket_number ?? '—'}</td>
+                    <td className="px-2 py-2.5 text-slate-500 whitespace-nowrap tabular-nums">{new Date(t.created_at).toLocaleDateString('ru-RU')} {new Date(t.created_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</td>
+                    <td className="px-2 py-2.5 font-medium text-slate-700 whitespace-nowrap">{t.vehicle_number}</td>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[8rem]">
+                      <div className="truncate" title={t.cargo_name}>{t.cargo_name}</div>
                     </td>
-                    <td className="px-1.5 py-2 font-medium text-slate-700 whitespace-nowrap">{t.vehicle_number}</td>
-                    <td className="px-1.5 py-2 text-slate-600 align-top" title={t.cargo_name}>
-                      <div className="xl:hidden max-w-[5.75rem] md:max-w-[7rem] lg:max-w-[8rem] whitespace-normal break-words leading-tight [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
-                        {t.cargo_name || '—'}
-                      </div>
-                      <div className="hidden xl:block max-w-[12rem] whitespace-normal break-words leading-tight">
-                        {t.cargo_name || '—'}
-                      </div>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[8rem]">
+                      <div className="truncate" title={t.shipper_name}>{t.shipper_name}</div>
                     </td>
-                    <td className="px-1.5 py-2 text-slate-600 align-top" title={t.shipper_name}>
-                      <div className="xl:hidden max-w-[6.25rem] md:max-w-[7.5rem] lg:max-w-[8.5rem] whitespace-normal break-words leading-tight [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
-                        {t.shipper_name || '—'}
-                      </div>
-                      <div className="hidden xl:block max-w-[13rem] whitespace-normal break-words leading-tight">
-                        {t.shipper_name || '—'}
-                      </div>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[8rem]">
+                      <div className="truncate" title={t.receiver_name}>{t.receiver_name}</div>
                     </td>
-                    <td className="px-1.5 py-2 text-slate-600 align-top" title={t.receiver_name}>
-                      <div className="xl:hidden max-w-[6.25rem] md:max-w-[7.5rem] lg:max-w-[8.5rem] whitespace-normal break-words leading-tight [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
-                        {t.receiver_name || '—'}
-                      </div>
-                      <div className="hidden xl:block max-w-[13rem] whitespace-normal break-words leading-tight">
-                        {t.receiver_name || '—'}
-                      </div>
+                    <td className="px-2 py-2.5 text-slate-600 max-w-[8rem]">
+                      <div className="truncate" title={t.carrier_name}>{t.carrier_name}</div>
                     </td>
-                    <td className="px-1.5 py-2 text-slate-600 align-top" title={t.carrier_name}>
-                      <div className="xl:hidden max-w-[6.25rem] md:max-w-[7.5rem] lg:max-w-[8.5rem] whitespace-normal break-words leading-tight [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
-                        {t.carrier_name || '—'}
-                      </div>
-                      <div className="hidden xl:block max-w-[13rem] whitespace-normal break-words leading-tight">
-                        {t.carrier_name || '—'}
-                      </div>
-                    </td>
-                    <td className="px-1.5 py-2 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">
                       <div>{t.gross_weight?.toLocaleString('ru-RU') ?? '—'}</div>
                       <div className="text-[10px] font-medium text-slate-400">Б: {sourceLabelForWeight(t.gross_weight, t.gross_source)}</div>
                     </td>
-                    <td className="px-1.5 py-2 text-right tabular-nums text-slate-700 whitespace-nowrap">
+                    <td className="px-2 py-2.5 text-right tabular-nums text-slate-700 whitespace-nowrap">
                       <div>{t.tare_weight?.toLocaleString('ru-RU') ?? '—'}</div>
                       <div className="text-[10px] font-medium text-slate-400">Т: {sourceLabelForWeight(t.tare_weight, t.tare_source)}</div>
                     </td>
-                    <td className="px-1.5 py-2 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">{t.net_weight?.toLocaleString('ru-RU') ?? '—'}</td>
-                    <td className="px-1.5 py-2 text-center whitespace-nowrap">
+                    <td className="px-2 py-2.5 text-right tabular-nums font-semibold text-slate-800 whitespace-nowrap">{t.net_weight?.toLocaleString('ru-RU') ?? '—'}</td>
+                    <td className="px-2 py-2.5 text-center whitespace-nowrap">
                       {softReadBool(t.auto_closed) ? (
-                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-violet-100 text-violet-700" title="Закрыт при ротации года">
-                          <CheckCircle2 size={13} />
+                        <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-700" title="Закрыт при ротации года">
+                          Закрыт при ротации
                         </span>
                       ) : t.status === 'completed' ? (
-                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-100 text-emerald-700" title="Завершён">
-                          <CheckCircle2 size={13} />
-                        </span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"><CheckCircle2 size={12} /> Завершён</span>
                       ) : (
-                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-100 text-amber-700" title="Открыт">
-                          <Clock size={13} />
-                        </span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700"><Clock size={12} /> Открыт</span>
                       )}
                     </td>
                     {reoEnabled && (
-                      <td className="px-1.5 py-2 text-center whitespace-nowrap">
+                      <td className="px-2 py-2.5 text-center whitespace-nowrap">
                         {t.reo_status === 'sent' ? (
                           <span
                             className="inline-flex h-6 w-6 items-center justify-center text-lg font-bold leading-none text-emerald-600"
@@ -377,7 +512,14 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                         )}
                       </td>
                     )}
-                    <td className="px-1.5 py-2 text-center whitespace-nowrap">
+                    <td className="sticky right-0 z-10 bg-white px-2 py-2.5 text-center whitespace-nowrap shadow-[-4px_0_8px_-4px_rgba(15,23,42,0.12)] group-hover:bg-slate-50">
+                      <button
+                        onClick={() => setViewTicket(t)}
+                        className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition mr-1"
+                        title="Просмотр"
+                      >
+                        <Eye size={15} />
+                      </button>
                       {t.status === 'open' && (
                         <button
                           onClick={() => onCompleteOpen?.(t.id)}
@@ -396,34 +538,11 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                           <RotateCcw size={15} />
                         </button>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => setViewTicket(t)}
-                        className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-white p-1.5 text-slate-700 hover:bg-slate-50 transition ml-1"
-                        title="Фото и детали"
-                      >
-                        <Camera size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => printTicket(t)}
-                        disabled={t.status !== 'completed'}
-                        className="inline-flex items-center justify-center rounded-md border border-blue-300 bg-blue-50 p-1.5 text-blue-700 hover:bg-blue-100 transition disabled:opacity-30 disabled:cursor-not-allowed ml-1"
-                        title="Печать акта"
-                      >
-                        <Printer size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(t.id)}
-                        className="inline-flex items-center justify-center rounded-md border border-rose-300 bg-rose-50 p-1.5 text-rose-700 hover:bg-rose-100 transition ml-1"
-                        title="Удалить"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      <button onClick={() => printTicket(t)} disabled={t.status !== 'completed'} className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition disabled:opacity-30 disabled:cursor-not-allowed ml-1" title="Печать акта"><Printer size={15} /></button>
+                      <button onClick={() => handleDelete(t.id)} className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition ml-1"><Trash2 size={15} /></button>
                     </td>
                   </tr>
-                )})
+                ))
               )}
             </tbody>
           </table>
@@ -436,12 +555,12 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
           onClick={() => setViewTicket(null)}
         >
           <div
-            className="w-full max-w-lg rounded-2xl border border-slate-200 bg-white shadow-xl"
+            className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
               <h3 className="text-sm font-semibold text-slate-800">
-                Просмотр тикета №{viewTicket.ticket_number ?? '—'}
+                Просмотр провески №{viewTicket.ticket_number ?? '—'}
               </h3>
               <button
                 type="button"
@@ -498,6 +617,28 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                   <div className="font-medium">{viewTicket.scale_device || '—'}</div>
                 </div>
                 <div>
+                  <div className="text-xs text-slate-500">Площадка</div>
+                  <div className="font-medium">{siteNameFor(viewTicket)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Весы / роль</div>
+                  <div className="font-medium">
+                    {scaleNameFor(viewTicket)} / {scaleRoleLabel(viewTicket)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Фото</div>
+                  <div className="font-medium">{ticketHasPhotos(viewTicket) ? 'есть' : 'нет'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">ANPR</div>
+                  <div className="font-medium">{anprLabel(viewTicket)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Режим</div>
+                  <div className="font-medium">{modeLabel(viewTicket)}</div>
+                </div>
+                <div>
                   <div className="text-xs text-slate-500">Оператор</div>
                   <div className="font-medium">{viewTicket.operator_name || '—'}</div>
                 </div>
@@ -521,7 +662,10 @@ export function WeighingJournal({ refreshKey, onCompleteOpen }: Props) {
                   </div>
                 )}
                 <div className="col-span-2">
-                  <TicketPhotoPreview ticket={viewTicket} showActions />
+                  <TicketPhotoPreview ticket={viewTicket} />
+                </div>
+                <div className="col-span-2">
+                  <TicketHistoryPanel ticketId={viewTicket.id} />
                 </div>
               </div>
             </div>

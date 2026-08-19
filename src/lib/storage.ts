@@ -25,14 +25,19 @@ import {
   type ManualWeightReasonMode,
 } from './manual-weight-reason';
 import { logger } from './logger';
+import { diffTicketFields } from './ticket-audit-fields';
 
 export type { ManualWeightReasonMode };
 export type { ScaleTransportKind };
 
 export type { WeightSource };
+export type { DriverInputMode, PlateSource, VehicleDriverLink };
 export type TicketStatus = 'open' | 'completed';
 export type ReoStatus = 'pending' | 'sent';
 export type { WeighingMode };
+export type AnprMode = 'enabled' | 'disabled_by_configuration' | 'failed';
+/** Snapshot of ANPR contour status on a ticket (same enum as runtime anpr_mode). */
+export type AnprStatus = AnprMode;
 
 export const REO_STATUS_LABELS: Record<ReoStatus, string> = {
   pending: 'Не отправлено',
@@ -84,6 +89,14 @@ export interface WeighingTicket {
   manual_weight_reason?: string | null;
   /** Closed during year rotation. Soft-read: missing → false. */
   auto_closed?: boolean | null;
+  /** Raw plate from ANPR model before operator edit. Soft-read nullable. */
+  anpr_plate_raw?: string | null;
+  /** Recognition confidence 0..1. Soft-read nullable. */
+  plate_confidence?: number | null;
+  /** Operator accepted/edited ANPR suggestion. Soft-read: missing → null. */
+  anpr_accepted?: boolean | null;
+  /** ANPR contour status for the trip. Soft-read nullable. */
+  anpr_status?: AnprStatus | null;
 }
 
 export type TicketAuditAction = 'created' | 'completed' | 'auto_closed' | 'updated';
@@ -112,10 +125,7 @@ export interface User {
   id: string;
   email: string;
   username: string;
-}
-
-interface StoredUser extends User {
-  passwordHash: string;
+  mustChangePassword?: boolean;
 }
 
 export interface Profile {
@@ -179,21 +189,56 @@ function hasStoredData(): boolean {
   return Object.values(STORAGE_KEYS).some((key) => localStorage.getItem(key) !== null);
 }
 
-function sanitizeUser(user: StoredUser): User {
-  return {
-    id: user.id,
-    email: user.email,
-    username: user.username,
-  };
-}
-
-// Users storage
+// Users storage (passwords live only on the server as PBKDF2 hashes)
 export const UserStorage = {
-  createUser: (username: string, password: string, displayName: string): User => {
+  /** Upsert a user row without a password (password set via /api/auth/*). */
+  upsertUser: (user: User & { mustChangePassword?: boolean }): User => {
+    const users = getAllUsers();
+    const normalizedUsername = user.username.trim().toLowerCase();
+    const existingIndex = users.findIndex(
+      (u) => u.id === user.id || u.username === normalizedUsername,
+    );
+    const stored = {
+      id: user.id,
+      email: user.email,
+      username: normalizedUsername,
+      mustChangePassword: Boolean(user.mustChangePassword),
+    };
+    if (existingIndex === -1) {
+      users.push(stored);
+    } else {
+      const prev = users[existingIndex];
+      // Never keep legacy client-side passwordHash in localStorage.
+      const { passwordHash: _drop, ...rest } = prev as Record<string, unknown>;
+      void _drop;
+      users[existingIndex] = { ...rest, ...stored };
+    }
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
+    return {
+      id: stored.id,
+      email: stored.email,
+      username: stored.username,
+      mustChangePassword: stored.mustChangePassword,
+    };
+  },
+
+  setMustChangePassword: (userId: string, value: boolean): void => {
+    const users = getAllUsers();
+    const index = users.findIndex((u) => u.id === userId);
+    if (index === -1) return;
+    users[index] = { ...stripPasswordHash(users[index]), mustChangePassword: value };
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
+  },
+
+  /**
+   * @deprecated Passwords must be created via /api/auth/register.
+   * Kept for rare offline bootstrap; does not store any password material.
+   */
+  createUser: (username: string, _password: string, displayName: string): User => {
     const users = getAllUsers();
     const normalizedUsername = username.trim().toLowerCase();
-    
-    if (users.some(u => u.username === normalizedUsername)) {
+
+    if (users.some((u) => u.username === normalizedUsername)) {
       throw new Error('Пользователь уже существует');
     }
 
@@ -201,53 +246,37 @@ export const UserStorage = {
       id: crypto.randomUUID(),
       email: `${normalizedUsername}@example.com`,
       username: normalizedUsername,
+      mustChangePassword:
+        normalizedUsername === 'admin' && _password === 'admin123',
     };
 
-    // Store user with hashed password (simple hash for demo)
-    const storedUser: StoredUser = {
-      ...user,
-      passwordHash: btoa(password), // Simple encoding for demo (not secure!)
-    };
+    users.push(stripPasswordHash(user));
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
 
-    users.push(storedUser);
-    persist(STORAGE_KEYS.USERS, JSON.stringify(users));
-
-    // Create default profile
     const profile: Profile = {
       username: normalizedUsername,
       display_name: displayName,
-      role: users.length === 1 ? 'admin' : 'user', // First user is admin
+      role: users.length === 1 ? 'admin' : 'user',
     };
 
     ProfileStorage.setProfile(user.id, profile);
     return user;
   },
 
-  validatePassword: (username: string, password: string): User | null => {
-    const users = getAllUsers();
-    const normalizedUsername = username.trim().toLowerCase();
-    const user = users.find(u => u.username === normalizedUsername);
-
-    if (!user) return null;
-
-    // Simple check for demo
-    if (btoa(password) === user.passwordHash) {
-      return sanitizeUser(user);
-    }
-
+  /** Local password check removed — use /api/auth/login. */
+  validatePassword: (_username: string, _password: string): User | null => {
     return null;
   },
 
   getUserById: (id: string): User | null => {
     const users = getAllUsers();
-    const user = users.find(u => u.id === id);
+    const user = users.find((u) => u.id === id);
     if (!user) return null;
-    return sanitizeUser(user);
+    return toSafeUser(user);
   },
 
   getAllUsers: (): User[] => {
-    const allStoredUsers = getAllUsers();
-    return allStoredUsers.map(sanitizeUser);
+    return getAllUsers().map(toSafeUser);
   },
 
   updateProfile: (userId: string, updates: Partial<Profile>): void => {
@@ -258,15 +287,46 @@ export const UserStorage = {
   },
 
   deleteUser: (userId: string): void => {
-    const users = getAllUsers().filter(u => u.id !== userId);
-    persist(STORAGE_KEYS.USERS, JSON.stringify(users));
+    const users = getAllUsers().filter((u) => u.id !== userId);
+    persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
     ProfileStorage.deleteProfile(userId);
   },
 };
 
-function getAllUsers(): StoredUser[] {
+function stripPasswordHash(user: Record<string, unknown> | User): Record<string, unknown> {
+  const { passwordHash: _drop, password_hash: _drop2, ...rest } = user as Record<
+    string,
+    unknown
+  >;
+  void _drop;
+  void _drop2;
+  return rest;
+}
+
+function toSafeUser(user: Record<string, unknown>): User {
+  const clean = stripPasswordHash(user);
+  return {
+    id: String(clean.id ?? ''),
+    email: String(clean.email ?? ''),
+    username: String(clean.username ?? ''),
+    mustChangePassword: Boolean(clean.mustChangePassword),
+  };
+}
+
+function getAllUsers(): any[] {
   const stored = localStorage.getItem(STORAGE_KEYS.USERS);
-  return stored ? JSON.parse(stored) as StoredUser[] : [];
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    // Soft-migrate: drop any legacy passwordHash from cache.
+    const cleaned = parsed.map((u) =>
+      u && typeof u === 'object' ? stripPasswordHash(u as Record<string, unknown>) : u,
+    );
+    return cleaned;
+  } catch {
+    return [];
+  }
 }
 
 // Profile storage
@@ -338,6 +398,29 @@ export function softReadBool(value: unknown): boolean {
   return Boolean(value);
 }
 
+/** Soft-read nullable boolean: missing/null/'' → null. */
+export function softReadNullableBool(value: unknown): boolean | null {
+  if (value == null || value === '') return null;
+  return softReadBool(value);
+}
+
+function softReadNullableNumber(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+function softReadAnprStatus(value: unknown): AnprStatus | null {
+  if (value === 'enabled' || value === 'disabled_by_configuration' || value === 'failed') {
+    return value;
+  }
+  return null;
+}
+
 function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
   const next: WeighingTicket = {
     ...ticket,
@@ -358,6 +441,18 @@ function normalizeTicket(ticket: WeighingTicket): WeighingTicket {
     ),
     auto_closed: softReadBool(
       (ticket as WeighingTicket & { auto_closed?: unknown }).auto_closed,
+    ),
+    anpr_plate_raw: softReadNullableString(
+      (ticket as WeighingTicket & { anpr_plate_raw?: unknown }).anpr_plate_raw,
+    ),
+    plate_confidence: softReadNullableNumber(
+      (ticket as WeighingTicket & { plate_confidence?: unknown }).plate_confidence,
+    ),
+    anpr_accepted: softReadNullableBool(
+      (ticket as WeighingTicket & { anpr_accepted?: unknown }).anpr_accepted,
+    ),
+    anpr_status: softReadAnprStatus(
+      (ticket as WeighingTicket & { anpr_status?: unknown }).anpr_status,
     ),
   };
   const mode = normalizeWeighingMode(ticket);
@@ -481,7 +576,10 @@ export const TicketStorage = {
   update: (
     id: string,
     updates: Partial<WeighingTicket>,
-    options?: { expectedVersion?: number },
+    options?: {
+      expectedVersion?: number;
+      auditOperator?: { id: string | null; name: string };
+    },
   ): WeighingTicket | null => {
     const tickets = getAllTickets();
     const index = tickets.findIndex((t) => t.id === id);
@@ -512,15 +610,50 @@ export const TicketStorage = {
     tickets[index] = merged;
     persist(STORAGE_KEYS.TICKETS, JSON.stringify(tickets));
 
-    if (!wasCompleted && merged.status === 'completed') {
+    const becomingCompleted = !wasCompleted && merged.status === 'completed';
+    const diffs = diffTicketFields(current, merged);
+    const at = becomingCompleted
+      ? merged.completed_at ?? new Date().toISOString()
+      : new Date().toISOString();
+    const operatorId =
+      options?.auditOperator?.id ?? merged.operator_id ?? current.operator_id ?? null;
+    const operatorName =
+      options?.auditOperator?.name ||
+      merged.operator_name ||
+      current.operator_name ||
+      '';
+
+    if (diffs.length > 0) {
+      TicketRevisionStorage.appendMany(
+        diffs.map((d) => ({
+          ticket_id: merged.id,
+          at,
+          operator_id: operatorId,
+          operator_name: operatorName,
+          field: d.field,
+          old_value: d.old_value,
+          new_value: d.new_value,
+        })),
+      );
+    }
+
+    if (becomingCompleted) {
       TicketAuditStorage.append({
         ticket_id: merged.id,
         action: 'completed',
-        at: merged.completed_at ?? new Date().toISOString(),
-        operator_name: merged.operator_name,
-        operator_id: merged.operator_id,
+        at,
+        operator_name: operatorName,
+        operator_id: operatorId,
       });
       applyVehicleLearningOnComplete(merged);
+    } else if (diffs.length > 0) {
+      TicketAuditStorage.append({
+        ticket_id: merged.id,
+        action: 'updated',
+        at,
+        operator_name: operatorName,
+        operator_id: operatorId,
+      });
     }
 
     return merged;
@@ -578,6 +711,43 @@ export const TicketAuditStorage = {
 
   getByTicketId(ticketId: string): TicketAuditEvent[] {
     return TicketAuditStorage.getAll().filter((e) => e.ticket_id === ticketId);
+  },
+};
+
+/** Field-level revisions (sync key app_ticket_revisions). */
+export const TicketRevisionStorage = {
+  ensureInitialized(): void {
+    if (localStorage.getItem(STORAGE_KEYS.TICKET_REVISIONS) === null) {
+      localStorage.setItem(STORAGE_KEYS.TICKET_REVISIONS, '[]');
+    }
+  },
+
+  getAll(): TicketRevision[] {
+    TicketRevisionStorage.ensureInitialized();
+    const stored = localStorage.getItem(STORAGE_KEYS.TICKET_REVISIONS);
+    if (!stored) return [];
+    try {
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
+  getByTicketId(ticketId: string): TicketRevision[] {
+    return TicketRevisionStorage.getAll()
+      .filter((r) => r.ticket_id === ticketId)
+      .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+  },
+
+  appendMany(revisions: Omit<TicketRevision, 'id'>[]): void {
+    if (revisions.length === 0) return;
+    TicketRevisionStorage.ensureInitialized();
+    const all = TicketRevisionStorage.getAll();
+    for (const rev of revisions) {
+      all.push({ id: crypto.randomUUID(), ...rev });
+    }
+    persist(STORAGE_KEYS.TICKET_REVISIONS, JSON.stringify(all));
   },
 };
 
@@ -668,7 +838,6 @@ export const VehicleDriversStorage = {
 export type ScaleRole = 'primary' | 'spare';
 export type ActiveScaleSet = 'primary' | 'spare';
 export type CameraMode = 'normal' | 'rotated_for_spare';
-export type AnprMode = 'enabled' | 'disabled_by_configuration' | 'failed';
 export type SwitchReason = 'repair' | 'cleaning' | 'verification' | 'other';
 export type CameraAck = 'rotated' | 'no_cameras';
 
@@ -1137,10 +1306,10 @@ export interface DictionaryEntry {
   default_price?: number | null;
   vehicle_brand?: string;
   vehicle_number?: string;
+  inn?: string;
   preferred_driver_name?: string | null;
   preferred_cargo_name?: string | null;
   preferred_shipper_name?: string | null;
-  inn?: string;
 }
 
 export const DICTIONARY_LABELS: Record<DictionaryTable, string> = {
@@ -1183,7 +1352,7 @@ export const DictionaryStorage = {
       }
       if (normalizedEntry.preferred_driver_name) {
         normalizedEntry.preferred_driver_name = formatPersonName(
-          normalizedEntry.preferred_driver_name,
+          String(normalizedEntry.preferred_driver_name),
         );
       }
     } else if (table === 'drivers') {
@@ -1311,6 +1480,8 @@ export interface AppSettings {
   manual_weight_reason_mode: ManualWeightReasonMode;
   /** Enable photo capture on gross/tare fix (full build). Default: false. */
   video_enabled: boolean;
+  /** Enable local ANPR (full build + model). Default: false until spike ≥ 50%. */
+  anpr_enabled: boolean;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
@@ -1347,6 +1518,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   scale_device_id: 'microsim-m0601',
   manual_weight_reason_mode: 'optional',
   video_enabled: false,
+  anpr_enabled: false,
 };
 
 export const PRINT_LAYOUT_LABELS: Record<PrintLayout, string> = {
@@ -1418,6 +1590,7 @@ export const SettingsStorage = {
         stored.manual_weight_reason_mode,
       ),
       video_enabled: stored.video_enabled === 'true',
+      anpr_enabled: stored.anpr_enabled === 'true',
     };
   },
 
@@ -1463,6 +1636,7 @@ export const SettingsStorage = {
       scale_device_id: next.scale_device_id,
       manual_weight_reason_mode: next.manual_weight_reason_mode,
       video_enabled: String(next.video_enabled),
+      anpr_enabled: String(next.anpr_enabled),
     };
     persist(STORAGE_KEYS.SETTINGS, JSON.stringify(flat));
     return next;
@@ -1496,18 +1670,21 @@ export async function clearAllDictionaries(): Promise<void> {
 export const initializeStorage = () => {
   if (hasStoredData()) {
     TicketAuditStorage.ensureInitialized();
+    TicketRevisionStorage.ensureInitialized();
     SitesStorage.ensureInitialized();
     ScalesStorage.ensureInitialized();
     SiteRuntimeStorage.ensureInitialized();
     SiteScaleSwitchesStorage.ensureInitialized();
+    // Soft-strip any legacy passwordHash left in localStorage.
+    const users = getAllUsers();
+    if (users.length > 0) {
+      persist(STORAGE_KEYS.USERS, JSON.stringify(users.map(stripPasswordHash)));
+    }
     return;
   }
 
-  try {
-    UserStorage.createUser('admin', 'admin123', 'Администратор');
-  } catch {
-    // Default admin user already exists
-  }
+  // Default admin is bootstrapped on the server (PBKDF2 + must_change_password).
+  // Do not create client-side password material.
 
   DictionaryStorage.add('vehicles', {
     name: 'А001АА',
@@ -1518,6 +1695,7 @@ export const initializeStorage = () => {
 
   SettingsStorage.set('org_name', 'Полигон отходов');
   TicketAuditStorage.ensureInitialized();
+  TicketRevisionStorage.ensureInitialized();
   SitesStorage.ensureInitialized();
   ScalesStorage.ensureInitialized();
   SiteRuntimeStorage.ensureInitialized();

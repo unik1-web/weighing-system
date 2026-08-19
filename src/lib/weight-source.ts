@@ -34,15 +34,19 @@ export interface TareAutofillResult {
 }
 
 /**
- * Resolve tare autofill from vehicle card or tara_default.
+ * Resolve tare autofill: vehicle card → last completed tare → tara_default.
  * Caller must already guard shouldAutofillTare / blocked / empty tare.
  */
 export function resolveTareAutofill(args: {
   defaultTareWeight: number | null | undefined;
+  lastCompletedTareWeight?: number | null | undefined;
   taraDefault: number;
 }): TareAutofillResult | null {
   if (args.defaultTareWeight != null) {
     return { tare_weight: args.defaultTareWeight, tare_source: 'dictionary' };
+  }
+  if (args.lastCompletedTareWeight != null) {
+    return { tare_weight: args.lastCompletedTareWeight, tare_source: 'dictionary' };
   }
   if (args.taraDefault > 0) {
     return { tare_weight: args.taraDefault, tare_source: 'default' };

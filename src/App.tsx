@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { AuthProvider, useAuth } from '@/hooks/useAuth';
 import { LoginPage } from '@/components/LoginPage';
 import { WeighingForm } from '@/components/WeighingForm';
@@ -10,6 +10,7 @@ import { ArchiveView } from '@/components/ArchiveView';
 import { VescomImportView } from '@/components/VescomImportView';
 import { MetraImportView } from '@/components/MetraImportView';
 import { WaImportView } from '@/components/WaImportView';
+import { ForceChangePasswordModal } from '@/components/ForceChangePasswordModal';
 import { printTicket } from '@/components/PrintAct';
 import { SettingsStorage } from '@/lib/storage';
 import type { WeighingTicket } from '@/lib/storage';
@@ -19,12 +20,24 @@ import { logger } from '@/lib/logger';
 
 type Tab = 'weighing' | 'journal' | 'archive' | 'reports' | 'dictionaries' | 'vescom' | 'metra' | 'wa' | 'settings';
 
+type HeaderDensity = {
+  showBrandText: boolean;
+  showUserName: boolean;
+  showTabLabels: boolean;
+};
+
+const HEADER_FULL: HeaderDensity = {
+  showBrandText: true,
+  showUserName: true,
+  showTabLabels: true,
+};
+
 function MainApp() {
   const { displayName, signOut, isAdmin } = useAuth();
   const [tab, setTab] = useState<Tab>('weighing');
   const [journalKey, setJournalKey] = useState(0);
+  const [settingsKey, setSettingsKey] = useState(0);
   const [completionTicketId, setCompletionTicketId] = useState<string | null>(null);
-  const [, setSettingsVersion] = useState(0);
 
   const [exiting, setExiting] = useState(false);
 
@@ -39,6 +52,14 @@ function MainApp() {
       await exitApplication();
       logger.info('app', 'Завершение работы приложения');
       window.close();
+      // Browsers refuse to close tabs the user opened manually.
+      window.setTimeout(() => {
+        document.title = 'Программа завершена';
+        document.body.innerHTML =
+          '<main style="font-family:system-ui,sans-serif;padding:2.5rem;text-align:center;color:#0f172a">' +
+          '<p style="font-size:1.125rem;margin:0 0 0.5rem">Программа завершена.</p>' +
+          '<p style="margin:0;color:#64748b">Закройте эту вкладку.</p></main>';
+      }, 200);
     } catch (err: unknown) {
       setExiting(false);
       const message = err instanceof Error ? err.message : 'Не удалось закрыть программу';
@@ -50,7 +71,7 @@ function MainApp() {
     setJournalKey((k) => k + 1);
   }, []);
 
-  const appSettings = SettingsStorage.getAppSettings();
+  const appSettings = useMemo(() => SettingsStorage.getAppSettings(), [settingsKey]);
 
   const handleSaved = useCallback(() => {
     setJournalKey((k) => k + 1);
@@ -104,67 +125,211 @@ function MainApp() {
     { id: 'settings', label: 'Настройки', icon: Settings },
   ];
 
-  const compactTabs = appSettings.nav_tab_mode === 'compact';
+  // Fit-based density: keep full tab labels whenever they fit; collapse brand/user first.
+  const [density, setDensity] = useState<HeaderDensity>(HEADER_FULL);
+  const headerRowRef = useRef<HTMLDivElement>(null);
+  const brandRef = useRef<HTMLDivElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const tabsMeasureRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const row = headerRowRef.current;
+    const brand = brandRef.current;
+    const actions = actionsRef.current;
+    const measure = tabsMeasureRef.current;
+    if (!row || !brand || !actions || !measure) return;
+
+    const GAP = 12;
+    const update = () => {
+      const rowWidth = row.clientWidth;
+      const tabsNeeded = measure.scrollWidth;
+
+      // Brand icon-only ≈ truck button; full brand measured via data attributes on children.
+      const brandIconEl = brand.querySelector('[data-brand-icon]') as HTMLElement | null;
+      const brandTextEl = brand.querySelector('[data-brand-text]') as HTMLElement | null;
+      const brandIconWidth = brandIconEl?.offsetWidth ?? 40;
+      // text node stays measurable even when visually collapsed (invisible/absolute).
+      const brandTextWidth = Math.max(brandTextEl?.scrollWidth ?? 0, 120);
+      const brandFullWidth = brandIconWidth + GAP + brandTextWidth;
+
+      const userNameEl = actions.querySelector('[data-user-name]') as HTMLElement | null;
+      const userChipEl = actions.querySelector('[data-user-chip]') as HTMLElement | null;
+      const powerBtn = actions.querySelector('[data-action-power]') as HTMLElement | null;
+      const logoutBtn = actions.querySelector('[data-action-logout]') as HTMLElement | null;
+      const userNameWidth = Math.max(userNameEl?.scrollWidth ?? 0, 48);
+      const userChipPad = 16;
+      const userChipIcon = 15 + (isAdmin ? 18 : 0);
+      const userChipFull = userChipPad + userChipIcon + 8 + userNameWidth + (isAdmin ? 28 : 0);
+      const userChipCompact = userChipPad + userChipIcon + (isAdmin ? 8 : 0);
+      const sideBtns =
+        (powerBtn?.offsetWidth ?? 36) + (logoutBtn?.offsetWidth ?? 36) + 8;
+      const actionsFullWidth = userChipFull + sideBtns + 8;
+      const actionsIconWidth = userChipCompact + sideBtns + 8;
+      // Prefer live actions width when currently expanded (more accurate padding).
+      const actionsWidthLive = Math.max(actions.offsetWidth, actionsIconWidth);
+
+      const fits = (brandW: number, actionsW: number) =>
+        tabsNeeded + brandW + actionsW + GAP * 2 <= rowWidth + 0.5;
+
+      if (fits(brandFullWidth, Math.max(actionsFullWidth, actionsWidthLive))) {
+        setDensity((prev) =>
+          prev.showBrandText && prev.showUserName && prev.showTabLabels
+            ? prev
+            : { showBrandText: true, showUserName: true, showTabLabels: true },
+        );
+        return;
+      }
+      if (fits(brandIconWidth, Math.max(actionsFullWidth, actionsWidthLive))) {
+        setDensity((prev) =>
+          !prev.showBrandText && prev.showUserName && prev.showTabLabels
+            ? prev
+            : { showBrandText: false, showUserName: true, showTabLabels: true },
+        );
+        return;
+      }
+      if (fits(brandIconWidth, actionsIconWidth)) {
+        setDensity((prev) =>
+          !prev.showBrandText && !prev.showUserName && prev.showTabLabels
+            ? prev
+            : { showBrandText: false, showUserName: false, showTabLabels: true },
+        );
+        return;
+      }
+      setDensity((prev) =>
+        !prev.showBrandText && !prev.showUserName && !prev.showTabLabels
+          ? prev
+          : { showBrandText: false, showUserName: false, showTabLabels: false },
+      );
+    };
+
+    update();
+    const ro = new ResizeObserver(() => update());
+    ro.observe(row);
+    ro.observe(measure);
+    return () => ro.disconnect();
+  }, [tabs.length, displayName, isAdmin]);
+
+  const brandTitle = 'Автомобильные весы';
+  const brandSubtitle =
+    appSettings.org_name && appSettings.org_name !== 'Полигон отходов'
+      ? `Полигон отходов · ${appSettings.org_name}`
+      : 'Полигон отходов';
 
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6">
-          <div className="flex h-16 items-center justify-between gap-2 lg:gap-4">
-            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-              <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-sm">
-                <Truck size={22} />
-              </div>
-              <div className="min-w-0 hidden min-[440px]:block">
-                <h1 className="text-sm sm:text-base font-bold text-slate-800 leading-tight">
-                  <span className="sm:hidden">Автовесы</span>
-                  <span className="hidden sm:inline">Автомобильные весы</span>
-                </h1>
-                <p className="hidden lg:block text-xs text-slate-500 truncate">
-                  Полигон отходов
-                  {appSettings.org_name && appSettings.org_name !== 'Полигон отходов' && (
-                    <> · {appSettings.org_name}</>
-                  )}
-                </p>
-              </div>
-            </div>
-
-            <nav className="flex max-w-[46vw] lg:max-w-none gap-1 rounded-xl bg-slate-100 p-1 overflow-x-auto">
+        <div className="mx-auto max-w-7xl px-3 sm:px-6">
+          <div ref={headerRowRef} className="relative flex h-14 items-center gap-2 sm:h-16 sm:gap-3">
+            {/* Invisible full-size tab strip for measuring label fit */}
+            <div
+              ref={tabsMeasureRef}
+              className="pointer-events-none invisible absolute left-0 top-0 -z-10 flex gap-1 p-1"
+              aria-hidden
+            >
               {tabs.map((t) => {
                 const Icon = t.icon;
                 return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    title={t.label}
-                    onClick={() => setTab(t.id)}
-                    className={`flex items-center rounded-lg py-2 text-xs sm:text-sm font-semibold transition whitespace-nowrap ${
-                      compactTabs
-                        ? 'justify-center gap-0 px-2.5'
-                        : 'justify-center gap-0 px-2.5 sm:px-3 lg:gap-2 lg:px-4'
-                    } ${tab === t.id ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                  <div
+                    key={`m-${t.id}`}
+                    className="flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold whitespace-nowrap"
                   >
                     <Icon size={16} />
-                    {!compactTabs && <span className="hidden lg:inline">{t.label}</span>}
-                  </button>
+                    <span>{t.label}</span>
+                  </div>
                 );
               })}
+            </div>
+
+            <div
+              ref={brandRef}
+              className="flex shrink-0 items-center gap-2 sm:gap-3"
+              title={`${brandTitle} — ${brandSubtitle}`}
+            >
+              <div
+                data-brand-icon
+                className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-blue-800 text-white shadow-sm sm:h-10 sm:w-10"
+              >
+                <Truck size={22} aria-hidden />
+              </div>
+              <div
+                data-brand-text
+                className={
+                  density.showBrandText
+                    ? 'min-w-0 max-w-[14rem]'
+                    : 'pointer-events-none invisible absolute left-0 top-0 -z-10 min-w-0 max-w-[14rem]'
+                }
+              >
+                <h1 className="text-base font-bold leading-tight text-slate-800">{brandTitle}</h1>
+                <p className="truncate text-xs text-slate-500">{brandSubtitle}</p>
+              </div>
+            </div>
+
+            <nav
+              className="min-w-0 flex-1 overflow-x-auto rounded-xl bg-slate-100 p-1"
+              aria-label="Разделы"
+            >
+              <div className="flex w-max min-w-full justify-start gap-0.5 sm:gap-1">
+                {tabs.map((t) => {
+                  const Icon = t.icon;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      title={t.label}
+                      aria-label={t.label}
+                      aria-current={tab === t.id ? 'page' : undefined}
+                      onClick={() => setTab(t.id)}
+                      className={`flex shrink-0 items-center justify-center rounded-lg py-2 text-sm font-semibold transition whitespace-nowrap ${
+                        density.showTabLabels ? 'gap-2 px-3' : 'gap-0 px-2.5'
+                      } ${
+                        tab === t.id
+                          ? 'bg-white text-blue-700 shadow-sm'
+                          : 'text-slate-600 hover:text-slate-800'
+                      }`}
+                    >
+                      <Icon size={16} aria-hidden />
+                      {density.showTabLabels ? <span>{t.label}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
             </nav>
 
-            <div className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center gap-2 rounded-lg bg-slate-100 px-2 sm:px-3 py-1.5 min-w-0">
-                <User size={15} className="text-slate-500" />
-                <span className="hidden min-[440px]:inline max-w-[88px] sm:max-w-[120px] truncate text-xs sm:text-sm font-medium text-slate-700">
+            <div ref={actionsRef} className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+              <div
+                data-user-chip
+                className={`flex items-center gap-2 rounded-lg bg-slate-100 ${
+                  density.showUserName ? 'px-3 py-1.5' : 'p-2'
+                }`}
+                title={displayName}
+                aria-label={displayName}
+              >
+                <User size={15} className="text-slate-500" aria-hidden />
+                <span
+                  data-user-name
+                  className={
+                    density.showUserName
+                      ? 'inline max-w-[8rem] truncate text-sm font-medium text-slate-700'
+                      : 'pointer-events-none invisible absolute -z-10 max-w-[8rem] truncate text-sm font-medium text-slate-700'
+                  }
+                >
                   {displayName}
                 </span>
                 {isAdmin && (
-                  <span className="hidden min-[440px]:flex items-center gap-0.5 rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                    <ShieldCheck size={10} /> АДМ
+                  <span
+                    className={`flex items-center gap-0.5 rounded-full bg-blue-600 text-[10px] font-bold text-white ${
+                      density.showUserName ? 'px-1.5 py-0.5' : 'p-1'
+                    }`}
+                    title="Администратор"
+                  >
+                    <ShieldCheck size={10} aria-hidden />
+                    {density.showUserName ? <span>АДМ</span> : null}
                   </span>
                 )}
               </div>
               <button
                 type="button"
+                data-action-power
                 onClick={handleExitApplication}
                 disabled={exiting}
                 className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
@@ -175,6 +340,7 @@ function MainApp() {
               </button>
               <button
                 type="button"
+                data-action-logout
                 onClick={signOut}
                 className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 text-slate-600 transition hover:bg-red-50 hover:text-red-600 hover:border-red-200"
                 title="Сменить пользователя"
@@ -210,7 +376,7 @@ function MainApp() {
         {tab === 'wa' && appSettings.wa_enabled && (
           <WaImportView onImported={handleImported} />
         )}
-        {tab === 'settings' && <SettingsView onSaved={() => setSettingsVersion((k) => k + 1)} />}
+        {tab === 'settings' && <SettingsView onSaved={() => setSettingsKey((k) => k + 1)} />}
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-4">
@@ -224,7 +390,7 @@ function MainApp() {
 }
 
 function AuthGate() {
-  const { session, loading } = useAuth();
+  const { session, loading, mustChangePassword } = useAuth();
 
   if (loading) {
     return (
@@ -238,7 +404,12 @@ function AuthGate() {
     return <LoginPage />;
   }
 
-  return <MainApp />;
+  return (
+    <>
+      <MainApp />
+      {mustChangePassword ? <ForceChangePasswordModal /> : null}
+    </>
+  );
 }
 
 export default function App() {
