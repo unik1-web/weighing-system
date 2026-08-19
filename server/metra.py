@@ -206,10 +206,12 @@ def load_metra_dictionaries(db_dir: str) -> dict[str, dict[int, str]]:
     if cached and cached[0] == signature:
         return cached[1]
 
+    # Metra ASNet (см. docs Metra 1C): TypeMerc=тип груза, TypeRecp=клиент/получатель,
+    # TypeCatr=поставщик (грузоотправитель), TypeOper=тип операции.
     data = {
         'merchants': _load_dictionary(db_dir, 'TypeMerc.DB', 'MerchNo', 'TypeMerch'),
         'recipients': _load_dictionary(db_dir, 'TypeRecp.DB', 'RecipNo', 'TypeRecip'),
-        'carriers': _load_dictionary(db_dir, 'TypeCatr.DB', 'CaterNo', 'TypeCater'),
+        'suppliers': _load_dictionary(db_dir, 'TypeCatr.DB', 'CaterNo', 'TypeCater'),
         'operations': _load_dictionary(db_dir, 'TypeOper.DB', 'OperNo', 'TypeOper'),
         'drivers': _load_metra_driver_dictionary(db_dir),
     }
@@ -253,6 +255,22 @@ def _collect_driver_names_from_weights(resolved: str) -> set[str]:
     finally:
         table.close()
     return names
+
+
+def _looks_like_organization_name(value: str) -> bool:
+    text = _clean_text(value)
+    if not text:
+        return False
+    lowered = text.casefold()
+    org_markers = (
+        'ооо ', 'ооо"', 'ооо«', 'оао ', 'зао ', 'пао ', 'ао ', 'фгуп', 'муп ', 'гуп ',
+        'ип ', 'ип.', ' ltd', ' llc', ' inc',
+    )
+    if any(marker in lowered for marker in org_markers):
+        return True
+    if lowered.startswith(('ооо', 'ип', 'ао', 'зао', 'пао')):
+        return True
+    return '«' in text or '"' in text
 
 
 def _looks_like_driver_name(value: str) -> bool:
@@ -316,13 +334,62 @@ def get_metra_dictionary_stats(db_dir: str) -> dict[str, int]:
 
 def metra_dictionary_warning(db_dir: str) -> str | None:
     stats = get_metra_dictionary_stats(db_dir)
-    if stats.get('recipients', 0) <= 2 or stats.get('carriers', 0) <= 2:
+    if stats.get('recipients', 0) <= 2 or stats.get('suppliers', 0) <= 2:
         return (
             'Справочники Metra (TypeRecp.DB / TypeCatr.DB) почти пусты — '
-            'получатель и перевозчик могут не заполняться. '
+            'получатель и поставщик (грузоотправитель) могут не заполняться. '
             'Обновите справочники в программе Metra или выполните «Импорт справочников».'
         )
     return None
+
+
+def _export_dictionary_buckets(dictionaries: dict[str, dict[int, str]]) -> dict[str, set[str]]:
+    """Map Metra Paradox dictionaries to weighing-system import buckets."""
+    cargos: set[str] = set()
+    shippers: set[str] = set()
+    receivers: set[str] = set()
+    drivers: set[str] = set()
+
+    for name in dictionaries.get('merchants', {}).values():
+        cleaned = _clean_text(name)
+        if cleaned:
+            cargos.add(cleaned)
+
+    for name in dictionaries.get('operations', {}).values():
+        cleaned = _clean_text(name)
+        if cleaned:
+            cargos.add(cleaned)
+
+    for name in dictionaries.get('recipients', {}).values():
+        cleaned = _clean_text(name)
+        if not cleaned:
+            continue
+        # На некоторых объектах в TypeRecp ошибочно заведены ФИО водителей.
+        if _looks_like_organization_name(cleaned):
+            receivers.add(cleaned)
+        elif _looks_like_driver_name(cleaned):
+            drivers.add(cleaned)
+        else:
+            receivers.add(cleaned)
+
+    for name in dictionaries.get('suppliers', {}).values():
+        cleaned = _clean_text(name)
+        if cleaned:
+            shippers.add(cleaned)
+
+    for name in dictionaries.get('drivers', {}).values():
+        for part in split_person_names(name):
+            cleaned = _clean_text(part)
+            if cleaned:
+                drivers.add(cleaned)
+
+    return {
+        'cargos': cargos,
+        'shippers': shippers,
+        'receivers': receivers,
+        'carriers': set(),
+        'drivers': drivers,
+    }
 
 
 def test_metra_connection(db_path: str) -> int:
@@ -348,38 +415,12 @@ def fetch_metra_dictionary_names(db_path: str) -> dict[str, list[str]]:
         raise FileNotFoundError(f'Каталог базы Metra не найден: {db_path}')
 
     dictionaries = load_metra_dictionaries(db_dir)
-    cargos = set()
-    shippers = set()
-    receivers = set()
-    carriers = set()
-    drivers = set()
-
-    for name in dictionaries['merchants'].values():
-        cleaned = _clean_text(name)
-        if cleaned:
-            cargos.add(cleaned)
-            shippers.add(cleaned)
-
-    for name in dictionaries['operations'].values():
-        cleaned = _clean_text(name)
-        if cleaned:
-            cargos.add(cleaned)
-
-    for name in dictionaries['recipients'].values():
-        cleaned = _clean_text(name)
-        if cleaned:
-            receivers.add(cleaned)
-
-    for name in dictionaries['carriers'].values():
-        cleaned = _clean_text(name)
-        if cleaned:
-            carriers.add(cleaned)
-
-    for name in dictionaries.get('drivers', {}).values():
-        for part in split_person_names(name):
-            cleaned = _clean_text(part)
-            if cleaned:
-                drivers.add(cleaned)
+    buckets = _export_dictionary_buckets(dictionaries)
+    cargos = buckets['cargos']
+    shippers = buckets['shippers']
+    receivers = buckets['receivers']
+    carriers = buckets['carriers']
+    drivers = buckets['drivers']
 
     vehicles: set[str] = set()
     resolved = resolve_metra_db_path(db_path)
@@ -469,9 +510,9 @@ def fetch_metra_items(db_path: str, date_str: str) -> list[dict]:
                 'trailer_number': trailer_number,
                 'driver_name': _resolve_driver_name(row, fields, dictionaries),
                 'cargo_name': _resolve_cargo_name(row, dictionaries),
-                'shipper_name': _lookup_name(dictionaries['merchants'], merch_no),
+                'shipper_name': _lookup_name(dictionaries['suppliers'], row['CaterNo']),
                 'receiver_name': _lookup_name(dictionaries['recipients'], row['RecipNo']),
-                'carrier_name': _lookup_name(dictionaries['carriers'], row['CaterNo']),
+                'carrier_name': DEFAULT_LABEL,
                 'price': price,
                 'gross_weight': _to_kg(brutto),
                 'tare_weight': _to_kg(tare),
