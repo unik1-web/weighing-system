@@ -57,7 +57,7 @@ from reo_client import (
     is_reo_test_successful,
     post_reo_import,
 )
-from scale_io import get_active_scale_context_from_db, get_scale_session
+from scale_io import get_active_scale_context_from_db, get_scale_session, list_serial_ports
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, 'frozen', False):
@@ -344,6 +344,11 @@ def scales_context():
     except Exception as exc:
         logger.exception('scales context failed')
         return error_response(f'Ошибка чтения комплекта весов: {exc}')
+
+
+@app.get('/api/scales/serial-ports')
+def scales_serial_ports():
+    return jsonify({'success': True, 'ports': list_serial_ports()})
 
 
 @app.get('/api/scales/status')

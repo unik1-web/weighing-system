@@ -20,6 +20,7 @@ import {
   type ScaleConnectionProfile as ScalesConnectionProfile,
   type ScaleTransportKind,
 } from './scales';
+import { normalizeSerialPath } from './scales/serial-path';
 import {
   normalizeManualWeightReasonMode,
   type ManualWeightReasonMode,
@@ -1188,7 +1189,7 @@ export const ScalesStorage = {
         parseMask: conn.parseMask,
         host: conn.host,
         tcpPort: conn.tcpPort,
-        serialPath: conn.serialPath,
+        serialPath: normalizeSerialPath(conn.serialPath),
       };
       return {
         ...scale,

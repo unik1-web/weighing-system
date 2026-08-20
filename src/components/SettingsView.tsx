@@ -77,6 +77,7 @@ import {
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 import { CameraSetupPreview } from '@/components/CameraSetupPreview';
+import { SerialPortSelect } from '@/components/SerialPortSelect';
 import {
   CameraDiscoverPanel,
   readCamerasSubTab,
@@ -1028,22 +1029,20 @@ export function SettingsView({ onSaved }: Props) {
                 )}
                 {(primaryScale.connection?.transport ?? 'web_serial') === 'serial' && (
                   <div className="sm:col-span-2">
-                    <label className={labelClass}>COM-порт (только локально / exe)</label>
-                    <input
-                      type="text"
+                    <label className={labelClass}>COM-порт (сервер / exe)</label>
+                    <SerialPortSelect
                       value={primaryScale.connection?.serialPath ?? ''}
-                      onChange={(e) => {
+                      onChange={(serialPath) => {
                         setPrimaryScale((prev) =>
-                          prev ? patchScaleConnection(prev, { serialPath: e.target.value }) : prev,
+                          prev ? patchScaleConnection(prev, { serialPath }) : prev,
                         );
                         setSaved(false);
                       }}
-                      placeholder="COM3"
-                      className={inputClass}
+                      inputClassName={inputClass}
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      Укажите порт как <strong>COM3</strong> (без пробела). Закройте другие программы на
-                      этом порту перед подключением.
+                      Выберите порт из списка или введите вручную (например COM3). Закройте другие
+                      программы на этом порту перед подключением.
                     </p>
                   </div>
                 )}

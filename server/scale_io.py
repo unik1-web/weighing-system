@@ -242,6 +242,31 @@ def normalize_serial_path(raw: Any) -> str:
     return s
 
 
+def list_serial_ports() -> list[dict[str, str]]:
+    """Enumerate local serial ports (COM on Windows)."""
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        return []
+
+    seen: set[str] = set()
+    result: list[dict[str, str]] = []
+    for port in list_ports.comports():
+        device = normalize_serial_path(port.device) or str(port.device).strip()
+        if not device or device in seen:
+            continue
+        seen.add(device)
+        result.append(
+            {
+                'device': device,
+                'description': (port.description or '').strip(),
+                'hwid': (port.hwid or '').strip(),
+            }
+        )
+    result.sort(key=lambda item: item['device'])
+    return result
+
+
 def parse_frame(adapter_id: str, line: str, connection: dict[str, Any]) -> Optional[dict[str, Any]]:
     aid = normalize_adapter_id(adapter_id)
     if aid == 'custom':
@@ -319,6 +344,8 @@ class ScaleBackendSession:
         self._connection: dict[str, Any] = {}
         self._last_reading: Optional[dict[str, Any]] = None
         self._error: Optional[str] = None
+        self._bytes_received = 0
+        self._last_raw_line: Optional[str] = None
         self._sock: Optional[socket.socket] = None
         self._serial: Optional[serial.Serial] = None
         self._thread: Optional[threading.Thread] = None
@@ -333,6 +360,8 @@ class ScaleBackendSession:
                 'transport': self._transport,
                 'last_reading': self._last_reading,
                 'error': self._error,
+                'bytes_received': self._bytes_received,
+                'last_raw_line': self._last_raw_line,
             }
 
     def reading(self) -> dict[str, Any]:
@@ -340,6 +369,9 @@ class ScaleBackendSession:
             return {
                 'reading': self._last_reading,
                 'connected': self._connected,
+                'bytes_received': self._bytes_received,
+                'last_raw_line': self._last_raw_line,
+                'error': self._error,
             }
 
     def disconnect(self) -> None:
@@ -356,6 +388,8 @@ class ScaleBackendSession:
             self._connection = {}
             self._last_reading = None
             self._error = None
+            self._bytes_received = 0
+            self._last_raw_line = None
         if sock is not None:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
@@ -391,7 +425,9 @@ class ScaleBackendSession:
         if overrides.get('tcpPort') is not None:
             connection['tcpPort'] = overrides['tcpPort']
         if overrides.get('serialPath'):
-            connection['serialPath'] = overrides['serialPath']
+            connection['serialPath'] = normalize_serial_path(overrides['serialPath'])
+        elif connection.get('serialPath'):
+            connection['serialPath'] = normalize_serial_path(connection['serialPath'])
 
         adapter_id = ctx['adapter_id']
         self._validate_custom_connection(adapter_id, connection)
@@ -435,6 +471,8 @@ class ScaleBackendSession:
             self._connection = connection
             self._last_reading = None
             self._error = None
+            self._bytes_received = 0
+            self._last_raw_line = None
             self._stop.clear()
 
         self._thread = threading.Thread(
@@ -473,6 +511,15 @@ class ScaleBackendSession:
         except SerialException as exc:
             raise OSError(f'Не удалось открыть {port_path}: {exc}') from exc
 
+        try:
+            ser.dtr = True
+            ser.rts = True
+            reset = getattr(ser, 'reset_input_buffer', None)
+            if callable(reset):
+                reset()
+        except SerialException:
+            pass
+
         with self._lock:
             self._serial = ser
             self._connected = True
@@ -482,6 +529,8 @@ class ScaleBackendSession:
             self._connection = connection
             self._last_reading = None
             self._error = None
+            self._bytes_received = 0
+            self._last_raw_line = None
             self._stop.clear()
 
         self._thread = threading.Thread(
@@ -498,31 +547,87 @@ class ScaleBackendSession:
             'serialPath': port_path,
         }
 
-    def _process_buffer(self, buffer: str) -> str:
+    def _handle_line(self, line: str) -> None:
+        with self._lock:
+            self._last_raw_line = line
+        try:
+            reading = parse_frame(
+                self._adapter_id or 'microsim-m0601',
+                line,
+                self._connection,
+            )
+        except ValueError as exc:
+            with self._lock:
+                self._error = str(exc)
+            return
+        if reading:
+            with self._lock:
+                self._last_reading = reading
+                self._error = None
+
+    def _extract_lines(self, buffer: str) -> tuple[list[str], str]:
         term = self._connection.get('lineTerminator') or '\r\n'
-        while True:
-            idx = buffer.find(term)
-            if idx == -1:
-                break
-            line = buffer[:idx].strip()
-            buffer = buffer[idx + len(term) :]
-            if not line:
-                continue
-            try:
-                reading = parse_frame(
-                    self._adapter_id or 'microsim-m0601',
-                    line,
-                    self._connection,
-                )
-            except ValueError as exc:
-                with self._lock:
-                    self._error = str(exc)
-                continue
-            if reading:
-                with self._lock:
-                    self._last_reading = reading
-                    self._error = None
+        lines: list[str] = []
+
+        if term:
+            while True:
+                idx = buffer.find(term)
+                if idx == -1:
+                    break
+                line = buffer[:idx].strip()
+                buffer = buffer[idx + len(term) :]
+                if line:
+                    lines.append(line)
+
+        if self._transport == 'serial' and buffer:
+            while True:
+                match = re.search(r'[\r\n]', buffer)
+                if not match:
+                    break
+                line = buffer[: match.start()].strip()
+                buffer = buffer[match.end() :]
+                if line:
+                    lines.append(line)
+
+        return lines, buffer
+
+    def _try_parse_tail(self, buffer: str) -> str:
+        if self._transport != 'serial':
+            return buffer
+        candidate = buffer.strip()
+        if len(candidate) < 3:
+            return buffer
+        try:
+            reading = parse_frame(
+                self._adapter_id or 'microsim-m0601',
+                candidate,
+                self._connection,
+            )
+        except ValueError:
+            return buffer
+        if reading:
+            with self._lock:
+                self._last_reading = reading
+                self._last_raw_line = candidate
+                self._error = None
+            return ''
         return buffer
+
+    def _process_buffer(self, buffer: str) -> str:
+        lines, buffer = self._extract_lines(buffer)
+        for line in lines:
+            self._handle_line(line)
+        if self._transport == 'serial' and buffer:
+            buffer = self._try_parse_tail(buffer)
+        return buffer
+
+    def _ingest_chunk(self, chunk: bytes, buffer: str) -> str:
+        if not chunk:
+            return buffer
+        with self._lock:
+            self._bytes_received += len(chunk)
+        buffer += chunk.decode('utf-8', errors='replace')
+        return self._process_buffer(buffer)
 
     def _read_loop_tcp(self) -> None:
         buffer = ''
@@ -534,8 +639,7 @@ class ScaleBackendSession:
                 chunk = sock.recv(4096)
                 if not chunk:
                     break
-                buffer += chunk.decode('utf-8', errors='replace')
-                buffer = self._process_buffer(buffer)
+                buffer = self._ingest_chunk(chunk, buffer)
             except socket.timeout:
                 continue
             except OSError as exc:
@@ -557,8 +661,7 @@ class ScaleBackendSession:
                 chunk = ser.read(4096)
                 if not chunk:
                     continue
-                buffer += chunk.decode('utf-8', errors='replace')
-                buffer = self._process_buffer(buffer)
+                buffer = self._ingest_chunk(chunk, buffer)
             except SerialException as exc:
                 with self._lock:
                     self._error = f'Ошибка COM: {exc}'

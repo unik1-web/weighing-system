@@ -36,7 +36,9 @@ export {
   connectBackendScale,
   disconnectBackendScale,
   fetchScaleReading,
+  fetchSerialPorts,
 } from './backend-client';
+export type { SerialPortInfo } from './backend-client';
 export type {
   ScaleContextResponse,
   ScaleStatusResponse,
