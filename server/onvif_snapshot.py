@@ -104,6 +104,7 @@ def _post_soap(
             HTTPBasicAuth(username, password),
             None,
         ]
+    connect_failed = False
     for auth in auth_attempts:
         try:
             resp = requests.post(
@@ -121,8 +122,16 @@ def _post_soap(
             if 'Fault' in text and 'GetSnapshotUriResponse' not in text and 'GetProfilesResponse' not in text:
                 continue
             return text
+        except requests.exceptions.ConnectTimeout:
+            connect_failed = True
+            break
+        except requests.exceptions.ConnectionError:
+            connect_failed = True
+            break
         except requests.RequestException:
             continue
+    if connect_failed:
+        return None
     return None
 
 

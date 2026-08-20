@@ -17,6 +17,12 @@ def _reset_sessions():
     discover.reset_sessions_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _preflight_ports_open(monkeypatch):
+    """Discover unit tests do not open real sockets; treat ports as reachable."""
+    monkeypatch.setattr(discover, 'probe_tcp', lambda host, port, timeout=1.5: True)
+
+
 def test_ssrf_rejects_public_ip():
     with pytest.raises(ValueError, match='частных'):
         discover.assert_discover_target_allowed('8.8.8.8')
@@ -273,3 +279,76 @@ def test_discover_wall_clock_partial(api_client):
 def test_unknown_session_404(api_client):
     resp = api_client.get('/api/cameras/discover/nonexistent')
     assert resp.status_code == 404
+
+
+def test_probe_tcp_refuses_closed(monkeypatch):
+    monkeypatch.setattr(
+        discover,
+        'probe_tcp',
+        lambda host, port, timeout=1.5: False,
+    )
+    assert discover.probe_tcp('10.0.0.1', 80) is False
+
+
+def test_discover_preflight_both_ports_down(api_client, monkeypatch):
+    monkeypatch.setattr(discover, 'probe_tcp', lambda host, port, timeout=1.5: False)
+    start = api_client.post(
+        '/api/cameras/discover',
+        json={'ip': '192.168.1.8', 'username': 'admin', 'password': 'x'},
+    )
+    assert start.status_code == 200
+    sid = start.get_json()['session_id']
+    final = None
+    for _ in range(40):
+        final = api_client.get(f'/api/cameras/discover/{sid}').get_json()
+        if final['status'] != 'running':
+            break
+        time.sleep(0.05)
+    assert final is not None
+    assert final['status'] == 'failed'
+    assert 'недоступен' in (final.get('message') or '')
+    assert final.get('candidates') == []
+
+
+def test_discover_preflight_http_down_tries_rtsp_only(api_client, monkeypatch):
+    def fake_probe(host, port, timeout=1.5):
+        return int(port) == 554
+
+    monkeypatch.setattr(discover, 'probe_tcp', fake_probe)
+
+    def boom_http(_url: str) -> bytes:
+        raise AssertionError('HTTP must not be probed when port is down')
+
+    def ok_rtsp(url: str) -> bytes:
+        if '/h264' in url or 'stream1' in url:
+            return JPEG_MINIMAL
+        raise RuntimeError('no')
+
+    with (
+        patch('camera_discover.grab_frame_http', side_effect=boom_http),
+        patch('camera_discover.grab_frame_rtsp', side_effect=ok_rtsp),
+        patch('camera_discover._opencv_available', return_value=True),
+        patch('camera_discover.save_tmp_snapshot', return_value='Photo/tmp/rtsp.jpg'),
+        patch('camera_discover._try_onvif_snapshot', return_value=None),
+    ):
+        start = api_client.post(
+            '/api/cameras/discover',
+            json={
+                'ip': '192.168.1.8',
+                'username': 'admin',
+                'password': 'pass',
+                'brand': 'generic',
+            },
+        )
+        sid = start.get_json()['session_id']
+        final = None
+        for _ in range(50):
+            final = api_client.get(f'/api/cameras/discover/{sid}').get_json()
+            if final['status'] != 'running':
+                break
+            time.sleep(0.05)
+    assert final is not None
+    assert final['status'] == 'done'
+    assert final['candidates']
+    assert all(c['kind'] == 'rtsp' for c in final['candidates'])
+    assert 'HTTP' in (final.get('message') or '')
