@@ -29,6 +29,7 @@ import {
   type ScaleAdapterId,
   type ScaleTransportKind,
 } from './scales';
+import { normalizeSerialPath } from './scales/serial-path';
 import { logger } from './logger';
 
 export type {
@@ -117,6 +118,9 @@ export function normalizeScaleConnection(
     stopBits,
     lineTerminator:
       typeof src.lineTerminator === 'string' ? src.lineTerminator : defaults.lineTerminator,
+    serialPath: normalizeSerialPath(src.serialPath ?? defaults.serialPath),
+    pollCommand:
+      typeof src.pollCommand === 'string' ? src.pollCommand : (defaults.pollCommand ?? ''),
   };
 }
 

@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useScale } from '@/hooks/useScale';
-import { ADAPTER_LIST, WebSerialTransport, type ScaleDeviceId } from '@/lib/scales';
-import { getActiveScaleContext } from '@/lib/site-runtime';
+import { ADAPTER_LIST, WebSerialTransport, fetchScaleReading, type ScaleDeviceId } from '@/lib/scales';
+import { normalizeSerialPath } from '@/lib/scales/serial-path';
+import { getActiveScaleContext, upsertScale } from '@/lib/site-runtime';
 import { isCaptureAllowed } from '@/lib/weighing-mode';
+import { SerialPortSelect } from '@/components/SerialPortSelect';
 import { Usb, Power, Activity, AlertCircle, ChevronDown } from 'lucide-react';
 
 interface Props {
@@ -29,6 +31,8 @@ export function ScalePanel({
 }: Props) {
   const { reading, connected, error, connect, disconnect } = useScale();
   const [webSerialSupported] = useState(() => WebSerialTransport.isSupported());
+  const [serialPath, setSerialPath] = useState('');
+  const [ioHint, setIoHint] = useState<string | null>(null);
   const canCapture = !!reading && isCaptureAllowed(reading.stable, stableMode);
 
   const transport = useMemo(() => {
@@ -39,8 +43,62 @@ export function ScalePanel({
     }
   }, [deviceId, connected]);
 
+  useEffect(() => {
+    if (transport !== 'serial') return;
+    try {
+      const ctx = getActiveScaleContext();
+      setSerialPath(normalizeSerialPath(ctx.activeScale.connection.serialPath) || '');
+    } catch {
+      setSerialPath('');
+    }
+  }, [transport, deviceId]);
+
+  useEffect(() => {
+    if (!connected || reading) {
+      setIoHint(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const res = await fetchScaleReading();
+          if (!res.connected || res.reading) return;
+          const bytes = res.bytes_received ?? 0;
+          if (bytes === 0) {
+            setIoHint(
+              'Порт открыт, но байты не приходят. Закройте другую программу на COM3. Для Микросим: PU.6=1 (копия индикатора) или оставьте команду запроса $. DTR должен быть включён (уже).',
+            );
+            return;
+          }
+          if (res.last_raw_line) {
+            setIoHint(
+              `Данные приходят (${bytes} байт), но вес не разобран. Последняя строка: «${res.last_raw_line.slice(0, 60)}». Для Микросим проверьте окончание строки \\r в настройках.`,
+            );
+            return;
+          }
+          setIoHint(`Порт открыт, получено ${bytes} байт — ожидание полной строки от весов.`);
+        } catch {
+          /* ignore */
+        }
+      })();
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [connected, reading]);
+
   const needsWebSerial = transport === 'web_serial';
-  const canConnect = needsWebSerial ? webSerialSupported : true;
+  const usesBackendSerial = transport === 'serial';
+  const canConnect = needsWebSerial ? webSerialSupported : usesBackendSerial ? !!normalizeSerialPath(serialPath) : true;
+
+  const handleConnect = useCallback(async () => {
+    const ctx = getActiveScaleContext();
+    const connection = usesBackendSerial
+      ? { ...ctx.activeScale.connection, serialPath: normalizeSerialPath(serialPath) }
+      : ctx.activeScale.connection;
+    if (usesBackendSerial) {
+      upsertScale({ ...ctx.activeScale, connection });
+    }
+    await connect(ctx.adapter_id, connection);
+  }, [connect, serialPath, usesBackendSerial]);
 
   useEffect(() => {
     onReadingChange?.(reading ? reading.weight : null);
@@ -83,6 +141,17 @@ export function ScalePanel({
         </div>
       </div>
 
+      {usesBackendSerial && (
+        <div className="mb-4">
+          <label className="block text-xs font-medium text-slate-600 mb-1">COM-порт</label>
+          <SerialPortSelect
+            value={serialPath}
+            onChange={setSerialPath}
+            disabled={connected}
+          />
+        </div>
+      )}
+
       <div className="mb-4 rounded-xl bg-slate-900 px-4 py-5 font-mono">
         <div className="flex items-end justify-between">
           <div className="text-4xl font-bold tabular-nums text-emerald-400">
@@ -99,6 +168,13 @@ export function ScalePanel({
           )}
         </div>
       </div>
+
+      {ioHint && !error && (
+        <div className="mb-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
+          <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <span>{ioHint}</span>
+        </div>
+      )}
 
       {error && (
         <div className="mb-3 flex items-start gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
@@ -117,7 +193,7 @@ export function ScalePanel({
       <div className="flex gap-2">
         {!connected ? (
           <button
-            onClick={() => connect()}
+            onClick={() => void handleConnect()}
             disabled={!canConnect}
             className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
           >

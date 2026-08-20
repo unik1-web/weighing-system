@@ -35,6 +35,8 @@ export interface ScaleConnectionProfile {
   host?: string;
   tcpPort?: number;
   serialPath?: string;
+  /** Request command sent on serial, e.g. "$" or "W\\r". Empty = adapter default / probe. */
+  pollCommand?: string;
 }
 
 export interface ScaleAdapter {

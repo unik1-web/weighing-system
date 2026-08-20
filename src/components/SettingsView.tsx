@@ -77,6 +77,7 @@ import {
 import { PathBrowserModal } from '@/components/PathBrowserModal';
 import { MultiSelectDropdown } from '@/components/MultiSelectDropdown';
 import { CameraSetupPreview } from '@/components/CameraSetupPreview';
+import { SerialPortSelect } from '@/components/SerialPortSelect';
 import {
   CameraDiscoverPanel,
   readCamerasSubTab,
@@ -88,7 +89,7 @@ const LAYOUT_OPTIONS: PrintLayout[] = ['act', 'receipt'];
 const TRANSPORT_OPTIONS: { id: ScaleTransportKind; label: string }[] = [
   { id: 'web_serial', label: 'Web Serial (браузер)' },
   { id: 'tcp', label: 'TCP (сервер)' },
-  { id: 'serial', label: 'Serial COM (сервер, задел)' },
+  { id: 'serial', label: 'Serial COM (сервер / exe)' },
 ];
 
 const SETTINGS_TAB_IDS = ['org', 'site', 'cameras', 'weighing', 'integrations', 'data'] as const;
@@ -1028,21 +1029,41 @@ export function SettingsView({ onSaved }: Props) {
                 )}
                 {(primaryScale.connection?.transport ?? 'web_serial') === 'serial' && (
                   <div className="sm:col-span-2">
-                    <label className={labelClass}>COM-порт (только локально / exe)</label>
-                    <input
-                      type="text"
+                    <label className={labelClass}>COM-порт (сервер / exe)</label>
+                    <SerialPortSelect
                       value={primaryScale.connection?.serialPath ?? ''}
-                      onChange={(e) => {
+                      onChange={(serialPath) => {
                         setPrimaryScale((prev) =>
-                          prev ? patchScaleConnection(prev, { serialPath: e.target.value }) : prev,
+                          prev ? patchScaleConnection(prev, { serialPath }) : prev,
                         );
                         setSaved(false);
                       }}
-                      placeholder="COM3"
+                      inputClassName={inputClass}
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Выберите порт из списка. Закройте программу «Сеть автомобильных весов» — COM
+                      может быть открыт только одной программой.
+                    </p>
+                  </div>
+                )}
+                {(primaryScale.connection?.transport ?? 'web_serial') === 'serial' && (
+                  <div className="sm:col-span-2">
+                    <label className={labelClass}>Команда запроса веса</label>
+                    <input
+                      type="text"
+                      value={primaryScale.connection?.pollCommand ?? '$'}
+                      onChange={(e) => {
+                        setPrimaryScale((prev) =>
+                          prev ? patchScaleConnection(prev, { pollCommand: e.target.value }) : prev,
+                        );
+                        setSaved(false);
+                      }}
+                      placeholder="$"
                       className={inputClass}
                     />
-                    <p className="mt-1 text-xs text-amber-700">
-                      Транспорт serial пока не реализован на сервере (ответ 501).
+                    <p className="mt-1 text-xs text-gray-500">
+                      Микросим сам не шлёт вес при PU.6=0. По умолчанию шлём <code>$</code>. Если нет
+                      данных — на приборе поставьте PU.6=1 (копия индикатора) или оставьте запрос.
                     </p>
                   </div>
                 )}

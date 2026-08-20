@@ -25,6 +25,20 @@ export interface ScaleReadingResponse {
   success: boolean;
   reading: ScaleReading | null;
   connected: boolean;
+  bytes_received?: number;
+  last_raw_line?: string | null;
+  error?: string | null;
+}
+
+export interface SerialPortInfo {
+  device: string;
+  description: string;
+  hwid: string;
+}
+
+export async function fetchSerialPorts(): Promise<SerialPortInfo[]> {
+  const res = await apiGet<{ success: boolean; ports: SerialPortInfo[] }>('/api/scales/serial-ports');
+  return res.ports ?? [];
 }
 
 export async function fetchScaleContext(): Promise<ScaleContextResponse> {
