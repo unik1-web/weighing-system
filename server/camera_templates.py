@@ -10,6 +10,7 @@ BRAND_LABELS: dict[str, str] = {
     'dahua': 'Dahua',
     'axis': 'Axis',
     'uniview': 'Uniview',
+    'iqr': 'IQR / ONVIF',
     'generic': 'Generic / fallback',
 }
 
@@ -92,6 +93,85 @@ TEMPLATES: list[dict[str, Any]] = [
         'url_pattern': 'http://{user}:{password}@{ip}:{http_port}/images/snapshot.jpg',
         'popular': True,
     },
+    # IQR / Chinese ONVIF OEM (53X13_32M, GRAIN-V01, Xiongmai/HiSilicon clones)
+    {
+        'id': 'iqr-webcapture-snap',
+        'brand': 'iqr',
+        'label': 'webcapture.jpg?command=snap',
+        'kind': 'http_snapshot',
+        'url_pattern': (
+            'http://{user}:{password}@{ip}:{http_port}'
+            '/webcapture.jpg?command=snap&channel=1'
+        ),
+        'popular': True,
+    },
+    {
+        'id': 'iqr-onvif-http-snapshot',
+        'brand': 'iqr',
+        'label': 'onvif-http/snapshot',
+        'kind': 'http_snapshot',
+        'url_pattern': 'http://{user}:{password}@{ip}:{http_port}/onvif-http/snapshot',
+        'popular': True,
+    },
+    {
+        'id': 'iqr-tmpfs-auto',
+        'brand': 'iqr',
+        'label': 'tmpfs/auto.jpg',
+        'kind': 'http_snapshot',
+        'url_pattern': 'http://{user}:{password}@{ip}:{http_port}/tmpfs/auto.jpg',
+        'popular': True,
+    },
+    {
+        'id': 'iqr-snap-jpg',
+        'brand': 'iqr',
+        'label': 'snap.jpg',
+        'kind': 'http_snapshot',
+        'url_pattern': 'http://{user}:{password}@{ip}:{http_port}/snap.jpg',
+        'popular': True,
+    },
+    {
+        'id': 'iqr-cgi-images',
+        'brand': 'iqr',
+        'label': 'cgi-bin/images_cgi',
+        'kind': 'http_snapshot',
+        'url_pattern': (
+            'http://{user}:{password}@{ip}:{http_port}'
+            '/cgi-bin/images_cgi?channel=0'
+        ),
+        'popular': False,
+    },
+    {
+        'id': 'iqr-image-jpeg-cgi',
+        'brand': 'iqr',
+        'label': 'image/jpeg.cgi',
+        'kind': 'http_snapshot',
+        'url_pattern': 'http://{user}:{password}@{ip}:{http_port}/image/jpeg.cgi',
+        'popular': False,
+    },
+    {
+        'id': 'iqr-rtsp-stream1',
+        'brand': 'iqr',
+        'label': 'Streaming/Channels/101',
+        'kind': 'rtsp',
+        'url_pattern': 'rtsp://{user}:{password}@{ip}:{rtsp_port}/Streaming/Channels/101',
+        'popular': False,
+    },
+    {
+        'id': 'iqr-rtsp-h264',
+        'brand': 'iqr',
+        'label': 'h264/ch1/main/av_stream',
+        'kind': 'rtsp',
+        'url_pattern': 'rtsp://{user}:{password}@{ip}:{rtsp_port}/h264/ch1/main/av_stream',
+        'popular': False,
+    },
+    {
+        'id': 'iqr-rtsp-onvif',
+        'brand': 'iqr',
+        'label': 'onvif1',
+        'kind': 'rtsp',
+        'url_pattern': 'rtsp://{user}:{password}@{ip}:{rtsp_port}/onvif1',
+        'popular': False,
+    },
     # Generic fallback
     {
         'id': 'generic-http-snapshot-jpg',
@@ -130,7 +210,7 @@ TEMPLATES: list[dict[str, Any]] = [
 
 def list_brands() -> list[dict[str, str]]:
     """Return brand catalog for UI (without virtual «unknown» item)."""
-    order = ['hikvision', 'dahua', 'axis', 'uniview', 'generic']
+    order = ['iqr', 'hikvision', 'dahua', 'axis', 'uniview', 'generic']
     return [{'id': bid, 'label': BRAND_LABELS[bid]} for bid in order]
 
 
@@ -179,6 +259,8 @@ def build_attempt_plan(
     brand_norm = (brand or '').strip().lower() or None
     if brand_norm in ('unknown', 'none', ''):
         brand_norm = None
+    if brand_norm in ('onvif', 'iqeye', 'iq'):
+        brand_norm = 'iqr'
 
     if brand_norm:
         pool = [t for t in TEMPLATES if t['brand'] == brand_norm]
