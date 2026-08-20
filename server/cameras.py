@@ -27,6 +27,9 @@ JPEG_QUALITY = 85
 MAX_WIDTH = 1920
 CONNECT_TIMEOUT = 2.0
 READ_TIMEOUT = 5.0
+# Dahua / NETSurveillance RTSP often needs >2s to open (UDP→TCP fallback).
+RTSP_OPEN_TIMEOUT = 10.0
+RTSP_READ_TIMEOUT = 8.0
 PER_CAMERA_TIMEOUT = 5.0
 # Live monitor snapshots (~2–4 s each) often overlap ticket capture; keep headroom
 # for two slow HTTP cameras under contention.
@@ -231,6 +234,41 @@ def grab_frame_http(url: str) -> bytes:
     raise RuntimeError('Не удалось получить HTTP snapshot')
 
 
+def normalize_stream_url(url: str) -> str:
+    """Normalize capture URL: catch comma-IPs; make empty password explicit (user:@host).
+
+    OpenCV/FFmpeg often fail on ``rtsp://admin@host/...`` (password=None) while
+    ``rtsp://admin:@host/...`` (empty password) works for cameras with blank auth.
+    """
+    from urllib.parse import quote, unquote, urlparse, urlunparse
+
+    raw = (url or '').strip()
+    if not raw:
+        return raw
+    # Common typo: 192.168,1,3 instead of 192.168.1.3
+    authority = raw.split('://', 1)[-1].split('/', 1)[0]
+    if ',' in authority:
+        raise ValueError(
+            'В URL IP с запятыми вместо точек (например 192.168,1,3). '
+            'Замените на точки: 192.168.1.3'
+        )
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.hostname:
+        return raw
+    if parsed.username is None:
+        return raw
+    # password is None for "user@host"; keep existing "user:pass@" / "user:@" as-is.
+    if parsed.password is not None:
+        return raw
+    user_q = quote(unquote(parsed.username), safe='')
+    host = parsed.hostname
+    port = f':{parsed.port}' if parsed.port else ''
+    netloc = f'{user_q}:@{host}{port}'
+    return urlunparse(
+        (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
 def grab_frame_rtsp(url: str) -> bytes:
     try:
         import cv2
@@ -239,16 +277,28 @@ def grab_frame_rtsp(url: str) -> bytes:
             'RTSP недоступен: OpenCV не установлен (полная сборка с opencv-python-headless)'
         ) from exc
 
-    cap = cv2.VideoCapture(url)
+    stream_url = normalize_stream_url(url)
+    # Prefer TCP — OEM/Dahua NETSurveillance often drops UDP RTSP on Windows.
+    prev_opts = os.environ.get('OPENCV_FFMPEG_CAPTURE_OPTIONS')
+    os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
+    cap = None
     try:
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(CONNECT_TIMEOUT * 1000))
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, int(READ_TIMEOUT * 1000))
-    except Exception:
-        pass
-    if not cap.isOpened():
-        cap.release()
-        raise RuntimeError('Не удалось открыть RTSP поток')
-    try:
+        try:
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+        except Exception:
+            cap = cv2.VideoCapture(stream_url)
+        try:
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(RTSP_OPEN_TIMEOUT * 1000))
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, int(RTSP_READ_TIMEOUT * 1000))
+        except Exception:
+            pass
+        if not cap.isOpened():
+            raise RuntimeError(
+                'Не удалось открыть RTSP поток '
+                f'(таймаут {int(RTSP_OPEN_TIMEOUT)} с, TCP). '
+                'Проверьте URL/порт 554 или используйте HTTP snapshot '
+                '(cgi-bin/snapshot.cgi).'
+            )
         ok, frame = cap.read()
         if not ok or frame is None:
             raise RuntimeError('Не удалось прочитать кадр RTSP')
@@ -261,7 +311,12 @@ def grab_frame_rtsp(url: str) -> bytes:
             raise RuntimeError('Ошибка кодирования JPEG')
         return encoded.tobytes()
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
+        if prev_opts is None:
+            os.environ.pop('OPENCV_FFMPEG_CAPTURE_OPTIONS', None)
+        else:
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = prev_opts
 
 
 def grab_frame(camera: dict[str, Any]) -> bytes:
@@ -271,7 +326,7 @@ def grab_frame(camera: dict[str, Any]) -> bytes:
     kind = _detect_kind(url, camera.get('capture_kind'))
     if kind == 'rtsp':
         return grab_frame_rtsp(url)
-    return grab_frame_http(url)
+    return grab_frame_http(normalize_stream_url(url))
 
 
 def list_enabled_cameras(site_id: str) -> list[dict[str, Any]]:
