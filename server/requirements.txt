@@ -4,3 +4,4 @@ requests>=2.31.0
 fdb>=2.0.0
 pypxlib>=2.5
 opencv-python-headless>=4.8
+pyserial>=3.5

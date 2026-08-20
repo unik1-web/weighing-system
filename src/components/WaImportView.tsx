@@ -33,7 +33,6 @@ interface ViewState {
   importing: boolean;
   error: string | null;
   success: string | null;
-  journalVersion: number;
 }
 
 type ViewAction =
@@ -44,7 +43,7 @@ type ViewAction =
   | { type: 'toggle_all'; keys: string[] }
   | { type: 'toggle_item'; key: string; checked: boolean }
   | { type: 'import_start' }
-  | { type: 'import_success'; count: number; journalVersion: number }
+  | { type: 'import_success'; count: number }
   | { type: 'import_error'; error: string }
   | { type: 'clear_messages' };
 
@@ -56,7 +55,6 @@ const initialState: ViewState = {
   importing: false,
   error: null,
   success: null,
-  journalVersion: 0,
 };
 
 function viewReducer(state: ViewState, action: ViewAction): ViewState {
@@ -96,7 +94,6 @@ function viewReducer(state: ViewState, action: ViewAction): ViewState {
       return {
         ...state,
         importing: false,
-        journalVersion: action.journalVersion,
         success: `Импортировано записей: ${action.count}`,
       };
     case 'import_error':
@@ -188,22 +185,17 @@ export function WaImportView({ onImported }: Props) {
 
   const selectedKeySet = useMemo(() => new Set(state.selectedKeys), [state.selectedKeys]);
 
-  const existingKeys = useMemo(() => {
-    return new Set(
-      TicketStorage.getAll().map((ticket) =>
-        ticketImportKey({
-          gross_datetime: ticket.gross_datetime,
-          tare_datetime: ticket.tare_datetime,
-          vehicle_number: ticket.vehicle_number,
-        }),
-      ),
-    );
-  }, [state.journalVersion]);
-
-  const importableItems = useMemo(
-    () => state.items.filter((item) => !existingKeys.has(waJournalKey(item))),
-    [state.items, existingKeys],
+  const existingKeys = new Set(
+    TicketStorage.getAll().map((ticket) =>
+      ticketImportKey({
+        gross_datetime: ticket.gross_datetime,
+        tare_datetime: ticket.tare_datetime,
+        vehicle_number: ticket.vehicle_number,
+      }),
+    ),
   );
+
+  const importableItems = state.items.filter((item) => !existingKeys.has(waJournalKey(item)));
 
   const loadData = useCallback(async () => {
     const requestId = ++requestRef.current;
@@ -271,7 +263,6 @@ export function WaImportView({ onImported }: Props) {
       dispatch({
         type: 'import_success',
         count: selectedItems.length,
-        journalVersion: state.journalVersion + 1,
       });
       logger.info('wa', `Импортировано записей: ${selectedItems.length}`, { date: state.date });
 

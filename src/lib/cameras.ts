@@ -140,12 +140,28 @@ export async function captureForTicket(
   ticketId: string,
   phase: PhotoPhase,
   siteId?: string | null,
+  cameras?: Camera[],
 ): Promise<CaptureResult | null> {
   try {
     const result = await apiPost<CaptureResult>('/api/cameras/capture', {
       ticket_id: ticketId,
       phase,
       site_id: siteId ?? undefined,
+      cameras:
+        cameras?.map((camera) => ({
+          id: camera.id,
+          site_id: camera.site_id,
+          role: camera.role,
+          name: camera.name,
+          capture_url: camera.capture_url,
+          capture_kind: camera.capture_kind,
+          enabled: camera.enabled,
+          sort_order: camera.sort_order,
+          roi: camera.roi,
+          reference_normal_path: camera.reference_normal_path,
+          reference_spare_path: camera.reference_spare_path,
+          created_at: camera.created_at,
+        })) ?? undefined,
     });
     if (result.photos?.length) {
       TicketPhotosStorage.merge(result.photos);
@@ -162,6 +178,40 @@ export async function captureForTicket(
     logger.warn('cameras', `capture failed ticket=${ticketId} phase=${phase}`, err);
     return null;
   }
+}
+
+async function syncCaptureTicket(): Promise<void> {
+  if (typeof localStorage === 'undefined') return;
+  const tickets = localStorage.getItem('app_weighing_tickets');
+  if (tickets === null) return;
+  const data = { app_weighing_tickets: tickets };
+  await apiPost<{ success: boolean }>('/api/database', { data });
+}
+
+async function syncCaptureConfig(): Promise<void> {
+  if (typeof localStorage === 'undefined') return;
+  const raw = localStorage.getItem('app_settings');
+  if (!raw) return;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const config = Object.fromEntries(
+    Object.entries(parsed).map(([key, value]) => [key, String(value)]),
+  );
+  await apiPost<{ success: boolean }>('/api/config', { config });
+}
+
+function buildCaptureStatusMessage(
+  kind: 'all_failed' | 'partial',
+  detail?: string | null,
+): string {
+  const base =
+    kind === 'all_failed' ? 'Фото для талона не сохранены' : 'Часть фото для талона не сохранена';
+  const normalized = detail?.trim();
+  return normalized ? `${base}: ${normalized}` : base;
 }
 
 /**
@@ -186,6 +236,7 @@ export async function triggerCaptureAfterSave(
 
   let anyOk = false;
   let anyFail = false;
+  let firstFailure: string | null = null;
 
   // Stop live monitor so snapshot polling does not contend with ticket capture.
   dispatchCapturePause(true);
@@ -196,21 +247,40 @@ export async function triggerCaptureAfterSave(
 
     try {
       await flushDatabaseSync();
+      await syncCaptureConfig();
+      await syncCaptureTicket();
     } catch (err) {
       logger.warn('cameras', `flush before capture failed ticket=${ticketId}`, err);
-      return { ok: false, message: 'Фото недоступно' };
+      return {
+        ok: false,
+        message: buildCaptureStatusMessage(
+          'all_failed',
+          err instanceof Error ? err.message : null,
+        ),
+      };
     }
 
     for (const phase of phases) {
-      const result = await captureForTicket(ticketId, phase, siteId);
+      const result = await captureForTicket(ticketId, phase, siteId, enabledCameras);
       if (result == null) {
         anyFail = true;
+        firstFailure ??= 'backend не вернул результат захвата';
         continue;
       }
       const okCount = result.photos.filter((p) => p.status === 'ok').length;
-      const failCount = result.photos.filter((p) => p.status === 'failed').length;
+      const failedPhotos = result.photos.filter((p) => p.status === 'failed');
+      const failCount = failedPhotos.length;
       if (okCount > 0) anyOk = true;
-      if (failCount > 0 || result.photos.length === 0) anyFail = true;
+      if (failCount > 0) {
+        anyFail = true;
+        firstFailure ??=
+          failedPhotos.find((p) => typeof p.error_message === 'string' && p.error_message.trim())?.error_message?.trim() ??
+          null;
+      }
+      if (result.photos.length === 0) {
+        anyFail = true;
+        firstFailure ??= 'не получен ни один снимок';
+      }
     }
   } finally {
     resumeDatabaseSync();
@@ -224,10 +294,10 @@ export async function triggerCaptureAfterSave(
   }
 
   if (anyFail && !anyOk) {
-    return { ok: false, message: 'Фото недоступно' };
+    return { ok: false, message: buildCaptureStatusMessage('all_failed', firstFailure) };
   }
   if (anyFail) {
-    return { ok: true, message: 'Часть фото недоступна' };
+    return { ok: true, message: buildCaptureStatusMessage('partial', firstFailure) };
   }
   return { ok: true };
 }

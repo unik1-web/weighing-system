@@ -13,7 +13,7 @@ from camera_templates import (
 def test_list_brands_order():
     brands = list_brands()
     ids = [b['id'] for b in brands]
-    assert ids == ['hikvision', 'dahua', 'axis', 'uniview', 'generic']
+    assert ids == ['iqr', 'hikvision', 'dahua', 'axis', 'uniview', 'generic']
     assert all('label' in b for b in brands)
 
 

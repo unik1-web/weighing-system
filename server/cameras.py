@@ -27,6 +27,9 @@ JPEG_QUALITY = 85
 MAX_WIDTH = 1920
 CONNECT_TIMEOUT = 2.0
 READ_TIMEOUT = 5.0
+# Dahua / NETSurveillance RTSP often needs >2s to open (UDP→TCP fallback).
+RTSP_OPEN_TIMEOUT = 10.0
+RTSP_READ_TIMEOUT = 8.0
 PER_CAMERA_TIMEOUT = 5.0
 # Live monitor snapshots (~2–4 s each) often overlap ticket capture; keep headroom
 # for two slow HTTP cameras under contention.
@@ -165,17 +168,105 @@ def _encode_jpeg(raw: bytes) -> bytes:
     return raw
 
 
+def _looks_like_jpeg(data: bytes) -> bool:
+    return len(data) >= 2 and data[:2] == b'\xff\xd8'
+
+
 def grab_frame_http(url: str) -> bytes:
-    response = requests.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), stream=True)
-    response.raise_for_status()
-    content_type = (response.headers.get('Content-Type') or '').lower()
-    data = response.content
-    if not data:
-        raise RuntimeError('Пустой ответ HTTP snapshot')
-    if 'jpeg' in content_type or 'jpg' in content_type or data[:2] == b'\xff\xd8':
-        return _encode_jpeg(data)
-    # Some cameras return multipart or other; try encode anyway
-    return _encode_jpeg(data)
+    from urllib.parse import unquote, urlparse, urlunparse
+
+    from requests.auth import HTTPBasicAuth, HTTPDigestAuth
+
+    parsed = urlparse(url)
+    username = unquote(parsed.username) if parsed.username else ''
+    password = unquote(parsed.password) if parsed.password else ''
+
+    clean_netloc = parsed.hostname or ''
+    if parsed.port:
+        clean_netloc = f'{clean_netloc}:{parsed.port}'
+    clean_url = urlunparse(
+        (parsed.scheme, clean_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+    attempts: list[tuple[str, Any]] = []
+    if username:
+        # ONVIF / IQR OEM often require Digest; URL userinfo alone uses Basic.
+        attempts.append((clean_url, HTTPDigestAuth(username, password)))
+        attempts.append((clean_url, HTTPBasicAuth(username, password)))
+    attempts.append((url, None))
+    attempts.append((clean_url, None))
+
+    last_error: Exception | None = None
+    seen: set[tuple[str, str]] = set()
+    for attempt_url, auth in attempts:
+        key = (attempt_url, type(auth).__name__ if auth else 'none')
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            response = requests.get(
+                attempt_url,
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                stream=True,
+                auth=auth,
+            )
+            response.raise_for_status()
+            content_type = (response.headers.get('Content-Type') or '').lower()
+            data = response.content
+            if not data:
+                raise RuntimeError('Пустой ответ HTTP snapshot')
+            if not _looks_like_jpeg(data):
+                hint = content_type or 'неизвестный тип'
+                if 'html' in hint or data.lstrip().startswith(b'<'):
+                    raise RuntimeError(
+                        f'Камера вернула не изображение ({hint}). '
+                        'Проверьте логин/пароль и URL snapshot (для IQR — Поиск камеры → IQR / ONVIF).'
+                    )
+                raise RuntimeError(
+                    f'Ответ не похож на JPEG ({hint}, {len(data)} байт). Проверьте URL snapshot.'
+                )
+            return _encode_jpeg(data)
+        except Exception as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError('Не удалось получить HTTP snapshot')
+
+
+def normalize_stream_url(url: str) -> str:
+    """Normalize capture URL: catch comma-IPs; make empty password explicit (user:@host).
+
+    OpenCV/FFmpeg often fail on ``rtsp://admin@host/...`` (password=None) while
+    ``rtsp://admin:@host/...`` (empty password) works for cameras with blank auth.
+    """
+    from urllib.parse import quote, unquote, urlparse, urlunparse
+
+    raw = (url or '').strip()
+    if not raw:
+        return raw
+    # Common typo: 192.168,1,3 instead of 192.168.1.3
+    authority = raw.split('://', 1)[-1].split('/', 1)[0]
+    if ',' in authority:
+        raise ValueError(
+            'В URL IP с запятыми вместо точек (например 192.168,1,3). '
+            'Замените на точки: 192.168.1.3'
+        )
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.hostname:
+        return raw
+    if parsed.username is None:
+        return raw
+    # password is None for "user@host"; keep existing "user:pass@" / "user:@" as-is.
+    if parsed.password is not None:
+        return raw
+    user_q = quote(unquote(parsed.username), safe='')
+    host = parsed.hostname
+    port = f':{parsed.port}' if parsed.port else ''
+    netloc = f'{user_q}:@{host}{port}'
+    return urlunparse(
+        (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
 
 
 def grab_frame_rtsp(url: str) -> bytes:
@@ -186,16 +277,28 @@ def grab_frame_rtsp(url: str) -> bytes:
             'RTSP недоступен: OpenCV не установлен (полная сборка с opencv-python-headless)'
         ) from exc
 
-    cap = cv2.VideoCapture(url)
+    stream_url = normalize_stream_url(url)
+    # Prefer TCP — OEM/Dahua NETSurveillance often drops UDP RTSP on Windows.
+    prev_opts = os.environ.get('OPENCV_FFMPEG_CAPTURE_OPTIONS')
+    os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
+    cap = None
     try:
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(CONNECT_TIMEOUT * 1000))
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, int(READ_TIMEOUT * 1000))
-    except Exception:
-        pass
-    if not cap.isOpened():
-        cap.release()
-        raise RuntimeError('Не удалось открыть RTSP поток')
-    try:
+        try:
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+        except Exception:
+            cap = cv2.VideoCapture(stream_url)
+        try:
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(RTSP_OPEN_TIMEOUT * 1000))
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, int(RTSP_READ_TIMEOUT * 1000))
+        except Exception:
+            pass
+        if not cap.isOpened():
+            raise RuntimeError(
+                'Не удалось открыть RTSP поток '
+                f'(таймаут {int(RTSP_OPEN_TIMEOUT)} с, TCP). '
+                'Проверьте URL/порт 554 или используйте HTTP snapshot '
+                '(cgi-bin/snapshot.cgi).'
+            )
         ok, frame = cap.read()
         if not ok or frame is None:
             raise RuntimeError('Не удалось прочитать кадр RTSP')
@@ -208,7 +311,12 @@ def grab_frame_rtsp(url: str) -> bytes:
             raise RuntimeError('Ошибка кодирования JPEG')
         return encoded.tobytes()
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
+        if prev_opts is None:
+            os.environ.pop('OPENCV_FFMPEG_CAPTURE_OPTIONS', None)
+        else:
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = prev_opts
 
 
 def grab_frame(camera: dict[str, Any]) -> bytes:
@@ -218,7 +326,7 @@ def grab_frame(camera: dict[str, Any]) -> bytes:
     kind = _detect_kind(url, camera.get('capture_kind'))
     if kind == 'rtsp':
         return grab_frame_rtsp(url)
-    return grab_frame_http(url)
+    return grab_frame_http(normalize_stream_url(url))
 
 
 def list_enabled_cameras(site_id: str) -> list[dict[str, Any]]:
@@ -295,6 +403,44 @@ def _resolve_site_id(ticket_id: str, site_id: str | None) -> str:
     if row:
         return str(row['id'])
     raise ValueError('Не удалось определить площадку для захвата')
+
+
+def _normalize_override_cameras(
+    raw_cameras: list[Any] | None,
+    resolved_site: str,
+) -> list[dict[str, Any]]:
+    if not isinstance(raw_cameras, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_cameras):
+        if not isinstance(item, dict):
+            continue
+        site_id = str(item.get('site_id') or resolved_site)
+        if site_id != resolved_site:
+            continue
+        capture_url = str(item.get('capture_url') or '').strip()
+        if not capture_url:
+            continue
+        if not bool(item.get('enabled', True)):
+            continue
+        roi = item.get('roi')
+        result.append(
+            {
+                'id': item.get('id') or f'override-{index}',
+                'site_id': site_id,
+                'role': str(item.get('role') or 'overview'),
+                'name': str(item.get('name') or item.get('role') or f'Camera {index + 1}'),
+                'capture_url': capture_url,
+                'capture_kind': str(item.get('capture_kind') or 'auto'),
+                'enabled': True,
+                'sort_order': int(item.get('sort_order') or index),
+                'roi': roi if isinstance(roi, (dict, list)) else None,
+                'reference_normal_path': item.get('reference_normal_path'),
+                'reference_spare_path': item.get('reference_spare_path'),
+                'created_at': str(item.get('created_at') or _now_iso()),
+            }
+        )
+    return result
 
 
 def _ticket_photo_path(ticket_id: str, phase: str, role: str) -> str:
@@ -483,13 +629,17 @@ def capture_for_ticket(
     phase: str,
     site_id: str | None = None,
     camera_mode: str | None = None,
+    cameras_override: list[Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
     if phase not in PHOTO_PHASES:
         raise ValueError(f'Некорректная phase: {phase}')
 
     resolved_site = _resolve_site_id(ticket_id, site_id)
     mode = camera_mode or _camera_mode_for_site(resolved_site)
-    cameras = list_enabled_cameras(resolved_site)
+    if cameras_override is not None:
+        cameras = _normalize_override_cameras(cameras_override, resolved_site)
+    else:
+        cameras = list_enabled_cameras(resolved_site)
 
     video_on = is_video_enabled()
     # HTTP always available; RTSP may fail per-camera

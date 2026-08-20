@@ -10,9 +10,29 @@ import time
 import pytest
 
 
-def _seed_scales(api_client, transport='tcp', host='127.0.0.1', tcp_port=9001, adapter_id='microsim-m0601'):
+def _seed_scales(
+    api_client,
+    transport='tcp',
+    host='127.0.0.1',
+    tcp_port=9001,
+    serial_path='COM3',
+    adapter_id='microsim-m0601',
+):
     site_id = 'site-1'
     scale_id = 'scale-primary'
+    connection = {
+        'transport': transport,
+        'baudRate': 9600,
+        'parity': 'none',
+        'dataBits': 8,
+        'stopBits': 1,
+        'lineTerminator': '\r\n',
+    }
+    if transport == 'tcp':
+        connection['host'] = host
+        connection['tcpPort'] = tcp_port
+    if transport == 'serial':
+        connection['serialPath'] = serial_path
     data = {
         'app_sites': json.dumps(
             [{'id': site_id, 'name': 'Площадка', 'is_default': True, 'created_at': '2026-01-01T00:00:00Z'}]
@@ -25,16 +45,7 @@ def _seed_scales(api_client, transport='tcp', host='127.0.0.1', tcp_port=9001, a
                     'role': 'primary',
                     'name': 'Основные',
                     'adapter_id': adapter_id,
-                    'connection': {
-                        'transport': transport,
-                        'baudRate': 9600,
-                        'parity': 'none',
-                        'dataBits': 8,
-                        'stopBits': 1,
-                        'lineTerminator': '\r\n',
-                        'host': host,
-                        'tcpPort': tcp_port,
-                    },
+                    'connection': connection,
                     'enabled': True,
                     'created_at': '2026-01-01T00:00:00Z',
                 }
@@ -133,13 +144,69 @@ def test_scales_context(api_client):
     assert body['connection']['tcpPort'] == 9010
 
 
-def test_scales_serial_stub_501(api_client):
-    _seed_scales(api_client, transport='serial')
+def test_scales_serial_missing_port_400(api_client):
+    _seed_scales(api_client, transport='serial', serial_path='')
     resp = api_client.post('/api/scales/connect', json={})
-    assert resp.status_code == 501
+    assert resp.status_code == 400
     body = resp.get_json()
     assert body['success'] is False
-    assert 'serial' in body['message'].lower() or 'COM' in body['message']
+    assert 'COM' in body['message']
+
+
+def test_scales_serial_connect_reading_disconnect(api_client, monkeypatch):
+    import scale_io
+
+    frames = [b'ST,GS,+  12345.6kg\r\n']
+    opened_with: list[str] = []
+
+    class _FakeSerial:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            opened_with.append(kwargs.get('port'))
+            self._closed = False
+
+        def read(self, size):
+            if frames:
+                return frames.pop(0)
+            time.sleep(0.05)
+            return b''
+
+        def write(self, data):
+            return len(data) if data else 0
+
+        def flush(self):
+            return None
+
+        def close(self):
+            self._closed = True
+
+    monkeypatch.setattr(scale_io.serial, 'Serial', _FakeSerial)
+
+    _seed_scales(api_client, transport='serial', serial_path='com 3')
+    connect = api_client.post('/api/scales/connect', json={})
+    assert connect.status_code == 200, connect.get_json()
+    body = connect.get_json()
+    assert body['connected'] is True
+    assert body['transport'] == 'serial'
+    assert body['serialPath'] == 'COM3'
+    assert opened_with == ['COM3']
+
+    reading = None
+    for _ in range(40):
+        resp = api_client.get('/api/scales/reading')
+        payload = resp.get_json()
+        assert payload['success'] is True
+        if payload.get('reading'):
+            reading = payload['reading']
+            break
+        time.sleep(0.05)
+
+    assert reading is not None
+    assert reading['weight'] == pytest.approx(12345.6)
+
+    disc = api_client.post('/api/scales/disconnect', json={})
+    assert disc.status_code == 200
+    assert disc.get_json()['connected'] is False
 
 
 def test_scales_web_serial_rejected(api_client):

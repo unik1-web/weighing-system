@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import socket
 import threading
 import time
 import uuid
@@ -26,10 +27,11 @@ from cameras import (
 
 logger = logging.getLogger('camera_discover')
 
-DISCOVER_WALL_CLOCK = 45.0
+DISCOVER_WALL_CLOCK = 90.0
 DISCOVER_HTTP_PARALLEL = 2
 DISCOVER_SESSION_TTL_SEC = 300
 MAX_DISCOVER_SESSIONS = 8
+PREFLIGHT_TIMEOUT = 1.5
 
 _sessions: dict[str, dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
@@ -62,6 +64,15 @@ def mask_url(url: str) -> str:
 def safe_exc_message(exc: BaseException) -> str:
     """Exception text safe for logs (mask userinfo in URLs, e.g. requests HTTPError)."""
     return mask_url(str(exc))
+
+
+def probe_tcp(host: str, port: int, timeout: float = PREFLIGHT_TIMEOUT) -> bool:
+    """Return True if TCP connect to host:port succeeds within timeout."""
+    try:
+        with socket.create_connection((host, int(port)), timeout=float(timeout)):
+            return True
+    except OSError:
+        return False
 
 
 def assert_discover_target_allowed(ip: str) -> None:
@@ -229,6 +240,53 @@ def _try_template(
         return None
 
 
+def _try_onvif_snapshot(
+    *,
+    ip: str,
+    username: str,
+    password: str,
+    http_port: int,
+) -> dict[str, Any] | None:
+    """Resolve JPEG URL via ONVIF GetSnapshotUri and verify with grab_frame_http."""
+    try:
+        from onvif_snapshot import resolve_onvif_snapshot_url
+    except ImportError:
+        return None
+    try:
+        url = resolve_onvif_snapshot_url(
+            ip,
+            username=username,
+            password=password,
+            http_port=http_port,
+        )
+    except Exception as exc:
+        logger.info('ONVIF resolve failed ip=%s error=%s', ip, safe_exc_message(exc))
+        return None
+    if not url:
+        return None
+    try:
+        jpeg = grab_frame_http(url)
+        preview = save_tmp_snapshot(jpeg)
+        logger.info('discover ok ip=%s brand=iqr template=onvif-getsnapshoturi url=%s', ip, mask_url(url))
+        return {
+            'url': url,
+            'kind': 'http_snapshot',
+            'brand': 'iqr',
+            'template_id': 'onvif-getsnapshoturi',
+            'ok': True,
+            'preview_path': preview,
+            'error': None,
+        }
+    except Exception as exc:
+        logger.info(
+            'discover fail ip=%s brand=iqr template=onvif-getsnapshoturi url=%s error=%s',
+            ip,
+            mask_url(url),
+            safe_exc_message(exc),
+        )
+        return None
+
+
 def _worker(session_id: str) -> None:
     global _active_session_id
     with _sessions_lock:
@@ -246,21 +304,17 @@ def _worker(session_id: str) -> None:
 
     opencv = _opencv_available()
     plan, skipped_rtsp = build_attempt_plan(brand, opencv)
-    with sess['lock']:
-        sess['skipped_rtsp'] = skipped_rtsp
-        sess['progress'] = {
-            'current': 0,
-            'total': len(plan),
-            'label': 'RTSP пропущен: нет OpenCV' if skipped_rtsp and not plan else '',
-        }
-        if skipped_rtsp and not plan:
-            sess['message'] = 'RTSP пропущен: нет OpenCV'
-        elif skipped_rtsp:
-            sess['message'] = None
+    brand_norm = (brand or '').strip().lower()
+    if brand_norm in ('onvif', 'iqeye', 'iq', ''):
+        brand_norm = 'iqr' if brand_norm else ''
+    run_onvif_first = brand_norm in ('', 'iqr', 'unknown', 'none') or brand is None
 
     start = time.monotonic()
     cancel_event: threading.Event = sess['cancel_event']
     idx = 0
+    http_up = True
+    rtsp_up = True
+    preflight_notes: list[str] = []
 
     def wall_exceeded() -> bool:
         return (time.monotonic() - start) >= DISCOVER_WALL_CLOCK
@@ -269,7 +323,7 @@ def _worker(session_id: str) -> None:
         with sess['lock']:
             sess['progress'] = {
                 'current': current,
-                'total': len(plan),
+                'total': len(plan) + (1 if run_onvif_first else 0),
                 'label': progress_label(template),
             }
 
@@ -278,6 +332,89 @@ def _worker(session_id: str) -> None:
             sess['candidates'].append(cand)
 
     try:
+        with sess['lock']:
+            sess['progress'] = {
+                'current': 0,
+                'total': 1,
+                'label': f'Проверка доступности {ip}:{http_port}/{rtsp_port}',
+            }
+
+        http_up = probe_tcp(ip, http_port)
+        rtsp_up = probe_tcp(ip, rtsp_port)
+        logger.info(
+            'discover preflight ip=%s http=%s:%s rtsp=%s:%s',
+            ip,
+            http_port,
+            http_up,
+            rtsp_port,
+            rtsp_up,
+        )
+
+        if not http_up and not rtsp_up:
+            with sess['lock']:
+                sess['status'] = 'failed'
+                sess['message'] = (
+                    f'Хост {ip} недоступен: TCP-таймаут на HTTP {http_port} и RTSP {rtsp_port}. '
+                    'Проверьте IP, VLAN/маршрут, firewall и что камера в той же сети, что ПК.'
+                )
+                sess['error'] = sess['message']
+                sess['finished_at'] = time.time()
+                sess['progress'] = {'current': 1, 'total': 1, 'label': 'Хост недоступен'}
+            return
+
+        if not http_up:
+            plan = [t for t in plan if t['kind'] == 'rtsp']
+            run_onvif_first = False
+            preflight_notes.append(
+                f'HTTP {http_port} недоступен (TCP-таймаут); пробуем только RTSP {rtsp_port}'
+            )
+        elif not rtsp_up:
+            plan = [t for t in plan if t['kind'] == 'http_snapshot']
+            skipped_rtsp = True
+            preflight_notes.append(
+                f'RTSP {rtsp_port} недоступен (TCP-таймаут); пробуем только HTTP {http_port}'
+            )
+
+        with sess['lock']:
+            total = len(plan) + (1 if run_onvif_first else 0)
+            sess['skipped_rtsp'] = bool(skipped_rtsp or not rtsp_up)
+            sess['message'] = '; '.join(preflight_notes) if preflight_notes else (
+                'RTSP пропущен: нет OpenCV' if skipped_rtsp and not plan and not run_onvif_first else None
+            )
+            sess['progress'] = {
+                'current': 0,
+                'total': max(total, 1),
+                'label': 'ONVIF GetSnapshotUri' if run_onvif_first else (
+                    'RTSP пропущен: нет OpenCV' if skipped_rtsp and not plan else ''
+                ),
+            }
+            if total == 0:
+                sess['status'] = 'failed'
+                sess['message'] = (
+                    (sess.get('message') + '; ' if sess.get('message') else '')
+                    + 'Нет шаблонов для доступных портов; укажите URL вручную'
+                )
+                sess['error'] = sess['message']
+                sess['finished_at'] = time.time()
+                return
+
+        if run_onvif_first and not cancel_event.is_set() and not wall_exceeded():
+            with sess['lock']:
+                sess['progress'] = {
+                    'current': 1,
+                    'total': len(plan) + 1,
+                    'label': 'IQR / ONVIF · GetSnapshotUri',
+                }
+            onvif_cand = _try_onvif_snapshot(
+                ip=ip,
+                username=username,
+                password=password,
+                http_port=http_port,
+            )
+            if onvif_cand:
+                append_candidate(onvif_cand)
+            idx = 1
+
         # Process plan: batch consecutive HTTP items (parallel ≤2), RTSP serial
         i = 0
         while i < len(plan):
@@ -328,13 +465,6 @@ def _worker(session_id: str) -> None:
                 if len(http_batch) >= DISCOVER_HTTP_PARALLEL:
                     break
 
-            # Run batch with max_workers=2; update progress per completion
-            for tmpl in http_batch:
-                if cancel_event.is_set() or wall_exceeded():
-                    break
-                # Pre-mark label for first of batch before submit
-                pass
-
             if cancel_event.is_set():
                 break
             if wall_exceeded():
@@ -347,7 +477,6 @@ def _worker(session_id: str) -> None:
                         sess['finished_at'] = time.time()
                 break
 
-            # Mark progress at start of each template in batch
             futures_map = {}
             with ThreadPoolExecutor(max_workers=DISCOVER_HTTP_PARALLEL) as executor:
                 for tmpl in http_batch:
@@ -395,17 +524,20 @@ def _worker(session_id: str) -> None:
                 elif not sess['candidates']:
                     sess['status'] = 'failed'
                     msg_parts = ['Рабочие URL не найдены']
-                    if skipped_rtsp:
+                    if preflight_notes:
+                        msg_parts.extend(preflight_notes)
+                    if skipped_rtsp and opencv is False:
                         msg_parts.append('RTSP пропущен: нет OpenCV')
-                    msg_parts.append('проверьте Basic-авторизацию или укажите URL вручную')
+                    msg_parts.append('проверьте логин/пароль или укажите URL вручную')
                     sess['message'] = '; '.join(msg_parts)
                     sess['error'] = sess['message']
                 else:
                     sess['status'] = 'done'
-                    if skipped_rtsp and not sess.get('message'):
+                    if preflight_notes and not sess.get('message'):
+                        sess['message'] = '; '.join(preflight_notes)
+                    elif skipped_rtsp and not sess.get('message'):
                         sess['message'] = 'RTSP пропущен: нет OpenCV'
                 sess['finished_at'] = time.time()
-                # Ensure progress current reaches total when finished cleanly
                 if sess['status'] in ('done', 'failed') and not (
                     sess.get('message') or ''
                 ).startswith('Поиск прерван'):
@@ -422,6 +554,7 @@ def _worker(session_id: str) -> None:
         with _sessions_lock:
             if _active_session_id == session_id:
                 _active_session_id = None
+
 
 
 def start_discover(

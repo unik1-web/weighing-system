@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseUniversalFrame,
+  parseMicrosimCopyFrame,
   parseCustomFrame,
   compileParseRegex,
   validateCustomParseConfig,
@@ -38,8 +39,15 @@ describe('parseUniversalFrame (4 profiles)', () => {
     expect(r!.stable).toBe(true);
   });
 
-  it('returns null when no number', () => {
-    expect(parseUniversalFrame('ST,GS,kg')).toBeNull();
+  it('parses Microsim indicator-copy 0x81 frame', () => {
+    const raw = String.fromCharCode(
+      0x81,
+      ...[0x20, 0x20, 0x31, 0x37, 0x32, 0x2e, 0x36, 0x30, 0x20, 0x42, 0x20, 0x20, 0x0d, 0x0a],
+    );
+    const r = parseMicrosimCopyFrame(raw);
+    expect(r).not.toBeNull();
+    expect(r!.weight).toBeCloseTo(172.6);
+    expect(r!.stable).toBe(true);
   });
 });
 

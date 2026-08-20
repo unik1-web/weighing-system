@@ -68,6 +68,7 @@ installLocalStorage();
 describe('cameras domain', () => {
   beforeEach(() => {
     localStorage.clear();
+    localStorage.setItem('app_weighing_tickets', JSON.stringify([{ id: 't1' }]));
     flushMock.mockReset().mockResolvedValue(undefined);
     pauseMock.mockReset();
     resumeMock.mockReset();
@@ -192,6 +193,12 @@ describe('cameras domain', () => {
     });
     apiPostMock.mockImplementation(async (url: string) => {
       callOrder.push(`post:${url}`);
+      if (url === '/api/config') {
+        return { success: true };
+      }
+      if (url === '/api/database') {
+        return { success: true };
+      }
       if (url === '/api/cameras/capture') {
         return {
           success: true,
@@ -232,52 +239,83 @@ describe('cameras domain', () => {
     });
 
     const result = await triggerCaptureAfterSave('t1', ['gross'], 'site-1');
-    expect(result).toEqual({ ok: true, message: 'Часть фото недоступна' });
+    expect(result).toEqual({
+      ok: true,
+      message: 'Часть фото для талона не сохранена: timeout',
+    });
     expect(callOrder[0]).toBe('pause');
     expect(callOrder[1]).toBe('flush');
+    expect(callOrder).toContain('post:/api/config');
+    expect(callOrder).toContain('post:/api/database');
     expect(callOrder).toContain('post:/api/cameras/capture');
+    const configIdx = callOrder.indexOf('post:/api/config');
+    const syncIdx = callOrder.indexOf('post:/api/database');
     const postIdx = callOrder.indexOf('post:/api/cameras/capture');
-    expect(postIdx).toBeGreaterThan(callOrder.indexOf('flush'));
+    expect(configIdx).toBeGreaterThan(callOrder.indexOf('flush'));
+    expect(syncIdx).toBeGreaterThan(configIdx);
+    expect(postIdx).toBeGreaterThan(syncIdx);
     expect(callOrder).toContain('resume');
     expect(flushMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('triggerCaptureAfterSave returns Фото недоступно when all captures failed', async () => {
+  it('triggerCaptureAfterSave returns detailed ticket-photo error when all captures failed', async () => {
     SettingsStorage.updateAppSettings({ video_enabled: true });
     upsertCamera(createCameraDraft('site-1', 'entry'));
-    apiPostMock.mockResolvedValue({
-      success: true,
-      photos: [
-        {
-          id: 'p1',
-          ticket_id: 't1',
-          phase: 'gross',
-          camera_id: 'c1',
-          camera_role: 'entry',
-          relative_path: null,
-          status: 'failed',
-          error_message: 'Таймаут захвата (15 с)',
-          camera_mode: 'normal',
-          created_at: '2026-08-02T10:00:00',
+    apiPostMock.mockImplementation(async (url: string) => {
+      if (url === '/api/config') {
+        return { success: true };
+      }
+      if (url === '/api/database') {
+        return { success: true };
+      }
+      return {
+        success: true,
+        photos: [
+          {
+            id: 'p1',
+            ticket_id: 't1',
+            phase: 'gross',
+            camera_id: 'c1',
+            camera_role: 'entry',
+            relative_path: null,
+            status: 'failed',
+            error_message: 'Таймаут захвата (15 с)',
+            camera_mode: 'normal',
+            created_at: '2026-08-02T10:00:00',
+          },
+        ],
+        stubs: {
+          photo_entry_path: null,
+          photo_exit_path: null,
+          photo_overview_path: null,
         },
-      ],
-      stubs: {
-        photo_entry_path: null,
-        photo_exit_path: null,
-        photo_overview_path: null,
-      },
+      };
     });
     const result = await triggerCaptureAfterSave('t1', ['gross'], 'site-1');
-    expect(result).toEqual({ ok: false, message: 'Фото недоступно' });
+    expect(result).toEqual({
+      ok: false,
+      message: 'Фото для талона не сохранены: Таймаут захвата (15 с)',
+    });
     expect(resumeMock).toHaveBeenCalled();
   });
 
-  it('triggerCaptureAfterSave returns Фото недоступно when capture API fails', async () => {
+  it('triggerCaptureAfterSave returns ticket-photo error when capture API fails', async () => {
     SettingsStorage.updateAppSettings({ video_enabled: true });
     upsertCamera(createCameraDraft('site-1', 'entry'));
-    apiPostMock.mockRejectedValue(new Error('network'));
+    apiPostMock.mockImplementation(async (url: string) => {
+      if (url === '/api/config') {
+        return { success: true };
+      }
+      if (url === '/api/database') {
+        return { success: true };
+      }
+      throw new Error('network');
+    });
     const result = await triggerCaptureAfterSave('t1', ['gross'], 'site-1');
-    expect(result).toEqual({ ok: false, message: 'Фото недоступно' });
+    expect(result).toEqual({
+      ok: false,
+      message: 'Фото для талона не сохранены: backend не вернул результат захвата',
+    });
     expect(resumeMock).toHaveBeenCalled();
   });
 });

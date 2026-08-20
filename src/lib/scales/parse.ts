@@ -51,6 +51,30 @@ export function parseUniversalFrame(raw: string): ScaleReading | null {
   };
 }
 
+export function parseMicrosimCopyFrame(raw: string): ScaleReading | null {
+  if (!raw) return null;
+  let s = raw;
+  if (s.charCodeAt(0) === 0x81) {
+    s = s.slice(1);
+  } else if (!raw.includes('\x81') && !/[BNT?]/i.test(raw)) {
+    return null;
+  }
+  s = s.replace(/[\r\n]/g, ' ');
+  const stable = !s.includes('?');
+  const negative = s.includes('-');
+  const numMatch = s.replace(/[-?]/g, ' ').match(/\d[\d.,]*/);
+  if (!numMatch) return null;
+  const weight = parseFloat(numMatch[0].replace(',', '.'));
+  if (isNaN(weight)) return null;
+  return {
+    weight: negative ? -Math.abs(weight) : weight,
+    unit: /\bt\b/i.test(s) ? 't' : 'kg',
+    stable,
+    negative,
+    raw,
+  };
+}
+
 /** Compile custom regex; throws Error with Russian message on invalid pattern. */
 export function compileParseRegex(pattern: string): RegExp {
   try {

@@ -44,6 +44,7 @@ export function CameraSetupPreview({
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [displayError, setDisplayError] = useState<string | null>(null);
   const [capturedAt, setCapturedAt] = useState<string | null>(null);
 
   const needsOpenCv = useMemo(
@@ -65,6 +66,7 @@ export function CameraSetupPreview({
     }
     setBusy(true);
     setError(null);
+    setDisplayError(null);
     try {
       onBeforeCapture?.();
       // Always use the form URL so unsaved edits are tested (server prefers camera_id from DB).
@@ -80,6 +82,7 @@ export function CameraSetupPreview({
       setCapturedAt(new Date().toLocaleTimeString('ru-RU'));
     } catch (err: unknown) {
       setPreviewPath(null);
+      setDisplayError(null);
       const message = err instanceof Error ? err.message : 'Не удалось получить снимок';
       if (/opencv|rtsp недоступен/i.test(message)) {
         setError(
@@ -138,6 +141,11 @@ export function CameraSetupPreview({
               src={src}
               alt={`Превью: ${camera.name || 'камера'}`}
               className="h-full w-full object-contain"
+              onError={() => {
+                setDisplayError(
+                  'Снимок получен, но браузер не смог его показать. Проверьте URL камеры — возможно, она вернула не JPEG (нужен другой путь snapshot).',
+                );
+              }}
             />
             {showRoi && camera.roi ? <RoiOverlay roi={camera.roi} /> : null}
           </>
@@ -157,10 +165,12 @@ export function CameraSetupPreview({
         )}
       </div>
 
-      {capturedAt && !error && (
+      {capturedAt && !error && !displayError && (
         <p className="text-[11px] text-slate-500">Снимок обновлён: {capturedAt}</p>
       )}
-      {error && <p className="text-xs text-rose-600">{error}</p>}
+      {(error || displayError) && (
+        <p className="text-xs text-rose-600">{error ?? displayError}</p>
+      )}
 
       {(refNormal || refSpare) && (
         <div className="grid grid-cols-2 gap-2">

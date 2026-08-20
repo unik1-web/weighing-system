@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "python server/app.py",
+    "dev:api": "node run-python.mjs server/app.py",
     "build": "vite build",
-    "start": "python server/app.py",
+    "start": "node run-python.mjs server/app.py",
     "build:win": "powershell -ExecutionPolicy Bypass -File installer/build.ps1",
     "build:win:exe": "powershell -ExecutionPolicy Bypass -File installer/build.ps1 -SkipInstaller",
     "lint": "eslint .",
@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:server": "python3 -m pytest server/tests -q",
+    "test:server": "node run-python.mjs -m pytest server/tests -q",
     "orchestrator:dashboard:install": "npm --prefix dashboard install",
     "orchestrator:dashboard": "npm --prefix dashboard run dev",
     "orchestrator:dashboard:check": "npm --prefix dashboard run check"

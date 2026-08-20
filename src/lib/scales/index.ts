@@ -11,6 +11,7 @@ export type {
 
 export {
   parseUniversalFrame,
+  parseMicrosimCopyFrame,
   parseCustomFrame,
   parseMaskFrame,
   compileParseRegex,
@@ -29,13 +30,16 @@ export {
 } from './registry';
 
 export { WebSerialTransport } from './web-serial-transport';
+export { normalizeSerialPath } from './serial-path';
 export {
   fetchScaleContext,
   fetchScaleStatus,
   connectBackendScale,
   disconnectBackendScale,
   fetchScaleReading,
+  fetchSerialPorts,
 } from './backend-client';
+export type { SerialPortInfo } from './backend-client';
 export type {
   ScaleContextResponse,
   ScaleStatusResponse,

@@ -1,4 +1,4 @@
-import { parseUniversalFrame } from '../parse';
+import { parseUniversalFrame, parseMicrosimCopyFrame } from '../parse';
 import type { ScaleAdapter, ScaleAdapterId, ScaleConnectionProfile } from '../types';
 
 function framing(
@@ -7,6 +7,7 @@ function framing(
   dataBits: ScaleConnectionProfile['dataBits'],
   stopBits: ScaleConnectionProfile['stopBits'],
   lineTerminator: string,
+  pollCommand = '',
 ): ScaleConnectionProfile {
   return {
     transport: 'web_serial',
@@ -15,6 +16,7 @@ function framing(
     dataBits,
     stopBits,
     lineTerminator,
+    pollCommand,
   };
 }
 
@@ -27,7 +29,7 @@ function makeBuiltin(
     id,
     name,
     defaultConnection: () => ({ ...defaults }),
-    parseFrame: (line) => parseUniversalFrame(line),
+    parseFrame: (line) => parseMicrosimCopyFrame(line) ?? parseUniversalFrame(line),
   };
 }
 
@@ -35,7 +37,7 @@ export const BUILTIN_ADAPTERS: ScaleAdapter[] = [
   makeBuiltin(
     'microsim-m0601',
     'Микросим М0601',
-    framing(9600, 'none', 8, 1, '\r'),
+    framing(9600, 'none', 8, 1, '\r', '$'),
   ),
   makeBuiltin(
     'newton',
@@ -45,7 +47,7 @@ export const BUILTIN_ADAPTERS: ScaleAdapter[] = [
   makeBuiltin(
     'cas',
     'CAS',
-    framing(9600, 'even', 7, 1, '\r\n'),
+    framing(9600, 'even', 7, 1, '\r\n', 'W'),
   ),
   makeBuiltin(
     'midl-mi-vda',

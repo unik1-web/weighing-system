@@ -137,7 +137,7 @@
 | `GET` | `/api/cameras/discover/<session_id>` | — | Poll: `{ success, session_id, status, progress: { current, total, label }, candidates: [{ url, kind, brand, ok, preview_path, template_id }], message?, error?, skipped_rtsp? }` — `url` полный (UI маскирует); 404 если сессия неизвестна |
 | `POST` | `/api/cameras/discover/<session_id>/cancel` | — | Отмена: прекращает новые попытки; `{ success, status: "cancelled", … }` |
 
-Поведение discover: каталог шаблонов `camera_templates.py` (Hikvision, Dahua, Axis, Uniview, generic); HTTP ≤2 параллельно, RTSP последовательно; wall-clock ~45 с; без OpenCV RTSP пропускается (`skipped_rtsp`). Переиспользует `grab_frame_http` / `grab_frame_rtsp` / `save_tmp_snapshot`. Пароли не пишутся в логи (маскирование userinfo).
+Поведение discover: каталог шаблонов `camera_templates.py` (IQR/ONVIF, Hikvision, Dahua, Axis, Uniview, generic); сначала ONVIF `GetSnapshotUri` (для IQR/перебора), затем HTTP ≤2 параллельно, RTSP последовательно; wall-clock ~45 с; без OpenCV RTSP пропускается (`skipped_rtsp`). HTTP snapshot пробует Digest и Basic auth. Переиспользует `grab_frame_http` / `grab_frame_rtsp` / `save_tmp_snapshot`. Пароли не пишутся в логи (маскирование userinfo).
 
 Поведение `capture`: при `video_enabled=false` — строки `skipped`, HTTP 200; ошибка одной камеры — `failed`, остальные ок; таймаут HTTP ~3 с; параллельно до 4 камер.
 

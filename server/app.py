@@ -57,7 +57,7 @@ from reo_client import (
     is_reo_test_successful,
     post_reo_import,
 )
-from scale_io import get_active_scale_context_from_db, get_scale_session
+from scale_io import get_active_scale_context_from_db, get_scale_session, list_serial_ports
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if getattr(sys, 'frozen', False):
@@ -346,6 +346,11 @@ def scales_context():
         return error_response(f'Ошибка чтения комплекта весов: {exc}')
 
 
+@app.get('/api/scales/serial-ports')
+def scales_serial_ports():
+    return jsonify({'success': True, 'ports': list_serial_ports()})
+
+
 @app.get('/api/scales/status')
 def scales_status():
     session = get_scale_session()
@@ -409,6 +414,7 @@ def cameras_capture():
     ticket_id = body.get('ticket_id')
     phase = body.get('phase')
     site_id = body.get('site_id')
+    cameras = body.get('cameras')
     if not ticket_id or not phase:
         return error_response('Нужны ticket_id и phase')
     try:
@@ -418,6 +424,7 @@ def cameras_capture():
             str(ticket_id),
             str(phase),
             str(site_id) if site_id else None,
+            cameras_override=cameras if isinstance(cameras, list) else None,
         )
         return jsonify({'success': True, 'photos': photos, 'stubs': stubs})
     except ValueError as exc:
