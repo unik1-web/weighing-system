@@ -165,17 +165,70 @@ def _encode_jpeg(raw: bytes) -> bytes:
     return raw
 
 
+def _looks_like_jpeg(data: bytes) -> bool:
+    return len(data) >= 2 and data[:2] == b'\xff\xd8'
+
+
 def grab_frame_http(url: str) -> bytes:
-    response = requests.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), stream=True)
-    response.raise_for_status()
-    content_type = (response.headers.get('Content-Type') or '').lower()
-    data = response.content
-    if not data:
-        raise RuntimeError('Пустой ответ HTTP snapshot')
-    if 'jpeg' in content_type or 'jpg' in content_type or data[:2] == b'\xff\xd8':
-        return _encode_jpeg(data)
-    # Some cameras return multipart or other; try encode anyway
-    return _encode_jpeg(data)
+    from urllib.parse import unquote, urlparse, urlunparse
+
+    from requests.auth import HTTPBasicAuth, HTTPDigestAuth
+
+    parsed = urlparse(url)
+    username = unquote(parsed.username) if parsed.username else ''
+    password = unquote(parsed.password) if parsed.password else ''
+
+    clean_netloc = parsed.hostname or ''
+    if parsed.port:
+        clean_netloc = f'{clean_netloc}:{parsed.port}'
+    clean_url = urlunparse(
+        (parsed.scheme, clean_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+    attempts: list[tuple[str, Any]] = []
+    if username:
+        # ONVIF / IQR OEM often require Digest; URL userinfo alone uses Basic.
+        attempts.append((clean_url, HTTPDigestAuth(username, password)))
+        attempts.append((clean_url, HTTPBasicAuth(username, password)))
+    attempts.append((url, None))
+    attempts.append((clean_url, None))
+
+    last_error: Exception | None = None
+    seen: set[tuple[str, str]] = set()
+    for attempt_url, auth in attempts:
+        key = (attempt_url, type(auth).__name__ if auth else 'none')
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            response = requests.get(
+                attempt_url,
+                timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                stream=True,
+                auth=auth,
+            )
+            response.raise_for_status()
+            content_type = (response.headers.get('Content-Type') or '').lower()
+            data = response.content
+            if not data:
+                raise RuntimeError('Пустой ответ HTTP snapshot')
+            if not _looks_like_jpeg(data):
+                hint = content_type or 'неизвестный тип'
+                if 'html' in hint or data.lstrip().startswith(b'<'):
+                    raise RuntimeError(
+                        f'Камера вернула не изображение ({hint}). '
+                        'Проверьте логин/пароль и URL snapshot (для IQR — Поиск камеры → IQR / ONVIF).'
+                    )
+                raise RuntimeError(
+                    f'Ответ не похож на JPEG ({hint}, {len(data)} байт). Проверьте URL snapshot.'
+                )
+            return _encode_jpeg(data)
+        except Exception as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError('Не удалось получить HTTP snapshot')
 
 
 def grab_frame_rtsp(url: str) -> bytes:

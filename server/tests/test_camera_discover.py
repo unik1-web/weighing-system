@@ -247,6 +247,7 @@ def test_discover_wall_clock_partial(api_client):
         patch('camera_discover.grab_frame_http', side_effect=fake_http),
         patch('camera_discover._opencv_available', return_value=False),
         patch('camera_discover.save_tmp_snapshot', return_value='Photo/tmp/w.jpg'),
+        patch('camera_discover._try_onvif_snapshot', return_value=None),
         patch.object(discover, 'DISCOVER_WALL_CLOCK', 0.01),
     ):
         start = api_client.post(

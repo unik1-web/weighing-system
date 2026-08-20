@@ -33,6 +33,7 @@ hiddenimports = [
     'cameras',
     'camera_discover',
     'camera_templates',
+    'onvif_snapshot',
     'config_ini',
     'dictionary_import',
     'metra',

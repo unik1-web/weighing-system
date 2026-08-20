@@ -187,13 +187,14 @@ pip install onnxruntime
 
 | Бренд | Типовые шаблоны |
 |-------|-----------------|
+| IQR / ONVIF | ONVIF `GetSnapshotUri`; HTTP `webcapture.jpg?command=snap`, `onvif-http/snapshot`, `tmpfs/auto.jpg`, `snap.jpg` |
 | Hikvision | HTTP ISAPI `…/channels/101/picture`; RTSP `Streaming/Channels/101`, `102` |
 | Dahua | HTTP `cgi-bin/snapshot.cgi`; RTSP `cam/realmonitor?channel=1&subtype=0\|1` |
 | Axis | HTTP `axis-cgi/jpg/image.cgi` |
 | Uniview | HTTP `images/snapshot.jpg` |
 | Generic / перебор | `snapshot.jpg`, `cgi-bin/snapshot.cgi`; RTSP `/stream1`, `/h264` |
 
-Если ничего не найдено: укажите URL вручную в реестре (подсказка из VLC/ONVIF-клиента вне продукта). Digest-only авторизация без Basic в URL — вне текущего MVP.
+Если ничего не найдено: укажите URL вручную в реестре (подсказка из VLC/ONVIF Device Manager). Для IQR/ONVIF укажите **логин и пароль** камеры — используется Digest-авторизация и запрос URL снимка через ONVIF.
 
 Поиск разрешён только к **частным/локальным** IPv4 (RFC1918, loopback, link-local). Пароль не хранится до применения URL и «Сохранить».
 

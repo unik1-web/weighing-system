@@ -229,6 +229,53 @@ def _try_template(
         return None
 
 
+def _try_onvif_snapshot(
+    *,
+    ip: str,
+    username: str,
+    password: str,
+    http_port: int,
+) -> dict[str, Any] | None:
+    """Resolve JPEG URL via ONVIF GetSnapshotUri and verify with grab_frame_http."""
+    try:
+        from onvif_snapshot import resolve_onvif_snapshot_url
+    except ImportError:
+        return None
+    try:
+        url = resolve_onvif_snapshot_url(
+            ip,
+            username=username,
+            password=password,
+            http_port=http_port,
+        )
+    except Exception as exc:
+        logger.info('ONVIF resolve failed ip=%s error=%s', ip, safe_exc_message(exc))
+        return None
+    if not url:
+        return None
+    try:
+        jpeg = grab_frame_http(url)
+        preview = save_tmp_snapshot(jpeg)
+        logger.info('discover ok ip=%s brand=iqr template=onvif-getsnapshoturi url=%s', ip, mask_url(url))
+        return {
+            'url': url,
+            'kind': 'http_snapshot',
+            'brand': 'iqr',
+            'template_id': 'onvif-getsnapshoturi',
+            'ok': True,
+            'preview_path': preview,
+            'error': None,
+        }
+    except Exception as exc:
+        logger.info(
+            'discover fail ip=%s brand=iqr template=onvif-getsnapshoturi url=%s error=%s',
+            ip,
+            mask_url(url),
+            safe_exc_message(exc),
+        )
+        return None
+
+
 def _worker(session_id: str) -> None:
     global _active_session_id
     with _sessions_lock:
@@ -246,14 +293,22 @@ def _worker(session_id: str) -> None:
 
     opencv = _opencv_available()
     plan, skipped_rtsp = build_attempt_plan(brand, opencv)
+    brand_norm = (brand or '').strip().lower()
+    if brand_norm in ('onvif', 'iqeye', 'iq', ''):
+        brand_norm = 'iqr' if brand_norm else ''
+    run_onvif_first = brand_norm in ('', 'iqr', 'unknown', 'none') or brand is None
+
     with sess['lock']:
+        total = len(plan) + (1 if run_onvif_first else 0)
         sess['skipped_rtsp'] = skipped_rtsp
         sess['progress'] = {
             'current': 0,
-            'total': len(plan),
-            'label': 'RTSP пропущен: нет OpenCV' if skipped_rtsp and not plan else '',
+            'total': total,
+            'label': 'ONVIF GetSnapshotUri' if run_onvif_first else (
+                'RTSP пропущен: нет OpenCV' if skipped_rtsp and not plan else ''
+            ),
         }
-        if skipped_rtsp and not plan:
+        if skipped_rtsp and not plan and not run_onvif_first:
             sess['message'] = 'RTSP пропущен: нет OpenCV'
         elif skipped_rtsp:
             sess['message'] = None
@@ -269,7 +324,7 @@ def _worker(session_id: str) -> None:
         with sess['lock']:
             sess['progress'] = {
                 'current': current,
-                'total': len(plan),
+                'total': len(plan) + (1 if run_onvif_first else 0),
                 'label': progress_label(template),
             }
 
@@ -278,6 +333,23 @@ def _worker(session_id: str) -> None:
             sess['candidates'].append(cand)
 
     try:
+        if run_onvif_first and not cancel_event.is_set() and not wall_exceeded():
+            with sess['lock']:
+                sess['progress'] = {
+                    'current': 1,
+                    'total': len(plan) + 1,
+                    'label': 'IQR / ONVIF · GetSnapshotUri',
+                }
+            onvif_cand = _try_onvif_snapshot(
+                ip=ip,
+                username=username,
+                password=password,
+                http_port=http_port,
+            )
+            if onvif_cand:
+                append_candidate(onvif_cand)
+            idx = 1
+
         # Process plan: batch consecutive HTTP items (parallel ≤2), RTSP serial
         i = 0
         while i < len(plan):
