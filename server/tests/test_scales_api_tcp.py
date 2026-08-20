@@ -171,6 +171,12 @@ def test_scales_serial_connect_reading_disconnect(api_client, monkeypatch):
             time.sleep(0.05)
             return b''
 
+        def write(self, data):
+            return len(data) if data else 0
+
+        def flush(self):
+            return None
+
         def close(self):
             self._closed = True
 

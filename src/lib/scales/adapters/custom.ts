@@ -16,6 +16,7 @@ const CUSTOM_DEFAULTS: ScaleConnectionProfile = {
   host: '127.0.0.1',
   tcpPort: 9001,
   serialPath: '',
+  pollCommand: '',
 };
 
 export const customAdapter: ScaleAdapter = {

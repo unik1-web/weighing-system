@@ -1190,6 +1190,7 @@ export const ScalesStorage = {
         host: conn.host,
         tcpPort: conn.tcpPort,
         serialPath: normalizeSerialPath(conn.serialPath),
+        pollCommand: typeof conn.pollCommand === 'string' ? conn.pollCommand : '',
       };
       return {
         ...scale,

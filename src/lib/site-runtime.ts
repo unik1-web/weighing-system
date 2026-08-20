@@ -119,6 +119,8 @@ export function normalizeScaleConnection(
     lineTerminator:
       typeof src.lineTerminator === 'string' ? src.lineTerminator : defaults.lineTerminator,
     serialPath: normalizeSerialPath(src.serialPath ?? defaults.serialPath),
+    pollCommand:
+      typeof src.pollCommand === 'string' ? src.pollCommand : (defaults.pollCommand ?? ''),
   };
 }
 

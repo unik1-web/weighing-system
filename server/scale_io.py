@@ -26,6 +26,7 @@ DEFAULT_FRAMING = {
         'dataBits': 8,
         'stopBits': 1,
         'lineTerminator': '\r',
+        'pollCommand': '$',
     },
     'newton': {
         'baudRate': 9600,
@@ -40,6 +41,7 @@ DEFAULT_FRAMING = {
         'dataBits': 7,
         'stopBits': 1,
         'lineTerminator': '\r\n',
+        'pollCommand': 'W',
     },
     'midl-mi-vda': {
         'baudRate': 9600,
@@ -62,6 +64,68 @@ def normalize_adapter_id(raw: Any) -> str:
     if isinstance(raw, str) and raw in BUILTIN_ADAPTER_IDS:
         return raw
     return 'microsim-m0601'
+
+
+POLL_PROBE_COMMANDS = ('$', '$\\r', 'W\\r', '\\x05', '\\r')
+
+
+def decode_poll_command(raw: Any) -> bytes:
+    """Decode user poll string: '$', '\\r', '\\n', '\\x05'."""
+    s = str(raw or '')
+    out = bytearray()
+    i = 0
+    while i < len(s):
+        if s.startswith('\\r', i):
+            out.append(0x0D)
+            i += 2
+        elif s.startswith('\\n', i):
+            out.append(0x0A)
+            i += 2
+        elif s.startswith('\\x', i) and i + 4 <= len(s):
+            try:
+                out.append(int(s[i + 2 : i + 4], 16))
+                i += 4
+                continue
+            except ValueError:
+                pass
+            out.extend(s[i].encode('latin-1', errors='ignore'))
+            i += 1
+        else:
+            out.extend(s[i].encode('latin-1', errors='ignore'))
+            i += 1
+    return bytes(out)
+
+
+def parse_microsim_copy(raw: str) -> Optional[dict[str, Any]]:
+    """Parse Microsim indicator-copy frame (starts with 0x81, ~15 bytes)."""
+    if not raw:
+        return None
+    s = raw
+    if s[0] == '\x81':
+        s = s[1:]
+    elif '\x81' not in raw and 'B' not in raw.upper() and '?' not in raw:
+        return None
+    s = s.replace('\r', ' ').replace('\n', ' ')
+    stable = '?' not in s
+    negative = '-' in s
+    s_num = s.replace('-', ' ').replace('?', ' ')
+    num_match = re.search(r'\d[\d.,]*', s_num)
+    if not num_match:
+        return None
+    try:
+        weight = float(num_match.group(0).replace(',', '.'))
+    except ValueError:
+        return None
+    unit = 'kg'
+    if re.search(r'\bt\b', s, re.I) or s.strip().endswith('t'):
+        unit = 't'
+    return {
+        'weight': -abs(weight) if negative else weight,
+        'unit': unit,
+        'stable': stable,
+        'negative': negative,
+        'raw': raw,
+    }
 
 
 def parse_universal_frame(raw: str) -> Optional[dict[str, Any]]:
@@ -271,6 +335,9 @@ def parse_frame(adapter_id: str, line: str, connection: dict[str, Any]) -> Optio
     aid = normalize_adapter_id(adapter_id)
     if aid == 'custom':
         return parse_custom_frame(line, connection)
+    copy = parse_microsim_copy(line)
+    if copy:
+        return copy
     return parse_universal_frame(line)
 
 
@@ -402,7 +469,7 @@ class ScaleBackendSession:
         if ser is not None:
             try:
                 ser.close()
-            except SerialException:
+            except (SerialException, AttributeError):
                 pass
         thread = self._thread
         if thread is not None and thread.is_alive():
@@ -506,17 +573,19 @@ class ScaleBackendSession:
                 parity=_map_parity(connection.get('parity')),
                 bytesize=_map_data_bits(connection.get('dataBits')),
                 stopbits=_map_stop_bits(connection.get('stopBits')),
-                timeout=1.0,
+                timeout=0.2,
+                write_timeout=0.5,
+                rtscts=False,
+                dsrdtr=False,
+                xonxoff=False,
             )
         except SerialException as exc:
             raise OSError(f'Не удалось открыть {port_path}: {exc}') from exc
 
         try:
+            # M0601-Б питает гальваноразвязку RS-232 от DTR компьютера.
             ser.dtr = True
-            ser.rts = True
-            reset = getattr(ser, 'reset_input_buffer', None)
-            if callable(reset):
-                reset()
+            ser.rts = False
         except SerialException:
             pass
 
@@ -613,7 +682,22 @@ class ScaleBackendSession:
             return ''
         return buffer
 
+    def _extract_microsim_packets(self, buffer: str) -> tuple[list[str], str]:
+        packets: list[str] = []
+        while True:
+            idx = buffer.find('\x81')
+            if idx == -1:
+                break
+            if len(buffer) < idx + 15:
+                return packets, buffer
+            packets.append(buffer[idx : idx + 15])
+            buffer = buffer[idx + 15 :]
+        return packets, buffer
+
     def _process_buffer(self, buffer: str) -> str:
+        packets, buffer = self._extract_microsim_packets(buffer)
+        for packet in packets:
+            self._handle_line(packet)
         lines, buffer = self._extract_lines(buffer)
         for line in lines:
             self._handle_line(line)
@@ -626,8 +710,33 @@ class ScaleBackendSession:
             return buffer
         with self._lock:
             self._bytes_received += len(chunk)
-        buffer += chunk.decode('utf-8', errors='replace')
+        buffer += chunk.decode('latin-1', errors='replace')
         return self._process_buffer(buffer)
+
+    def _poll_payloads(self) -> list[bytes]:
+        configured = decode_poll_command(self._connection.get('pollCommand'))
+        if configured:
+            return [configured]
+        adapter = self._adapter_id or 'microsim-m0601'
+        default = decode_poll_command(DEFAULT_FRAMING.get(adapter, {}).get('pollCommand'))
+        payloads = [p for p in (default,) if p]
+        for raw in POLL_PROBE_COMMANDS:
+            cmd = decode_poll_command(raw)
+            if cmd and cmd not in payloads:
+                payloads.append(cmd)
+        return payloads or [b'$']
+
+    def _write_poll(self, ser: serial.Serial, payload: bytes) -> None:
+        if not payload:
+            return
+        try:
+            ser.write(payload)
+            flush = getattr(ser, 'flush', None)
+            if callable(flush):
+                flush()
+        except SerialException as exc:
+            with self._lock:
+                self._error = f'Ошибка записи COM: {exc}'
 
     def _read_loop_tcp(self) -> None:
         buffer = ''
@@ -656,12 +765,26 @@ class ScaleBackendSession:
         ser = self._serial
         if ser is None:
             return
+        payloads = self._poll_payloads()
+        probe_index = 0
+        last_poll = 0.0
+        logger.info(
+            'Scale serial poll commands: %s',
+            ' '.join(p.hex() for p in payloads),
+        )
         while not self._stop.is_set():
             try:
                 chunk = ser.read(4096)
-                if not chunk:
-                    continue
-                buffer = self._ingest_chunk(chunk, buffer)
+                if chunk:
+                    buffer = self._ingest_chunk(chunk, buffer)
+                now = time.monotonic()
+                if now - last_poll >= 0.35:
+                    last_poll = now
+                    with self._lock:
+                        received = self._bytes_received
+                    if received == 0 and len(payloads) > 1:
+                        probe_index = (probe_index + 1) % len(payloads)
+                    self._write_poll(ser, payloads[probe_index % len(payloads)])
             except SerialException as exc:
                 with self._lock:
                     self._error = f'Ошибка COM: {exc}'

@@ -11,6 +11,7 @@ export type {
 
 export {
   parseUniversalFrame,
+  parseMicrosimCopyFrame,
   parseCustomFrame,
   parseMaskFrame,
   compileParseRegex,
