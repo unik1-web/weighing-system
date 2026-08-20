@@ -165,6 +165,10 @@ def _encode_jpeg(raw: bytes) -> bytes:
     return raw
 
 
+def _looks_like_jpeg(data: bytes) -> bool:
+    return len(data) >= 2 and data[:2] == b'\xff\xd8'
+
+
 def grab_frame_http(url: str) -> bytes:
     response = requests.get(url, timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), stream=True)
     response.raise_for_status()
@@ -172,6 +176,15 @@ def grab_frame_http(url: str) -> bytes:
     data = response.content
     if not data:
         raise RuntimeError('Пустой ответ HTTP snapshot')
+    if not _looks_like_jpeg(data):
+        hint = content_type or 'неизвестный тип'
+        if 'html' in hint or data.lstrip().startswith(b'<'):
+            raise RuntimeError(
+                f'Камера вернула не изображение ({hint}). Проверьте URL snapshot для модели камеры.'
+            )
+        raise RuntimeError(
+            f'Ответ не похож на JPEG ({hint}, {len(data)} байт). Проверьте URL snapshot.'
+        )
     if 'jpeg' in content_type or 'jpg' in content_type or data[:2] == b'\xff\xd8':
         return _encode_jpeg(data)
     # Some cameras return multipart or other; try encode anyway

@@ -1042,7 +1042,8 @@ export function SettingsView({ onSaved }: Props) {
                       className={inputClass}
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      Закройте другие программы, использующие этот COM-порт, перед подключением.
+                      Укажите порт как <strong>COM3</strong> (без пробела). Закройте другие программы на
+                      этом порту перед подключением.
                     </p>
                   </div>
                 )}

@@ -231,6 +231,17 @@ def _map_data_bits(value: Any) -> int:
     return bits if bits in (5, 6, 7, 8) else 8
 
 
+def normalize_serial_path(raw: Any) -> str:
+    """Normalize Windows COM names: 'com 3' / 'COM3' → 'COM3'."""
+    s = str(raw or '').strip()
+    if not s:
+        return ''
+    match = re.match(r'^COM\s*(\d+)\s*$', s, re.I)
+    if match:
+        return f'COM{match.group(1)}'
+    return s
+
+
 def parse_frame(adapter_id: str, line: str, connection: dict[str, Any]) -> Optional[dict[str, Any]]:
     aid = normalize_adapter_id(adapter_id)
     if aid == 'custom':
@@ -445,7 +456,7 @@ class ScaleBackendSession:
         connection: dict[str, Any],
         adapter_id: str,
     ) -> dict[str, Any]:
-        port_path = str(connection.get('serialPath') or '').strip()
+        port_path = normalize_serial_path(connection.get('serialPath'))
         if not port_path:
             raise ValueError('Укажите COM-порт (например COM3)')
 

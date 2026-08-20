@@ -29,6 +29,7 @@ export {
 } from './registry';
 
 export { WebSerialTransport } from './web-serial-transport';
+export { normalizeSerialPath } from './serial-path';
 export {
   fetchScaleContext,
   fetchScaleStatus,

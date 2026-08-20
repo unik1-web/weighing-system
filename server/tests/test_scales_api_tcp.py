@@ -157,10 +157,12 @@ def test_scales_serial_connect_reading_disconnect(api_client, monkeypatch):
     import scale_io
 
     frames = [b'ST,GS,+  12345.6kg\r\n']
+    opened_with: list[str] = []
 
     class _FakeSerial:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            opened_with.append(kwargs.get('port'))
             self._closed = False
 
         def read(self, size):
@@ -174,13 +176,14 @@ def test_scales_serial_connect_reading_disconnect(api_client, monkeypatch):
 
     monkeypatch.setattr(scale_io.serial, 'Serial', _FakeSerial)
 
-    _seed_scales(api_client, transport='serial', serial_path='COM3')
+    _seed_scales(api_client, transport='serial', serial_path='com 3')
     connect = api_client.post('/api/scales/connect', json={})
     assert connect.status_code == 200, connect.get_json()
     body = connect.get_json()
     assert body['connected'] is True
     assert body['transport'] == 'serial'
     assert body['serialPath'] == 'COM3'
+    assert opened_with == ['COM3']
 
     reading = None
     for _ in range(40):
