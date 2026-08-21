@@ -81,9 +81,16 @@ export async function fetchCapabilities(force = false): Promise<CameraCapabiliti
   }
 }
 
-export function photoUrl(relativePath: string | null | undefined): string | null {
+/** @param cacheBust — если задан, добавляет &t=<value> для инвалидации JPEG в браузере */
+export function photoUrl(
+  relativePath: string | null | undefined,
+  cacheBust?: string | number | null,
+): string | null {
   if (!relativePath) return null;
   const params = new URLSearchParams({ path: relativePath });
+  if (cacheBust != null && cacheBust !== '') {
+    params.set('t', String(cacheBust));
+  }
   return `${API_BASE}/api/cameras/photo?${params.toString()}`;
 }
 
@@ -305,17 +312,40 @@ export async function triggerCaptureAfterSave(
 export async function saveReference(
   cameraId: string,
   mode: 'normal' | 'spare',
-): Promise<Camera | null> {
+  opts?: {
+    captureUrl?: string;
+    captureKind?: CaptureKind | string;
+  },
+): Promise<Camera> {
+  try {
+    await flushDatabaseSync();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Не удалось синхронизировать камеру с сервером: ${detail}`);
+  }
+
+  const body: Record<string, string> = {
+    camera_id: cameraId,
+    mode,
+  };
+  const captureUrl = opts?.captureUrl?.trim();
+  if (captureUrl) {
+    body.capture_url = captureUrl;
+    if (opts?.captureKind) {
+      body.capture_kind = String(opts.captureKind);
+    }
+  }
+
   try {
     const result = await apiPost<{ success: boolean; camera: Camera }>(
       '/api/cameras/reference',
-      { camera_id: cameraId, mode },
+      body,
     );
     if (result.camera) {
       CamerasStorage.upsert(result.camera);
       return result.camera;
     }
-    return null;
+    throw new Error('Эталон не сохранён');
   } catch (err) {
     logger.warn('cameras', 'saveReference failed', err);
     throw err;

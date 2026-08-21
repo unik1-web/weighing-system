@@ -11,6 +11,8 @@ interface Props {
   caps?: CameraCapabilities | null;
   /** Persist draft before snapshot-by-id; parent may upsert. */
   onBeforeCapture?: () => void;
+  /** Cache-bust query for reference preview images after re-capture. */
+  referenceBust?: number;
   className?: string;
 }
 
@@ -39,6 +41,7 @@ export function CameraSetupPreview({
   camera,
   caps,
   onBeforeCapture,
+  referenceBust,
   className = '',
 }: Props) {
   const [previewPath, setPreviewPath] = useState<string | null>(null);
@@ -97,8 +100,8 @@ export function CameraSetupPreview({
   }, [camera.capture_url, camera.capture_kind, onBeforeCapture, opencvMissing]);
 
   const src = photoUrl(previewPath);
-  const refNormal = photoUrl(camera.reference_normal_path);
-  const refSpare = photoUrl(camera.reference_spare_path);
+  const refNormal = photoUrl(camera.reference_normal_path, referenceBust);
+  const refSpare = photoUrl(camera.reference_spare_path, referenceBust);
   const showRoi = camera.role === 'overview' && camera.roi && src;
 
   return (

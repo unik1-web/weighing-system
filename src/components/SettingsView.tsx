@@ -182,11 +182,62 @@ export function SettingsView({ onSaved }: Props) {
   const [cameraCaps, setCameraCaps] = useState<CameraCapabilities | null>(null);
   const [anprCaps, setAnprCaps] = useState<AnprCapabilities | null>(null);
   const [cameraBusyId, setCameraBusyId] = useState<string | null>(null);
+  const [refBustByCameraId, setRefBustByCameraId] = useState<Record<string, number>>({});
+  const [etalonFeedback, setEtalonFeedback] = useState<
+    Record<string, { error?: string; okAt?: string }>
+  >({});
   const [camerasSubTab, setCamerasSubTab] = useState<CamerasSubTab>(() => readCamerasSubTab());
 
   const selectCamerasSubTab = (tab: CamerasSubTab) => {
     setCamerasSubTab(tab);
     writeCamerasSubTab(tab);
+  };
+
+  const captureEtalon = async (cam: Camera, mode: 'normal' | 'spare') => {
+    if (!cam.capture_url.trim()) {
+      setEtalonFeedback((prev) => ({
+        ...prev,
+        [cam.id]: { error: 'Укажите URL захвата' },
+      }));
+      return;
+    }
+    setCameraBusyId(cam.id);
+    setEtalonFeedback((prev) => ({ ...prev, [cam.id]: {} }));
+    try {
+      try {
+        upsertCamera(cam);
+      } catch (err: unknown) {
+        setEtalonFeedback((prev) => ({
+          ...prev,
+          [cam.id]: {
+            error: err instanceof Error ? err.message : 'Не удалось сохранить камеру',
+          },
+        }));
+        return;
+      }
+      const updated = await saveReference(cam.id, mode, {
+        captureUrl: cam.capture_url,
+        captureKind: cam.capture_kind,
+      });
+      setCameras((prev) => prev.map((c) => (c.id === cam.id ? updated : c)));
+      const bust = Date.now();
+      setRefBustByCameraId((prev) => ({ ...prev, [cam.id]: bust }));
+      setEtalonFeedback((prev) => ({
+        ...prev,
+        [cam.id]: { okAt: new Date().toLocaleTimeString('ru-RU') },
+      }));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Не удалось снять эталон';
+      const enriched = /opencv|rtsp недоступен/i.test(message)
+        ? `${message} Установите opencv-python-headless или используйте HTTP snapshot URL.`
+        : message;
+      setEtalonFeedback((prev) => ({
+        ...prev,
+        [cam.id]: { error: enriched },
+      }));
+    } finally {
+      setCameraBusyId(null);
+    }
   };
 
   const reloadSiteState = () => {
@@ -1177,6 +1228,46 @@ export function SettingsView({ onSaved }: Props) {
                     </div>
                   </>
                 )}
+                {(spareScale.connection?.transport ?? 'web_serial') === 'serial' && (
+                  <div className="sm:col-span-2">
+                    <label className={labelClass}>COM-порт (сервер / exe)</label>
+                    <SerialPortSelect
+                      value={spareScale.connection?.serialPath ?? ''}
+                      onChange={(serialPath) => {
+                        setSpareScale((prev) =>
+                          prev ? patchScaleConnection(prev, { serialPath }) : prev,
+                        );
+                        setSaved(false);
+                      }}
+                      inputClassName={inputClass}
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Выберите порт из списка. Закройте программу «Сеть автомобильных весов» — COM
+                      может быть открыт только одной программой.
+                    </p>
+                  </div>
+                )}
+                {(spareScale.connection?.transport ?? 'web_serial') === 'serial' && (
+                  <div className="sm:col-span-2">
+                    <label className={labelClass}>Команда запроса веса</label>
+                    <input
+                      type="text"
+                      value={spareScale.connection?.pollCommand ?? '$'}
+                      onChange={(e) => {
+                        setSpareScale((prev) =>
+                          prev ? patchScaleConnection(prev, { pollCommand: e.target.value }) : prev,
+                        );
+                        setSaved(false);
+                      }}
+                      placeholder="$"
+                      className={inputClass}
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Микросим сам не шлёт вес при PU.6=0. По умолчанию шлём <code>$</code>. Если нет
+                      данных — на приборе поставьте PU.6=1 (копия индикатора) или оставьте запрос.
+                    </p>
+                  </div>
+                )}
                 {spareScale.adapter_id === 'custom' && (
                   <>
                     <div className="sm:col-span-2">
@@ -1498,6 +1589,7 @@ export function SettingsView({ onSaved }: Props) {
                 <CameraSetupPreview
                   camera={cam}
                   caps={cameraCaps}
+                  referenceBust={refBustByCameraId[cam.id]}
                   onBeforeCapture={() => {
                     try {
                       upsertCamera(cam);
@@ -1511,24 +1603,7 @@ export function SettingsView({ onSaved }: Props) {
                   <button
                     type="button"
                     disabled={cameraBusyId === cam.id}
-                    onClick={async () => {
-                      setCameraBusyId(cam.id);
-                      try {
-                        upsertCamera(cam);
-                        const updated = await saveReference(cam.id, 'normal');
-                        if (updated) {
-                          setCameras((prev) =>
-                            prev.map((c) => (c.id === cam.id ? updated : c)),
-                          );
-                        }
-                      } catch (err: unknown) {
-                        setSettingsError(
-                          err instanceof Error ? err.message : 'Не удалось снять эталон',
-                        );
-                      } finally {
-                        setCameraBusyId(null);
-                      }
-                    }}
+                    onClick={() => void captureEtalon(cam, 'normal')}
                     className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                   >
                     Эталон primary
@@ -1536,24 +1611,7 @@ export function SettingsView({ onSaved }: Props) {
                   <button
                     type="button"
                     disabled={cameraBusyId === cam.id}
-                    onClick={async () => {
-                      setCameraBusyId(cam.id);
-                      try {
-                        upsertCamera(cam);
-                        const updated = await saveReference(cam.id, 'spare');
-                        if (updated) {
-                          setCameras((prev) =>
-                            prev.map((c) => (c.id === cam.id ? updated : c)),
-                          );
-                        }
-                      } catch (err: unknown) {
-                        setSettingsError(
-                          err instanceof Error ? err.message : 'Не удалось снять эталон',
-                        );
-                      } finally {
-                        setCameraBusyId(null);
-                      }
-                    }}
+                    onClick={() => void captureEtalon(cam, 'spare')}
                     className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                   >
                     Эталон spare
@@ -1571,6 +1629,14 @@ export function SettingsView({ onSaved }: Props) {
                   </button>
                   <span className="self-center text-[10px] text-slate-400">#{index + 1}</span>
                 </div>
+                {etalonFeedback[cam.id]?.error && (
+                  <p className="text-xs text-rose-600">{etalonFeedback[cam.id].error}</p>
+                )}
+                {etalonFeedback[cam.id]?.okAt && !etalonFeedback[cam.id]?.error && (
+                  <p className="text-[11px] text-slate-500">
+                    Эталон обновлён: {etalonFeedback[cam.id].okAt}
+                  </p>
+                )}
               </div>
             ))}
           </div>

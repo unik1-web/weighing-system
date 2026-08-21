@@ -19,7 +19,6 @@ import { SCALE_DEVICES, type ScaleDeviceId } from '@/lib/scales';
 import { validateManualWeightReason } from '@/lib/manual-weight-reason';
 import {
   getActiveScaleContext,
-  updateActiveScaleDevice,
   SITE_RUNTIME_UPDATED_EVENT,
   ACTIVE_SCALE_SET_LABELS,
 } from '@/lib/site-runtime';
@@ -553,11 +552,6 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
     tareAutofillBlocked.current = false;
     anprPlateOverrideRef.current = null;
     setVehicleNumber(value);
-  };
-
-  const handleDeviceChange = (id: ScaleDeviceId) => {
-    setDeviceId(id);
-    updateActiveScaleDevice(id);
   };
 
   const auditCreateFields = (): Pick<
@@ -1560,8 +1554,6 @@ export function WeighingForm({ onSaved, completionTicketId = null, onCompletionH
           onCapture={handleInstrumentCapture}
           label={captureLabel}
           capturedWeight={highlightPhase === 'gross' ? grossWeight : tareWeight}
-          deviceId={deviceId}
-          onDeviceChange={handleDeviceChange}
           stableMode={appSettings.stable_mode}
           onReadingChange={setLiveScaleWeight}
           onUnstableCapture={() => {

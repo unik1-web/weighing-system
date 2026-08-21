@@ -11,6 +11,7 @@ import {
   enforceMaxCameras,
   maskCameraUrl,
   photoUrl,
+  saveReference,
   shouldShowCameraSettings,
   triggerCaptureAfterSave,
   upsertCamera,
@@ -110,6 +111,49 @@ describe('cameras domain', () => {
     const url = photoUrl('Photo/2026/08/02/t1_gross_entry.jpg');
     expect(url).toContain('/api/cameras/photo');
     expect(url).toContain('path=Photo');
+    expect(url).not.toContain('t=');
+  });
+
+  it('photoUrl adds cache-bust query when provided', () => {
+    const url = photoUrl('Photo/refs/x_normal.jpg', 123);
+    expect(url).toContain('/api/cameras/photo');
+    expect(url).toContain('path=Photo%2Frefs%2Fx_normal.jpg');
+    expect(url).toContain('t=123');
+    expect(photoUrl('Photo/refs/x_normal.jpg')).not.toContain('t=');
+    expect(photoUrl(null, 1)).toBeNull();
+  });
+
+  it('saveReference flushes sync then posts optional capture url', async () => {
+    const camera: Camera = {
+      ...createCameraDraft('site-1', 'overview'),
+      id: 'cam-1',
+      capture_url: 'http://cam/snap.jpg',
+      reference_normal_path: 'Photo/refs/cam-1_normal.jpg',
+    };
+    apiPostMock.mockResolvedValue({ success: true, camera });
+    const result = await saveReference('cam-1', 'normal', {
+      captureUrl: 'http://cam/form.jpg',
+      captureKind: 'http_snapshot',
+    });
+    expect(flushMock).toHaveBeenCalled();
+    expect(apiPostMock).toHaveBeenCalledWith('/api/cameras/reference', {
+      camera_id: 'cam-1',
+      mode: 'normal',
+      capture_url: 'http://cam/form.jpg',
+      capture_kind: 'http_snapshot',
+    });
+    expect(flushMock.mock.invocationCallOrder[0]).toBeLessThan(
+      apiPostMock.mock.invocationCallOrder[0],
+    );
+    expect(result.id).toBe('cam-1');
+    expect(CamerasStorage.getAll().find((c) => c.id === 'cam-1')?.reference_normal_path).toBe(
+      'Photo/refs/cam-1_normal.jpg',
+    );
+  });
+
+  it('saveReference throws when camera payload missing', async () => {
+    apiPostMock.mockResolvedValue({ success: true });
+    await expect(saveReference('cam-x', 'spare')).rejects.toThrow(/Эталон не сохранён/);
   });
 
   it('shouldShowCameraSettings always shows the settings block', () => {

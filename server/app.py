@@ -463,10 +463,17 @@ def cameras_reference():
     mode = body.get('mode')
     if not camera_id or not mode:
         return error_response('Нужны camera_id и mode')
+    capture_url = body.get('capture_url')
+    capture_kind = body.get('capture_kind')
     try:
         import cameras as cameras_mod
 
-        camera = cameras_mod.save_reference(str(camera_id), str(mode))
+        camera = cameras_mod.save_reference(
+            str(camera_id),
+            str(mode),
+            capture_url=str(capture_url) if capture_url is not None else None,
+            capture_kind=str(capture_kind) if capture_kind is not None else None,
+        )
         return jsonify({'success': True, 'camera': camera})
     except ValueError as exc:
         return error_response(str(exc), 400)
@@ -485,7 +492,9 @@ def cameras_photo():
         if not os.path.isfile(absolute):
             return error_response('Файл не найден', 404)
         directory, filename = os.path.split(absolute)
-        return send_from_directory(directory, filename, mimetype='image/jpeg')
+        response = send_from_directory(directory, filename, mimetype='image/jpeg')
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        return response
     except ValueError as exc:
         return error_response(str(exc), 400)
     except Exception as exc:

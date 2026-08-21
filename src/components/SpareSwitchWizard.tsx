@@ -34,6 +34,7 @@ export function SpareSwitchWizard({ direction, onDone, onCancel }: Props) {
     Array<{ cameraName: string; refUrl: string | null; liveUrl: string | null }>
   >([]);
   const [refLoading, setRefLoading] = useState(false);
+  const [wizardOpenedAt] = useState(() => Date.now());
 
   useEffect(() => {
     setStep('reason');
@@ -73,7 +74,7 @@ export function SpareSwitchWizard({ direction, onDone, onCancel }: Props) {
         }
         rows.push({
           cameraName: cam.name,
-          refUrl: photoUrl(refPath),
+          refUrl: photoUrl(refPath, wizardOpenedAt),
           liveUrl,
         });
       }
@@ -85,7 +86,7 @@ export function SpareSwitchWizard({ direction, onDone, onCancel }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [step, direction]);
+  }, [step, direction, wizardOpenedAt]);
 
   const operatorName = displayName || 'Оператор';
   const operatorId = user?.id ?? null;

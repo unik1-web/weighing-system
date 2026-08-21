@@ -737,9 +737,15 @@ def snapshot_camera(camera_id: str | None = None, capture_url: str | None = None
     return save_tmp_snapshot(jpeg)
 
 
-def save_reference(camera_id: str, mode: str) -> dict[str, Any]:
+def save_reference(
+    camera_id: str,
+    mode: str,
+    capture_url: str | None = None,
+    capture_kind: str | None = None,
+) -> dict[str, Any]:
     if mode not in ('normal', 'spare'):
         raise ValueError('mode должен быть normal или spare')
+
     with connect() as connection:
         init_schema(connection)
         row = connection.execute(
@@ -754,17 +760,28 @@ def save_reference(camera_id: str, mode: str) -> dict[str, Any]:
             raise ValueError('Камера не найдена')
         camera = {
             'id': row['id'],
-            'capture_url': row['capture_url'],
-            'capture_kind': row['capture_kind'],
+            'capture_url': row['capture_url'] or '',
+            'capture_kind': row['capture_kind'] or 'auto',
             'role': row['role'],
         }
-        jpeg = grab_frame(camera)
-        ensure_photo_dirs()
-        filename = f'{camera_id}_{mode}.jpg'
-        absolute = os.path.join(get_photo_root(), 'refs', filename)
-        with open(absolute, 'wb') as handle:
-            handle.write(jpeg)
-        rel = _rel_from_app(absolute)
+
+    override_url = (capture_url or '').strip()
+    if override_url:
+        camera['capture_url'] = override_url
+        camera['capture_kind'] = (capture_kind or 'auto').strip() or 'auto'
+    if not (camera.get('capture_url') or '').strip():
+        raise ValueError('Укажите URL захвата')
+
+    jpeg = grab_frame(camera)
+    ensure_photo_dirs()
+    filename = f'{camera_id}_{mode}.jpg'
+    absolute = os.path.join(get_photo_root(), 'refs', filename)
+    with open(absolute, 'wb') as handle:
+        handle.write(jpeg)
+    rel = _rel_from_app(absolute)
+
+    with connect() as connection:
+        init_schema(connection)
         if mode == 'normal':
             connection.execute(
                 'UPDATE cameras SET reference_normal_path = ? WHERE id = ?',
