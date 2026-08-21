@@ -1177,6 +1177,46 @@ export function SettingsView({ onSaved }: Props) {
                     </div>
                   </>
                 )}
+                {(spareScale.connection?.transport ?? 'web_serial') === 'serial' && (
+                  <div className="sm:col-span-2">
+                    <label className={labelClass}>COM-порт (сервер / exe)</label>
+                    <SerialPortSelect
+                      value={spareScale.connection?.serialPath ?? ''}
+                      onChange={(serialPath) => {
+                        setSpareScale((prev) =>
+                          prev ? patchScaleConnection(prev, { serialPath }) : prev,
+                        );
+                        setSaved(false);
+                      }}
+                      inputClassName={inputClass}
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Выберите порт из списка. Закройте программу «Сеть автомобильных весов» — COM
+                      может быть открыт только одной программой.
+                    </p>
+                  </div>
+                )}
+                {(spareScale.connection?.transport ?? 'web_serial') === 'serial' && (
+                  <div className="sm:col-span-2">
+                    <label className={labelClass}>Команда запроса веса</label>
+                    <input
+                      type="text"
+                      value={spareScale.connection?.pollCommand ?? '$'}
+                      onChange={(e) => {
+                        setSpareScale((prev) =>
+                          prev ? patchScaleConnection(prev, { pollCommand: e.target.value }) : prev,
+                        );
+                        setSaved(false);
+                      }}
+                      placeholder="$"
+                      className={inputClass}
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Микросим сам не шлёт вес при PU.6=0. По умолчанию шлём <code>$</code>. Если нет
+                      данных — на приборе поставьте PU.6=1 (копия индикатора) или оставьте запрос.
+                    </p>
+                  </div>
+                )}
                 {spareScale.adapter_id === 'custom' && (
                   <>
                     <div className="sm:col-span-2">

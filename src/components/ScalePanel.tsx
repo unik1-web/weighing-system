@@ -1,57 +1,76 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useScale } from '@/hooks/useScale';
-import { ADAPTER_LIST, WebSerialTransport, fetchScaleReading, type ScaleDeviceId } from '@/lib/scales';
-import { normalizeSerialPath } from '@/lib/scales/serial-path';
-import { getActiveScaleContext, upsertScale } from '@/lib/site-runtime';
+import {
+  WebSerialTransport,
+  fetchScaleReading,
+  normalizeSerialPath,
+  type ScaleConnectionProfile,
+  type ScaleDeviceId,
+  type ScaleTransportKind,
+} from '@/lib/scales';
+import { getActiveScaleContext, SITE_RUNTIME_UPDATED_EVENT } from '@/lib/site-runtime';
 import { isCaptureAllowed } from '@/lib/weighing-mode';
-import { SerialPortSelect } from '@/components/SerialPortSelect';
-import { Usb, Power, Activity, AlertCircle, ChevronDown } from 'lucide-react';
+import { Usb, Power, Activity, AlertCircle } from 'lucide-react';
 
 interface Props {
   onCapture: (weight: number, raw: string) => void;
   label: string;
   capturedWeight: number | null;
-  deviceId: ScaleDeviceId;
-  onDeviceChange: (id: ScaleDeviceId) => void;
   stableMode?: boolean;
   onUnstableCapture?: () => void;
   /** Live instrument weight for dual-mode threshold hints (null when disconnected). */
   onReadingChange?: (weight: number | null) => void;
 }
 
+function readActiveTransportAndPath(): {
+  transport: ScaleTransportKind;
+  serialPath: string;
+  connection: ScaleConnectionProfile;
+  adapter_id: ScaleDeviceId;
+} {
+  const ctx = getActiveScaleContext();
+  const transport = (ctx.activeScale.connection.transport ?? 'web_serial') as ScaleTransportKind;
+  return {
+    transport,
+    serialPath: normalizeSerialPath(ctx.activeScale.connection.serialPath),
+    connection: ctx.activeScale.connection,
+    adapter_id: ctx.adapter_id,
+  };
+}
+
 export function ScalePanel({
   onCapture,
   label,
   capturedWeight,
-  deviceId,
-  onDeviceChange,
   stableMode = false,
   onUnstableCapture,
   onReadingChange,
 }: Props) {
   const { reading, connected, error, connect, disconnect } = useScale();
   const [webSerialSupported] = useState(() => WebSerialTransport.isSupported());
-  const [serialPath, setSerialPath] = useState('');
+  const [transport, setTransport] = useState<ScaleTransportKind>(() => {
+    try {
+      return readActiveTransportAndPath().transport;
+    } catch {
+      return 'web_serial';
+    }
+  });
   const [ioHint, setIoHint] = useState<string | null>(null);
   const canCapture = !!reading && isCaptureAllowed(reading.stable, stableMode);
 
-  const transport = useMemo(() => {
+  const refreshTransport = useCallback(() => {
     try {
-      return getActiveScaleContext().activeScale.connection.transport ?? 'web_serial';
+      setTransport(readActiveTransportAndPath().transport);
     } catch {
-      return 'web_serial' as const;
+      setTransport('web_serial');
     }
-  }, [deviceId, connected]);
+  }, []);
 
   useEffect(() => {
-    if (transport !== 'serial') return;
-    try {
-      const ctx = getActiveScaleContext();
-      setSerialPath(normalizeSerialPath(ctx.activeScale.connection.serialPath) || '');
-    } catch {
-      setSerialPath('');
-    }
-  }, [transport, deviceId]);
+    refreshTransport();
+    window.addEventListener(SITE_RUNTIME_UPDATED_EVENT, refreshTransport);
+    return () => window.removeEventListener(SITE_RUNTIME_UPDATED_EVENT, refreshTransport);
+  }, [refreshTransport, connected]);
 
   useEffect(() => {
     if (!connected || reading) {
@@ -87,18 +106,22 @@ export function ScalePanel({
 
   const needsWebSerial = transport === 'web_serial';
   const usesBackendSerial = transport === 'serial';
-  const canConnect = needsWebSerial ? webSerialSupported : usesBackendSerial ? !!normalizeSerialPath(serialPath) : true;
+
+  let canConnect = true;
+  if (needsWebSerial) {
+    canConnect = webSerialSupported;
+  } else if (usesBackendSerial) {
+    try {
+      canConnect = !!readActiveTransportAndPath().serialPath;
+    } catch {
+      canConnect = false;
+    }
+  }
 
   const handleConnect = useCallback(async () => {
-    const ctx = getActiveScaleContext();
-    const connection = usesBackendSerial
-      ? { ...ctx.activeScale.connection, serialPath: normalizeSerialPath(serialPath) }
-      : ctx.activeScale.connection;
-    if (usesBackendSerial) {
-      upsertScale({ ...ctx.activeScale, connection });
-    }
-    await connect(ctx.adapter_id, connection);
-  }, [connect, serialPath, usesBackendSerial]);
+    const { adapter_id, connection } = readActiveTransportAndPath();
+    await connect(adapter_id, connection);
+  }, [connect]);
 
   useEffect(() => {
     onReadingChange?.(reading ? reading.weight : null);
@@ -123,34 +146,6 @@ export function ScalePanel({
           {connected ? 'Подключён' : 'Отключён'}
         </span>
       </div>
-
-      <div className="mb-4">
-        <label className="block text-xs font-medium text-slate-600 mb-1">Модель прибора</label>
-        <div className="relative">
-          <select
-            value={deviceId}
-            onChange={(e) => onDeviceChange(e.target.value as ScaleDeviceId)}
-            disabled={connected}
-            className="w-full appearance-none rounded-lg border border-slate-300 bg-white px-3 py-2 pr-9 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60"
-          >
-            {ADAPTER_LIST.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
-          </select>
-          <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-        </div>
-      </div>
-
-      {usesBackendSerial && (
-        <div className="mb-4">
-          <label className="block text-xs font-medium text-slate-600 mb-1">COM-порт</label>
-          <SerialPortSelect
-            value={serialPath}
-            onChange={setSerialPath}
-            disabled={connected}
-          />
-        </div>
-      )}
 
       <div className="mb-4 rounded-xl bg-slate-900 px-4 py-5 font-mono">
         <div className="flex items-end justify-between">
@@ -221,6 +216,10 @@ export function ScalePanel({
           Зафиксировать вес
         </button>
       </div>
+
+      {!connected && usesBackendSerial && !canConnect && (
+        <p className="mt-2 text-xs text-slate-500">Укажите COM-порт в Настройках</p>
+      )}
 
       {capturedWeight !== null && (
         <div className="mt-3 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-sm text-emerald-700">
