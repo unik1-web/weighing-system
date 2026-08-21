@@ -187,7 +187,7 @@ Description: |
 
 ## 88bce4-camera-etalon-recapture
 
-State: tech-writer-review
+State: done
 Description: |
   Источник: docs/tasks/13-camera-etalon-recapture.md
 
@@ -199,7 +199,7 @@ Description: |
 
 ## ec02d9-weighing-hide-com-device
 
-State: tech-writer-review
+State: done
 Description: |
   Источник: docs/tasks/14-weighing-hide-com-device.md
 
