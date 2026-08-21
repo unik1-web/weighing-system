@@ -168,3 +168,19 @@ Description: |
   Завершено: 2026-08-03T10:04:09Z. Артефакты: docs/aee213-camera-discovery/.
 
 ---
+
+## 1449bf-double-weighing-photos
+
+State: done
+Description: |
+  Источник: docs/tasks/12-double-weighing-photos.md
+
+  Цель: при двойном взвешивании в карточке провески показывать снимки
+  обоих заездов (тара и брутто), а не только одного; дать увеличение
+  превью (lightbox). Файлы уже пишутся на диск — исправить UI/выбор
+  данных. Одиночное взвешивание и отсутствие фото не ломать.
+
+  Завершено: пайплайн analysis→architect→development→code-review→testing→tech-writer.
+  Артефакты: docs/1449bf-double-weighing-photos/. Ветка: cursor/double-weighing-photos-d525.
+
+---
