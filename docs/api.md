@@ -130,8 +130,8 @@
 | `GET` | `/api/cameras/capabilities` | — | `{ success, capture_available, backends, video_enabled, photo_root, opencv_available? }` |
 | `POST` | `/api/cameras/capture` | `{ ticket_id, phase: "gross"\|"tare", site_id? }` | `{ success, photos[], stubs }` — пишет файлы + `ticket_photos` + stubs |
 | `POST` | `/api/cameras/snapshot` | `{ camera_id }` или `{ capture_url, capture_kind? }` | `{ success, relative_path }` во временный `Photo/tmp/` |
-| `POST` | `/api/cameras/reference` | `{ camera_id, mode: "normal"\|"spare" }` | Снимок эталона → `Photo/refs/…`; `{ success, camera }` |
-| `GET` | `/api/cameras/photo` | `path` (относительный от app root, только под `Photo/`) | `image/jpeg` или 404; path traversal → 400 |
+| `POST` | `/api/cameras/reference` | `{ camera_id, mode: "normal"\|"spare", capture_url?, capture_kind? }` | Снимок эталона → `Photo/refs/…` (перезапись); опц. URL/kind только для захвата кадра; `{ success, camera }` |
+| `GET` | `/api/cameras/photo` | `path` (относительный от app root, только под `Photo/`) | `image/jpeg` или 404; `Cache-Control: no-store`; path traversal → 400 |
 | `GET` | `/api/cameras/discover/brands` | — | `{ success, brands: [{ id, label }] }` — каталог брендов (без пункта «Неизвестно») |
 | `POST` | `/api/cameras/discover` | `{ ip, username?, password?, brand?, http_port?, rtsp_port? }` | Старт сессии: `{ success, session_id, status: "running", progress, candidates }` — SSRF: только частные/локальные IPv4; новый POST отменяет предыдущую running-сессию |
 | `GET` | `/api/cameras/discover/<session_id>` | — | Poll: `{ success, session_id, status, progress: { current, total, label }, candidates: [{ url, kind, brand, ok, preview_path, template_id }], message?, error?, skipped_rtsp? }` — `url` полный (UI маскирует); 404 если сессия неизвестна |

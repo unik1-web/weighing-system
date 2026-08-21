@@ -184,3 +184,27 @@ Description: |
   Артефакты: docs/1449bf-double-weighing-photos/. Ветка: cursor/double-weighing-photos-d525.
 
 ---
+
+## 88bce4-camera-etalon-recapture
+
+State: development
+Description: |
+  Источник: docs/tasks/13-camera-etalon-recapture.md
+
+  Цель: повторно снимать/обновлять эталоны primary и spare в настройках
+  камеры без удаления и пересоздания камеры; обновлять превью после
+  успеха; понятные ошибки при сбое снимка.
+
+---
+
+## ec02d9-weighing-hide-com-device
+
+State: tech-writer-review
+Description: |
+  Источник: docs/tasks/14-weighing-hide-com-device.md
+
+  Цель: на экране взвешивания убрать выбор модели прибора и COM-порта;
+  оставить подключение/вес/фиксацию; модель и COM настраивать только
+  в Настройках площадки/весов.
+
+---
