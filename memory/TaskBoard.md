@@ -187,7 +187,7 @@ Description: |
 
 ## 88bce4-camera-etalon-recapture
 
-State: development
+State: tech-writer-review
 Description: |
   Источник: docs/tasks/13-camera-etalon-recapture.md
 
