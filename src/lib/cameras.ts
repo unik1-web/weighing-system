@@ -184,7 +184,11 @@ async function syncCaptureTicket(): Promise<void> {
   if (typeof localStorage === 'undefined') return;
   const tickets = localStorage.getItem('app_weighing_tickets');
   if (tickets === null) return;
-  const data = { app_weighing_tickets: tickets };
+  // Include photos so a tickets-only replace cannot drop earlier-phase captures
+  // (server also preserves photos, but keep client payload complete).
+  const photos = localStorage.getItem('app_ticket_photos');
+  const data: Record<string, string> = { app_weighing_tickets: tickets };
+  if (photos !== null) data.app_ticket_photos = photos;
   await apiPost<{ success: boolean }>('/api/database', { data });
 }
 

@@ -917,7 +917,18 @@ def _default_weighing_mode(ticket: dict[str, Any]) -> str:
 
 
 def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None:
-    # ticket_photos.ticket_id → weighing_tickets(id): clear children first
+    # FK: ticket_photos → weighing_tickets. Clients (e.g. syncCaptureTicket) may
+    # POST tickets without app_ticket_photos; wiping photos here permanently loses
+    # captures from earlier dual-weigh phases. Preserve rows for surviving ticket ids;
+    # a same-request ticket_photos key still fully replaces via _replace_ticket_photos.
+    surviving_ids = {
+        str(ticket.get('id', ''))
+        for ticket in tickets
+        if isinstance(ticket, dict) and ticket.get('id') not in (None, '')
+    }
+    preserved_photos = connection.execute(
+        f'SELECT {", ".join(TICKET_PHOTO_COLUMNS)} FROM ticket_photos'
+    ).fetchall()
     connection.execute('DELETE FROM ticket_photos')
     connection.execute('DELETE FROM weighing_tickets')
     for ticket in tickets:
@@ -939,6 +950,16 @@ def _replace_tickets(connection: sqlite3.Connection, tickets: list[Any]) -> None
             VALUES ({", ".join(['?'] * len(TICKET_COLUMNS))})
             ''',
             values,
+        )
+    for row in preserved_photos:
+        if row['ticket_id'] not in surviving_ids:
+            continue
+        connection.execute(
+            f'''
+            INSERT INTO ticket_photos ({", ".join(TICKET_PHOTO_COLUMNS)})
+            VALUES ({", ".join(['?'] * len(TICKET_PHOTO_COLUMNS))})
+            ''',
+            tuple(row[column] for column in TICKET_PHOTO_COLUMNS),
         )
 
 
