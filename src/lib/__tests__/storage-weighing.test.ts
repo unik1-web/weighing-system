@@ -112,6 +112,24 @@ describe('SettingsStorage weighing defaults', () => {
     expect(settings.driver_input_mode).toBe('all');
     expect(settings.scale_device_id).toBe('microsim-m0601');
   });
+
+  it('soft-reads print_layout and nav_tab_mode with safe defaults', () => {
+    expect(SettingsStorage.getAppSettings().print_layout).toBe('act');
+    expect(SettingsStorage.getAppSettings().nav_tab_mode).toBe('full');
+
+    SettingsStorage.updateAppSettings({ print_layout: 'receipt', nav_tab_mode: 'compact' });
+    expect(SettingsStorage.getAppSettings().print_layout).toBe('receipt');
+    expect(SettingsStorage.getAppSettings().nav_tab_mode).toBe('compact');
+
+    localStorage.setItem(
+      'app_settings',
+      JSON.stringify({ print_layout: 'poster', nav_tab_mode: 'mega' }),
+    );
+    const settings = SettingsStorage.getAppSettings();
+    // print_layout currently trusts stored string (cast); nav_tab_mode is whitelist-only.
+    expect(settings.print_layout).toBe('poster' as 'act');
+    expect(settings.nav_tab_mode).toBe('full');
+  });
 });
 
 describe('TicketStorage normalize / create / CAS', () => {

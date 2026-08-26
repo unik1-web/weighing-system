@@ -294,4 +294,68 @@ describe('cameras domain', () => {
     });
     expect(resumeMock).toHaveBeenCalled();
   });
+
+  it('triggerCaptureAfterSave fails closed when pre-capture flush/sync throws', async () => {
+    SettingsStorage.updateAppSettings({ video_enabled: true });
+    upsertCamera(createCameraDraft('site-1', 'entry'));
+    flushMock.mockRejectedValueOnce(new Error('sqlite locked'));
+    const result = await triggerCaptureAfterSave('t1', ['gross'], 'site-1');
+    expect(result).toEqual({
+      ok: false,
+      message: 'Фото для талона не сохранены: sqlite locked',
+    });
+    expect(pauseMock).toHaveBeenCalled();
+    expect(resumeMock).toHaveBeenCalled();
+    expect(apiPostMock).not.toHaveBeenCalledWith('/api/cameras/capture', expect.anything());
+  });
+
+  it('TicketPhotosStorage.merge upserts by id without wiping other tickets', () => {
+    TicketPhotosStorage.merge([
+      {
+        id: 'p-a',
+        ticket_id: 't1',
+        phase: 'gross',
+        camera_id: 'c1',
+        camera_role: 'entry',
+        relative_path: 'Photo/a.jpg',
+        status: 'ok',
+        error_message: null,
+        camera_mode: 'normal',
+        created_at: '2026-08-02T10:00:00',
+      },
+      {
+        id: 'p-b',
+        ticket_id: 't2',
+        phase: 'tare',
+        camera_id: 'c1',
+        camera_role: 'exit',
+        relative_path: 'Photo/b.jpg',
+        status: 'ok',
+        error_message: null,
+        camera_mode: 'normal',
+        created_at: '2026-08-02T11:00:00',
+      },
+    ]);
+    TicketPhotosStorage.merge([
+      {
+        id: 'p-a',
+        ticket_id: 't1',
+        phase: 'gross',
+        camera_id: 'c1',
+        camera_role: 'entry',
+        relative_path: 'Photo/a-retry.jpg',
+        status: 'ok',
+        error_message: null,
+        camera_mode: 'spare',
+        created_at: '2026-08-02T10:05:00',
+      },
+    ]);
+    const t1 = TicketPhotosStorage.forTicket('t1');
+    const t2 = TicketPhotosStorage.forTicket('t2');
+    expect(t1).toHaveLength(1);
+    expect(t1[0].relative_path).toBe('Photo/a-retry.jpg');
+    expect(t1[0].camera_mode).toBe('spare');
+    expect(t2).toHaveLength(1);
+    expect(t2[0].id).toBe('p-b');
+  });
 });

@@ -16,6 +16,7 @@ import {
   enableSpareScale,
   disableSpareScale,
   listSwitchHistory,
+  normalizeScaleConnection,
   DEFAULT_SITE_NAME,
   DEFAULT_SPARE_SCALE_NAME,
 } from '../site-runtime';
@@ -329,5 +330,47 @@ describe('disable spare while on spare', () => {
       expect.objectContaining({ active_scale_set: 'spare' }),
     );
     warnSpy.mockRestore();
+  });
+});
+
+describe('normalizeScaleConnection', () => {
+  it('fills framing gaps from adapter defaults and rejects bad enums', () => {
+    const cas = normalizeScaleConnection('cas', {
+      transport: 'tcp',
+      host: '10.0.0.5',
+      tcpPort: 4001,
+      baudRate: Number.NaN,
+      parity: 'weird' as 'none',
+      dataBits: 9 as 8,
+      stopBits: 3 as 1,
+    });
+    expect(cas.transport).toBe('tcp');
+    expect(cas.host).toBe('10.0.0.5');
+    expect(cas.tcpPort).toBe(4001);
+    expect(cas.parity).toBe('even');
+    expect(cas.dataBits).toBe(7);
+    expect(cas.stopBits).toBe(1);
+    expect(cas.baudRate).toBe(9600);
+  });
+
+  it('keeps valid custom framing overrides', () => {
+    const custom = normalizeScaleConnection('custom', {
+      transport: 'serial',
+      baudRate: 19200,
+      parity: 'odd',
+      dataBits: 7,
+      stopBits: 2,
+      lineTerminator: '\n',
+      parseMask: '######',
+    });
+    expect(custom).toMatchObject({
+      transport: 'serial',
+      baudRate: 19200,
+      parity: 'odd',
+      dataBits: 7,
+      stopBits: 2,
+      lineTerminator: '\n',
+      parseMask: '######',
+    });
   });
 });
